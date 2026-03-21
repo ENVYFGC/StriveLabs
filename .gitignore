@@ -1,0 +1,83 @@
+# Build artifacts
+*.dll
+*.exe
+*.pdb
+*.o
+*.obj
+*.lib
+*.a
+*.exp
+
+# Archives / backups
+*.zip
+*.tar.gz
+*.rar
+*.7z
+backup/
+backups_*/
+BACKUP OF A WORKING MOD/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets
+.env
+.env.local
+
+# IDE
+.vs/
+.vscode/
+.claude/
+*.swp
+.DS_Store
+
+# Build directories
+build/
+out/
+x64/
+Binaries/
+
+# Temp / misc files
+*.tmp
+*.cache
+probe_enable.tmp
+tmp_*
+
+# Project-specific excludes — large folders not part of the repo
+RE-UE4SS-*/
+UE4SSMods-master/
+UE4SSMods-replay-0.2.4_/
+
+# UE4SS repo is 2.9GB — only track our mod's source
+UE4SSMods-replay-0.2.4/*
+!UE4SSMods-replay-0.2.4/StriveFrameData/
+GGSTFrameViewerPulse*/
+GGST Frameviewer_Meter_Info_Displayer/
+GGST Frameviewer_Meter_Info_Displayer.zip
+GGSTFrameViewer_GameBanana/
+GGSTFrameViewer_combined_package.zip
+GGSTFrameViewer_friend_review_source.zip
+New folder/
+RED/
+RED_/
+Win64/
+gamebanana package/
+misc files/
+*.CT
+*.jpg
+*.diff
+*.ps1
+
+# Bot pending queue (runtime data, not source)
+discord_bot/pending.json
+
+# Legacy/reference files not part of the repo
+combo_data.json
+combot.py
+REDGameState_Battle.cpp
+TENSIONINFO_HANDOFF.md
+menu_design_mockup.html
+menu_ingame_mockup.html
