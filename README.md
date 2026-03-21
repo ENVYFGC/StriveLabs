@@ -19,6 +19,10 @@ A UE4SS mod for Guilty Gear Strive that gives you frame data, hitbox visualizati
 
 Press **F5** in training mode to open the menu.
 
+## Controls
+
+**F5** opens the menu. **Up/Down** to navigate, **Right** to select, **Left** to go back. On a combo, **Right** plays the video, **Space** pauses it, **ESC** stops it. On the Filter row, **Right** cycles through tags.
+
 ## License
 
 This project is provided as-is for the GGST community. Not affiliated with Arc System Works.
