@@ -14,13 +14,13 @@ A UE4SS mod for Guilty Gear Strive that gives you frame data, hitbox visualizati
 
 ## Setup
 
-1. Install [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) for GGST
-2. Drop `StriveLabs.dll` into `ue4ss/Mods/StriveLabs/dlls/main.dll`
-3. Add `StriveLabs : 1` to `Mods/mods.txt`
-4. Place the `combo_data/` folder in your UE4SS directory
-5. (Optional) Add `yt-dlp.exe` to the mod folder for video playback
+1. Download the latest release from [Releases](https://github.com/ENVYFGC/StriveLabs/releases)
+2. Extract the zip into your GGST install at `GUILTY GEAR STRIVE/RED/Binaries/Win64/`
+3. That's it — UE4SS and everything else is included
 
 Press **F5** in training mode to open the menu.
+
+> **Optional:** Drop `yt-dlp.exe` into the `ue4ss/Mods/StriveLabs/` folder to enable in-game video playback for combo demos.
 
 ## Contributing combos
 
