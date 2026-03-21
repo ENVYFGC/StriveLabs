@@ -10,7 +10,6 @@ A UE4SS mod for Guilty Gear Strive that gives you frame data, hitbox visualizati
 - **Combo browser** — browse community-contributed combos organized by character, version, and starter
 - **Video playback** — watch combo demos without leaving the game
 - **Tag filtering** — filter combos by position (corner/midscreen), meter usage, counter hit, etc.
-- **Combo trials** — record and practice custom trial sequences
 
 ## Setup
 
