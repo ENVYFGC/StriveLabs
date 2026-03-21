@@ -13,27 +13,11 @@ A UE4SS mod for Guilty Gear Strive that gives you frame data, hitbox visualizati
 
 ## Setup
 
-1. Download the latest release from [Releases](https://github.com/ENVYFGC/StriveLabs/releases)
-2. Extract the zip into your GGST install at `GUILTY GEAR STRIVE/RED/Binaries/Win64/`
-3. That's it — UE4SS and everything else is included
+1. Download this repo (Code → Download ZIP) or grab the latest from [Releases](https://github.com/ENVYFGC/StriveLabs/releases)
+2. Copy `dwmapi.dll` and the `ue4ss/` folder into `GUILTY GEAR STRIVE/RED/Binaries/Win64/`
+3. That's it — UE4SS, the mod, combo data, and video playback are all included
 
 Press **F5** in training mode to open the menu.
-
-> **Optional:** Drop `yt-dlp.exe` into the `ue4ss/Mods/StriveLabs/` folder to enable in-game video playback for combo demos.
-
-## Contributing combos
-
-We're building a combo database for the full GGST roster and could use your help. Check out [CONTRIBUTING.md](CONTRIBUTING.md) for how to add combos — no coding required, just fill in some JSON fields.
-
-There's also a Discord bot (`/addcombo`) that lets you submit combos without touching any files directly.
-
-## Building from source
-
-Requires [xmake](https://xmake.io/) and the UE4SS SDK.
-
-```
-xmake build StriveLabs
-```
 
 ## License
 
