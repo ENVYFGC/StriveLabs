@@ -6,7 +6,7 @@ A UE4SS mod for Guilty Gear Strive that gives you frame data, hitbox visualizati
 
 - **Frame data overlay** — see startup, active, recovery frames in real time
 - **Hitbox viewer** — visualize hurt/hitboxes during gameplay
-- **Tension & gauge info** — track meter, burst, RISC
+- **Tension & gauge info** — track meter, burst.
 - **Combo browser** — browse community-contributed combos organized by character, version, and starter
 - **Video playback** — watch combo demos without leaving the game
 - **Tag filtering** — filter combos by position (corner/midscreen), meter usage, counter hit, etc.
