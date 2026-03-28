@@ -13,7 +13,7 @@ A UE4SS mod for Guilty Gear Strive that gives you frame data, hitbox visualizati
 
 ## Setup
 
-1. Download this repo (Code → Download ZIP) or grab the latest from [Releases](https://github.com/ENVYFGC/StriveLabs/releases)
+1. Download this repo (Download ZIP) or grab the latest from [Releases](https://github.com/ENVYFGC/StriveLabs/releases)
 2. Extract the folder in the zip as is and drop it in your GGST root folder
 3. That's it — UE4SS, the mod, combo data, and video playback are all included
 
