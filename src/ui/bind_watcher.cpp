@@ -43,12 +43,12 @@ class BindWatcher {
   std::condition_variable await_con;
   std::bitset<0xff> filter;
   std::vector<int> inputs;
-  HWND cachedGameHwnd = nullptr;
   std::atomic<bool> stopped{false};
+  std::atomic<bool> capture_all{false};
 
   bool markKey(DWORD code) {
     std::lock_guard state_lock(state_mutex);
-    if (!filter.test(code)) return false;
+    if (!capture_all.load() && !filter.test(code)) return false;
     if (inputs.size() > 100) inputs.erase(inputs.begin()); // only store latest 100 inputs
     inputs.push_back(code);
     return true;
@@ -63,7 +63,8 @@ public:
     await_con.notify_all();
   }
 
-  void addToFilter(unsigned long code) { filter.set(code, true); }
+  void addToFilter(unsigned long code) { filter.set(code & 0xFF, true); }
+  void setCaptureAll(bool on) { capture_all.store(on); }
 
   std::vector<int> getInputs(bool await) {
     std::unique_lock state_lock(state_mutex);
@@ -84,11 +85,12 @@ public:
       //
       // Cache the game HWND to avoid a full window enumeration on every
       // keystroke — FindWindowA under fast input can exceed the hook timeout.
-      if (!IsWindow(cachedGameHwnd))
-        cachedGameHwnd = FindWindowA("UnrealWindow", nullptr);
-
+      // Any window owned by this process counts (the Game Pass build does not
+      // use the "UnrealWindow" class name).
       HWND fg = GetForegroundWindow();
-      if (fg != nullptr && fg == cachedGameHwnd) {
+      DWORD fg_pid = 0;
+      if (fg != nullptr) GetWindowThreadProcessId(fg, &fg_pid);
+      if (fg != nullptr && fg_pid == GetCurrentProcessId()) {
         KBDLLHOOKSTRUCT &k = *(KBDLLHOOKSTRUCT *)lParam;
         if (markKey(k.vkCode)) await_con.notify_all();
       }
@@ -108,6 +110,10 @@ LRESULT CALLBACK KeyboadCallback(int nCode, WPARAM wParam, LPARAM lParam) {
 
 void BindWatcherI::addToFilter(unsigned long code) {
   BindWatcher::instance().addToFilter(code);
+}
+
+void BindWatcherI::setCaptureAll(bool on) {
+  BindWatcher::instance().setCaptureAll(on);
 }
 
 std::vector<int> BindWatcherI::getInputs(bool await) {

@@ -35,6 +35,30 @@ namespace {
   constexpr int LINE_HEIGHT = 40;
   constexpr double TEXT_SCALE = 1.2;
 
+  // Wall damage lives on the character being hit, at +0xD860 (read from the game's
+  // wall code). Once it is at 3000 or more, the next wall hit sticks the defender
+  // and the game adds 10000; at 10000 or more the next hit breaks the wall, and it
+  // resets to 0.
+  // ponytail: thresholds are the game's globals hardcoded; read them if a patch changes them.
+  constexpr int WALL_DAMAGE_OFFSET = 0xD860;
+  constexpr int WALL_STICK = 3000;
+  constexpr int WALL_BREAK = 10000;
+
+  int read_wall_damage(const void* player) {
+    return player ? *reinterpret_cast<const int*>(reinterpret_cast<const char*>(player) + WALL_DAMAGE_OFFSET) : 0;
+  }
+
+  std::wstring format_wall(const int value) {
+    if (value >= WALL_BREAK) return L"STICK (next hit breaks)";
+    if (value >= WALL_STICK) return std::to_wstring(value) + L" (next hit sticks)";
+    return std::to_wstring(value) + L" / " + std::to_wstring(WALL_STICK);
+  }
+
+  void append_wall_lines(std::vector<std::wstring>& lines, const PlayerDisplayMode mode, const int p1, const int p2) {
+    if (mode == PlayerDisplayMode::P1 || mode == PlayerDisplayMode::Both) lines.emplace_back(L"P1 Wall Damage: " + format_wall(p1));
+    if (mode == PlayerDisplayMode::P2 || mode == PlayerDisplayMode::Both) lines.emplace_back(L"P2 Wall Damage: " + format_wall(p2));
+  }
+
   FLinearColor overlay_background{0.05f, 0.05f, 0.05f, 0.75f};
 
   std::wstring format_number(const double value) {
@@ -109,6 +133,8 @@ struct TensionOverlay::Data {
   double p2_burst{};
   int p1_tension_pulse{};
   int p2_tension_pulse{};
+  int p1_tension_penalty{};
+  int p2_tension_penalty{};
   int p1_wall_damage{};
   int p2_wall_damage{};
   double p2_base_burst{};
@@ -143,6 +169,8 @@ struct TensionOverlay::Data {
     p2_burst = 0.0;
     p1_tension_pulse = 0;
     p2_tension_pulse = 0;
+    p1_tension_penalty = 0;
+    p2_tension_penalty = 0;
     p1_wall_damage = 0;
     p2_wall_damage = 0;
     p2_base_burst = 0.0;
@@ -189,10 +217,12 @@ struct TensionOverlay::Data {
     p2_burst = static_cast<double>(engine->P2BurstRaw) / 150.0;
     p1_tension_pulse = engine->P1TensionPulse;
     p2_tension_pulse = engine->P2TensionPulse;
+    p1_tension_penalty = engine->P1TensionPenalty;
+    p2_tension_penalty = engine->P2TensionPenalty;
+    p1_wall_damage = read_wall_damage(engine->players[0].entity);
+    p2_wall_damage = read_wall_damage(engine->players[1].entity);
     auto* p1 = engine->players[0].entity;
     auto* p2 = engine->players[1].entity;
-    p1_wall_damage = p1 ? p1->wall_damage_point : 0;
-    p2_wall_damage = p2 ? p2->wall_damage_point : 0;
 
     if (p1_damage == L"0" && zero_check == 0) {
       p1_tension_gain = 0.0;
@@ -337,7 +367,8 @@ struct TensionOverlay::Data {
     // Derive draw-space position relative to the shared anchor.
     // BAR_ONE_TOP mirrors the framebar.cpp constant.
     constexpr int BAR_ONE_TOP = -48;
-    const int box_left = layout.tension_left_offset;
+    // Right side: mirror the box around the anchor, keeping the same distance from it.
+    const int box_left = options.right_side ? -layout.tension_left_offset - BOX_WIDTH : layout.tension_left_offset;
 
     std::vector<std::wstring> lines;
     append_player_lines(lines, options.gains, L"P1 Tension Gain: ", p1_tension_gain, L"P2 Tension Gain: ", p2_tension_gain);
@@ -345,8 +376,9 @@ struct TensionOverlay::Data {
     if (options.show_adv_change) lines.emplace_back(L"Tension Adv. Change: " + format_number(tension_slope));
     append_player_lines(lines, options.bursts, L"P1 Burst: ", p1_burst, L"P2 Burst: ", p2_burst);
     append_player_lines(lines, options.pulses, L"P1 Tension Pulse: ", p1_tension_pulse, L"P2 Tension Pulse: ", p2_tension_pulse);
+    append_player_lines(lines, options.penalties, L"P1 Tension Penalty: ", p1_tension_penalty, L"P2 Tension Penalty: ", p2_tension_penalty);
     append_player_lines(lines, options.current_tension, L"P1 Tension: ", p1_tension, L"P2 Tension: ", p2_tension);
-    append_player_lines(lines, options.wall_damage, L"P1 Wall Damage: ", p1_wall_damage, L"P2 Wall Damage: ", p2_wall_damage);
+    append_wall_lines(lines, options.wall_damage, p1_wall_damage, p2_wall_damage);
 
     if (lines.empty()) {
       return;

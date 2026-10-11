@@ -6,8 +6,11 @@
 #include "draw_utils.h"
 #include "framebar.h"
 #include "hitboxes.h"
+#include "keybinds.h"
 #include "menu.h"
+#include "recordings.h"
 #include "sigscan.h"
+#include <set>
 #include "tension_overlay.h"
 #include "combo_log.h"
 #include <chrono>
@@ -26,6 +29,8 @@ using namespace std::chrono_literals;
 #include "Windows.h"
 #include <Psapi.h>
 #pragma comment(lib, "Psapi.lib")
+#include <Xinput.h>
+#pragma comment(lib, "xinput9_1_0.lib")
 
 #define STRIVEFRAMEDATA_API __declspec(dllexport)
 
@@ -169,6 +174,7 @@ using funcUpdateReplay_t = void (*)(BattleReplayManager*);
 using funcSaveBackup_t = void (*)(asw_rollback*);
 using funcRollback_t = void (*)(asw_rollback*);
 using funcGetReplayManager_t = uintptr_t (*)();
+using funcUpdateOnPreTick_t = void (*)(AREDGameState_Battle*, float);
 
 // Hooks
 void hook_AHUDPostRender(void*);
@@ -235,13 +241,31 @@ funcUpdateSystem_t orig_UpdateSystem;
 funcUpdateReplay_t orig_UpdateReplay;
 funcSaveBackup_t orig_SaveBackup;
 funcRollback_t orig_Rollback;
+// The game's rollback is also its effect manager. Rollback() moves every effect
+// spawned at or after the restored frame into a "waiting to be reused" list; the
+// netplay loop then re-simulates and finally destroys whatever was not reused,
+// with these two calls (one per effect kind). Our F9 load does not re-simulate,
+// so without them the leftovers live on and the restored timeline spawns new
+// ones on top: the HC reticle / FD effect stacking.
+using funcEffectCleanup_t = void (*)(asw_rollback*);
+funcEffectCleanup_t orig_EffectCleanupA = nullptr;
+funcEffectCleanup_t orig_EffectCleanupB = nullptr;
 funcGetReplayManager_t orig_GetReplayManager;
 uintptr_t orig_GetNowKeyMappingBattle;
+funcUpdateOnPreTick_t orig_UpdateOnPreTick;
+
 // Pre-resolved pointer to the game's is_battle flag byte.  Resolved at init
 // from whichever candidate (sigscan, or a known hardcoded offset per game
 // patch) produces a byte whose current value is 0 or 1.  If no candidate
 // survives validation, stays null and the takeover hook skips the toggle.
 uint8_t* is_battle_ptr = nullptr;
+
+// Cursor for each side at the last BATTLE_START -- the anchor a capture slices
+// from, since buffer index 0 is the start of the whole match, not the round.
+// Entry index each peer's stream sat at when the match's first round call
+// fired. Latched once (g_anchor_set) so later rounds don't move it.
+uint32_t g_round_anchor[6] = {};
+bool g_anchor_set = false;
 static bool is_ptr_in_game_module(const void* p);
 
 // State Data
@@ -289,6 +313,11 @@ public:
         return last_mode == GAME_MODE_REPLAY;
     }
 
+    bool checkModeTraining() const
+    {
+        return last_mode == GAME_MODE_TRAINING;
+    }
+
     void checkRound()
     {
         resetting = false;
@@ -308,6 +337,8 @@ public:
             {
                 resetting = true;
                 roundActive = true;
+
+                roundJustStarted = true;
             }
         }
     }
@@ -315,95 +346,73 @@ public:
     bool resetting = false;
     bool matchStarted = true;
     bool roundActive = false;
+    // Set on BATTLE_START; consumed once by the caller to log the replay anchor.
+    bool roundJustStarted = false;
 } game_state;
 
 class Keybinds
 {
 public:
-    static const int BUTTON_COUNT = 14;
+    static const int BUTTON_COUNT = binds::COUNT;
 
-    int TOGGLE_FRAMEBAR_BUTTON = VK_F1;
-    int TOGGLE_HITBOX_BUTTON = VK_F2;
-    int PAUSE_BUTTON = VK_F3;
-    int ADVANCE_BUTTON = VK_F4;
-    int TOGGLE_MENU_BUTTON = VK_F5;
-
-    int TOGGLE_SAVE_BUTTON = VK_F6;
-    int TAKEOVER_P1_BUTTON = VK_F7;
-    int TAKEOVER_P2_BUTTON = VK_F8;
-    int TOGGLE_LOAD_BUTTON = VK_F9;
-    int TOGGLE_REWIND_BUTTON = VK_F9;
-
-    int MENU_UP_BUTTON = VK_UP;
-    int MENU_DOWN_BUTTON = VK_DOWN;
-    int MENU_LEFT_BUTTON = VK_LEFT;
-    int MENU_RIGHT_BUTTON = VK_RIGHT;
-
-    int buttons[BUTTON_COUNT] = {
-        TOGGLE_FRAMEBAR_BUTTON, TOGGLE_HITBOX_BUTTON, PAUSE_BUTTON, ADVANCE_BUTTON, TOGGLE_MENU_BUTTON,
-        TOGGLE_SAVE_BUTTON, TAKEOVER_P1_BUTTON, TAKEOVER_P2_BUTTON, TOGGLE_LOAD_BUTTON, TOGGLE_REWIND_BUTTON,
-        MENU_UP_BUTTON, MENU_DOWN_BUTTON, MENU_LEFT_BUTTON, MENU_RIGHT_BUTTON
-    };
+    // Aliases into the rebindable table (see keybinds.h); rebinding updates these too.
+    int& TOGGLE_FRAMEBAR_BUTTON = binds::key[binds::FRAMEBAR];
+    int& TOGGLE_HITBOX_BUTTON   = binds::key[binds::HITBOXES];
+    int& PAUSE_BUTTON           = binds::key[binds::PAUSE];
+    int& ADVANCE_BUTTON         = binds::key[binds::ADVANCE];
+    int& TOGGLE_MENU_BUTTON     = binds::key[binds::MENU];
+    int& TOGGLE_SAVE_BUTTON     = binds::key[binds::SAVE];
+    int& TAKEOVER_P1_BUTTON     = binds::key[binds::TAKEOVER_P1];
+    int& TAKEOVER_P2_BUTTON     = binds::key[binds::TAKEOVER_P2];
+    int& TOGGLE_LOAD_BUTTON     = binds::key[binds::LOAD];
+    int& MENU_UP_BUTTON         = binds::key[binds::UP];
+    int& MENU_DOWN_BUTTON       = binds::key[binds::DOWN];
+    int& MENU_LEFT_BUTTON       = binds::key[binds::LEFT];
+    int& MENU_RIGHT_BUTTON      = binds::key[binds::RIGHT];
 
     int getButtonIndex(int input)
     {
+        if (input == 0) return -1;
         for (int i = 0; i < BUTTON_COUNT; i++)
         {
-            if (buttons[i] == input)
-            {
-                return i;
-            }
+            if (binds::key[i] == input) return i;
         }
         return -1;
+    }
+
+    void setButtonIndex(int index, bool val)
+    {
+        if (index >= 0 && index < BUTTON_COUNT) buttonStates[index] = val;
     }
 
     bool setButtonState(int input, bool val)
     {
         int index = getButtonIndex(input);
-        if (index != -1)
-        {
-            buttonStates[index] = val;
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+        if (index == -1) return false;
+        buttonStates[index] = val;
+        return true;
     }
 
     bool getButtonState(int input)
     {
         int index = getButtonIndex(input);
-        if (index != -1)
-        {
-            return buttonStates[index];
-        }
-        return false;
+        return index != -1 && buttonStates[index];
     }
 
     void resetButton(int input)
     {
         int index = getButtonIndex(input);
-        if (index != -1)
-        {
-            buttonStates[index] = false;
-        }
+        if (index != -1) buttonStates[index] = false;
     }
 
     void resetButtons()
     {
-        for (int i = 0; i < BUTTON_COUNT; i++)
-        {
-            buttonStates[i] = false;
-        }
+        for (int i = 0; i < BUTTON_COUNT; i++) buttonStates[i] = false;
     }
 
     void loadButtons()
     {
-        for (int i = 0; i < BUTTON_COUNT; i++)
-        {
-            BindWatcherI::addToFilter(buttons[i]);
-        }
+        for (int i = 0; i < BUTTON_COUNT; i++) BindWatcherI::addToFilter(binds::key[i]);
     }
 
     void checkBinds(bool await = false)
@@ -411,13 +420,17 @@ public:
         auto inputs = BindWatcherI::getInputs(await);
         for (const auto& input : inputs)
         {
-            setButtonState(input, true);
+            if (binds::capturing >= 0) binds::offerKey(input);
+            else setButtonState(input, true);
         }
     }
 
 private:
     bool buttonStates[BUTTON_COUNT] = {};
 } keybindings;
+
+static void pollGamepad();
+static void trackEffectClasses();
 
 class PauseManager
 {
@@ -464,7 +477,9 @@ public:
         {
             while (isPaused && !shouldAdvance)
             {
-                keybindings.checkBinds(true);
+                keybindings.checkBinds(false);
+                pollGamepad();
+                Sleep(1);
                 updateBinds();
             }
         }
@@ -475,6 +490,8 @@ public:
         isPaused = false;
         shouldAdvance = false;
     }
+
+    void stopAdvance() { shouldAdvance = false; }
 } pause_manager;
 
 class ReplayManager
@@ -494,8 +511,28 @@ public:
         return analyzer == in_analyzer;
     }
 
+    // Raw input stream for a peer. Entries are ReplayKeyData (uint32); the low
+    // 16 bits are believed to match RECFLG but that is unverified, hence the
+    // raw dump at capture time.
+    const uint32_t* peerBuffer(int idx) const
+    {
+        if (!manager || idx < 0 || idx > 5) return nullptr;
+        return manager->m_ReplayBuffer[idx].m_pBuffer;
+    }
+
+    // Read cursor for one of the 6 replay peers (0..2 = P1 side, 3..5 = P2).
+    // Returns false if the manager is not set yet.
+    bool peerReadHead(int idx, ReplayHead& out) const
+    {
+        if (!manager || idx < 0 || idx > 5) return false;
+        out = manager->m_ReplayBuffer[idx].m_ReadHead;
+        return true;
+    }
+
     void restoreReplayHead() const
     {
+        if (!game_state.checkModeReplay()) return;
+        
         for (int i = 0; i < 6; i++)
         {
             manager->m_ReplayBuffer[i].m_ReadHead = replayHead[i];
@@ -513,6 +550,19 @@ public:
                     peer.m_ReadHead.m_Count--;
             }
             peer.m_ReadHead.m_SolidPosition--;
+        }
+    }
+    
+    void saveBackup()
+    {
+        if (isTakeover)
+        {
+            reset();
+        }
+        isTakeover = true;
+        for (int i = 0; i < 6; i++)
+        {
+            replayHead[i] = manager->m_ReplayBuffer[i].m_ReadHead;
         }
     }
 
@@ -544,13 +594,13 @@ public:
         if (keybindings.getButtonState(keybindings.TAKEOVER_P1_BUTTON))
         {
             keybindings.resetButton(keybindings.TAKEOVER_P1_BUTTON);
-            analyzer = &asw_engine::get()->inputs[0];
+            toggleTakeover(&asw_engine::get()->inputs[0]);
         }
 
         if (keybindings.getButtonState(keybindings.TAKEOVER_P2_BUTTON))
         {
             keybindings.resetButton(keybindings.TAKEOVER_P2_BUTTON);
-            analyzer = &asw_engine::get()->inputs[3];
+            toggleTakeover(&asw_engine::get()->inputs[3]);
         }
 
         if (keybindings.getButtonState(keybindings.TOGGLE_LOAD_BUTTON))
@@ -561,25 +611,31 @@ public:
                 loadState = true;
             }
         }
-
-        if (keybindings.getButtonState(keybindings.TOGGLE_REWIND_BUTTON))
-        {
-            keybindings.resetButton(keybindings.TOGGLE_REWIND_BUTTON);
-            toggleRewind = !toggleRewind;
-        }
     }
 
     void reset()
     {
         isTakeover = false;
         loadState = false;
-        toggleRewind = false;
         analyzer = nullptr;
+    }
+
+    // Same side's key again = stop taking over. The replay then plays on by itself.
+    // With a rewind point, jump back to it first: from where takeover left off the
+    // fight no longer matches the recording, so the replay inputs would make no sense.
+    void toggleTakeover(asw_inputs* side)
+    {
+        if (analyzer != side)
+        {
+            analyzer = side;
+            return;
+        }
+        analyzer = nullptr;
+        if (isTakeover) loadState = true;
     }
 
     bool isTakeover = false;
     bool loadState = false;
-    bool toggleRewind = false;
     int roundCount = -1;
 } replay_manager;
 
@@ -597,8 +653,7 @@ public:
 
 class UeTracker
 {
-    Unreal::UObject* worldsets_actor = nullptr;
-    Unreal::FProperty* paused_prop = nullptr;
+    Unreal::AActor* paused = nullptr;
     bool renderingHooked = false;
 
     void hookFuncs()
@@ -618,29 +673,13 @@ class UeTracker
 
     void findProp()
     {
-        static auto input_class_name = Unreal::FName(STR("REDPlayerController_Battle"), Unreal::FNAME_Add);
-        static auto getworldsets_func_name = Unreal::FName(STR("K2_GetWorldSettings"), Unreal::FNAME_Add);
-
-        auto* input_actor = static_cast<Unreal::AActor*>(UObjectGlobals::FindFirstOf(input_class_name));
-        if (!input_actor) return;
-
-        auto* world_actor = input_actor->GetWorld();
-        if (!world_actor) return;
-
-        auto* getworldsets_func = world_actor->GetFunctionByNameInChain(getworldsets_func_name);
-        if (!getworldsets_func) return;
-
-        world_actor->ProcessEvent(getworldsets_func, &worldsets_actor);
-        if (!worldsets_actor) return;
-
-        paused_prop = worldsets_actor->GetPropertyByName(STR("PauserPlayerState"));
+        paused = (*UWorld::GWorld)->PersistentLevel->WorldSettings->PauserPlayerState;
     }
 
 public:
     void reset()
     {
-        worldsets_actor = nullptr;
-        paused_prop = nullptr;
+        paused = nullptr;
     }
 
     void setup()
@@ -653,10 +692,7 @@ public:
 
     bool isUePaused()
     {
-        if (!paused_prop) return false;
-        Unreal::AActor** val = static_cast<Unreal::AActor**>(paused_prop->ContainerPtrToValuePtr<
-            void>(worldsets_actor));
-        return (bool)val ? ((bool)*val) : false;
+        return paused != nullptr;
     }
 } tracker;
 
@@ -665,15 +701,33 @@ public:
 FrameBar the_bar;
 TensionOverlay tension_overlay;
 
+// Overlays (frame bar, hitboxes, tension) stay hidden from a new match load until its
+// first round starts, so they do not draw over the versus splash with the previous
+// fight's numbers. Training resets and wall breaks do not load a match, so they keep showing.
+static bool g_overlays_visible = true;
+// Loading screens (e.g. changing character from the training menu) keep the mode at
+// training but stop the battle update, so also require a battle update in the last 300 ms.
+static unsigned long long g_last_battle_update = 0;
+
 void hook_MatchStart(AREDGameState_Battle* GameState)
 {
+    g_overlays_visible = false;
     game_state.matchStarted = true;
     game_state.roundActive = false;
-    pause_manager.reset();
+    // New match (or a freshly loaded replay) -- let the next round call
+    // re-anchor the capture range.
+    g_anchor_set = false;
+    // A training position reset also lands here. Keep the hold frame on
+    // through it, so the user stays paused at the new position.
+    if (game_state.checkModeTraining()) pause_manager.stopAdvance();
+    else pause_manager.reset();
     tracker.reset();
     replay_manager.reset();
     tension_overlay.reset();
     // Combo menu is initialized once in on_unreal_init, not per-match
+
+    DrawTool::instance().matchStart();
+
 
     orig_MatchStart(GameState);
 }
@@ -682,6 +736,7 @@ void hook_AHUDPostRender(void* hud)
 {
     if (!game_state.checkMode())
     {
+        g_overlays_visible = false;
         orig_AHUDPostRender(hud);
         return;
     }
@@ -692,9 +747,12 @@ void hook_AHUDPostRender(void* hud)
     // Draw our overlays AFTER the game's HUD so we render on top
     if (DrawTool::instance().update(hud))
     {
-        if (ModMenu::instance().hitboxEnabled()) drawAllBoxes();
-        if (ModMenu::instance().barEnabled()) the_bar.draw();
-        tension_overlay.draw();
+        if (g_overlays_visible && GetTickCount64() - g_last_battle_update < 300)
+        {
+            if (ModMenu::instance().hitboxEnabled()) drawAllBoxes();
+            if (ModMenu::instance().barEnabled()) the_bar.draw();
+            tension_overlay.draw();
+        }
         ModMenu::instance().draw();
     }
 }
@@ -711,6 +769,24 @@ void hook_ACamUpdateCamera(void* cam, float DeltaTime)
     orig_ACamUpdateCamera(cam, DeltaTime);
 }
 
+// Gamepad: Back+Start toggles the menu, D-pad navigates. Feeds the same button
+// states the keyboard hook does, so the menu code does not know the difference.
+// ponytail: polls all 4 XInput slots every battle tick; DirectInput-only pads not covered.
+static void pollGamepad()
+{
+    // One merged mask across all pads, with triggers and left stick folded in (see binds::heldPadMask).
+    static WORD prev = 0;
+    const WORD now = binds::heldPadMask(), edge = now & ~prev;
+    prev = now;
+    if (!edge) return;
+    if (binds::capturing >= 0) { binds::offerPad(now); return; }
+    for (int a = 0; a < binds::COUNT; a++)
+    {
+        const WORD m = binds::pad[a];
+        if (m && (now & m) == m && (edge & m)) keybindings.setButtonIndex(a, true);
+    }
+}
+
 void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 {
     if (!game_state.checkMode())
@@ -718,36 +794,15 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         orig_UpdateBattle(GameState, DeltaTime);
         return;
     }
+    g_last_battle_update = GetTickCount64();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
 
-    keybindings.checkBinds(false);
+    pollGamepad();  // before anything reads button states this frame
+    trackEffectClasses();
     pause_manager.checkPause();
 
     if (game_state.checkModeReplay()) replay_manager.update();
-    else
-    {
-        if (keybindings.getButtonState(keybindings.TOGGLE_SAVE_BUTTON))
-        {
-            keybindings.resetButton(keybindings.TOGGLE_SAVE_BUTTON);
-            auto rollback = asw_rollback::get();
-            rollback->CurrentBackupDataIndex = 18;
-            orig_SaveBackup(rollback);
-        }
-        if (keybindings.getButtonState(keybindings.TOGGLE_LOAD_BUTTON))
-        {
-            keybindings.resetButton(keybindings.TOGGLE_LOAD_BUTTON);
-            auto rollback = asw_rollback::get();
-            rollback->CurrentBackupDataIndex = 0;
-            rollback->RollbackFrame = 1;
-            rollback->TotalRollbackFrames = 0;
-            auto backupData = rollback->BackupData[19];
-            orig_Rollback(rollback);
-            rollback->BackupData[19] = backupData;
-            rollback->RollbackFrame = 0;
-            rollback->TotalRollbackFrames = 0;
-        }
-    }
 
     if (ModMenu::instance().pauseType() == 0 && pause_manager.advancing()) return;
     if (ModMenu::instance().pauseType() == 1 && pause_manager.cinematicShouldAdvance()) return;
@@ -764,6 +819,48 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     keybindings.resetButtons();
 
     game_state.checkRound();
+
+    // Replay input buffers are one continuous ~36000-frame stream per side for
+    // the WHOLE match, including intro/menu frames (an intro skip is recorded
+    // like any other input), so index 0 is not round start. Capture the read
+    // cursors at BATTLE_START -- that is the per-round anchor needed to slice a
+    // single round's inputs out of the stream.
+    if (game_state.roundJustStarted)
+    {
+        game_state.roundJustStarted = false;
+        g_overlays_visible = true;
+        // Round call is the sync point: an armed stream begins here, and
+        // re-begins on every reset, so the dummy's inputs line up with the
+        // round rather than with when the user opened the menu.
+        recordings::streamOnRoundStart();
+        // Replay peers are one per player seat: 0 = P1, 1 = P2. (The 0-2 / 3-5
+        // grouping is asw_inputs' live/committed/backup triplets and does not
+        // apply here -- peers 2-5 stay empty in a 1v1 replay, which is why
+        // capturing from peer 3 produced nothing.)
+        ReplayHead p1{}, p2{};
+        if (game_state.checkModeReplay()
+            && replay_manager.peerReadHead(0, p1) && replay_manager.peerReadHead(1, p2))
+        {
+            auto* eng = asw_engine::get();
+            char dbg[256];
+            snprintf(dbg, sizeof(dbg),
+                "ROUND_START GameFrame=%d  P1 cur/cnt/solid=%u/%u/%u  P2=%u/%u/%u  anchored=%d",
+                eng ? eng->GameFrame : -1,
+                p1.m_Cursor, p1.m_Count, p1.m_SolidPosition,
+                p2.m_Cursor, p2.m_Count, p2.m_SolidPosition,
+                g_anchor_set ? 1 : 0);
+            COMBO_LOG(dbg);
+            // Anchor on the FIRST round call only. Later rounds must not move
+            // it, or pausing at the round-1 KO would capture nothing because
+            // round 2's anchor already sits past it.
+            if (!g_anchor_set)
+            {
+                g_round_anchor[0] = p1.m_Cursor;
+                g_round_anchor[1] = p2.m_Cursor;
+                g_anchor_set = true;
+            }
+        }
+    }
     if (game_state.resetting)
     {
         the_bar.reset();
@@ -775,7 +872,6 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (game_state.matchStarted)
     {
         game_state.matchStarted = false;
-        DrawTool::instance().initialize();
         tracker.setup();
     }
 
@@ -807,8 +903,97 @@ static bool is_ptr_in_game_module(const void* p)
     return v >= mod_start && v < mod_end;
 }
 
+// A replay buffer entry is run-length encoded, NOT one word per frame:
+//   low 16  = RECFLG flags
+//   high 16 = how many frames those flags are held
+// Verified live: peer 0's 825 entries sum to 3799 frames, which is exactly its
+// m_SolidPosition; peer 1's 310 entries sum to 3784, plus its m_Count of 15 =
+// 3799 as well. So the head fields are entry/frame counters, not both frames:
+//   m_Cursor        = current ENTRY index
+//   m_Count         = frames already consumed inside the current entry
+//   m_SolidPosition = absolute FRAME position
+// Taking the low half alone would collapse every hold to a single frame.
+std::vector<uint16_t> captureReplayInputs(int peer, uint32_t fromEntry,
+                                          uint32_t entryCount, uint32_t tailFrames)
+{
+    std::vector<uint16_t> out;
+    const uint32_t* buf = replay_manager.peerBuffer(peer);
+    if (!buf) { COMBO_LOG("capture: peer buffer null"); return out; }
+
+    char dbg[320];
+    std::string raw;
+    for (uint32_t i = 0; i < entryCount; i++)
+    {
+        const uint32_t w = buf[fromEntry + i];
+        if (i < 8) { char t[16]; snprintf(t, sizeof(t), "%08X ", w); raw += t; }
+
+        const uint16_t flags = static_cast<uint16_t>(w & 0xFFFF);
+        uint32_t hold = w >> 16;
+        // A zero-length run would silently drop an input; treat it as one frame.
+        if (hold == 0) hold = 1;
+        // Guard against a torn read producing an absurd run length.
+        if (hold > recordings::kFlagBuffer) hold = recordings::kFlagBuffer;
+        out.insert(out.end(), hold, flags);
+    }
+    // The entry playback is partway through contributes only the frames already
+    // consumed, otherwise the capture runs past where the user paused.
+    if (tailFrames)
+    {
+        const uint16_t flags =
+            static_cast<uint16_t>(buf[fromEntry + entryCount] & 0xFFFF);
+        out.insert(out.end(), tailFrames, flags);
+    }
+
+    snprintf(dbg, sizeof(dbg),
+             "capture peer=%d entries=%u tail=%u -> %zu frames  raw: %s",
+             peer, entryCount, tailFrames, out.size(), raw.c_str());
+    COMBO_LOG(dbg);
+    return out;
+}
+
+// Capture one side's inputs from the FIRST round call of the match up to
+// wherever playback has reached, so pausing at the round-1 KO yields the whole
+// round. Returns empty if not in a replay.
+std::vector<uint16_t> captureCurrentRound(int peer)
+{
+    std::vector<uint16_t> out;
+    if (!game_state.checkModeReplay()) { COMBO_LOG("capture: not a replay"); return out; }
+    ReplayHead head{};
+    if (!replay_manager.peerReadHead(peer, head)) { COMBO_LOG("capture: no head"); return out; }
+
+    const uint32_t from = g_round_anchor[peer];
+    if (head.m_Cursor < from) { COMBO_LOG("capture: cursor behind anchor"); return out; }
+    if (head.m_Cursor == from && head.m_Count == 0)
+    {
+        COMBO_LOG("capture: nothing since round start");
+        return out;
+    }
+    return captureReplayInputs(peer, from, head.m_Cursor - from, head.m_Count);
+}
+
 void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 {
+    // Menu open: swallow pad/keyboard so the D-pad drives the menu, not the character.
+    if (ModMenu::instance().isShowing()) recFlag = static_cast<RECFLG_ENUM>(0);
+
+    // Live stream: feed our own per-frame flags to the P2 (dummy) analyzer.
+    // asw_engine::inputs[0..2] belong to P1 and [3..5] to P2, so [3] is the
+    // dummy. One word per engine frame keeps this frame-exact -- the reason
+    // this exists rather than a virtual controller, which pushes on a wall
+    // clock and drifts whenever the game hitches.
+    if (recordings::streamActive())
+    {
+        if (auto* engine = asw_engine::get())
+        {
+            if (Analyzer == &engine->inputs[3])
+            {
+                const auto streamed = static_cast<RECFLG_ENUM>(recordings::streamNext());
+                orig_UpdateBattleInput(Analyzer, streamed);
+                return;
+            }
+        }
+    }
+
     if (!game_state.checkModeReplay() || !replay_manager.isAnalyzerSame(Analyzer))
     {
         orig_UpdateBattleInput(Analyzer, recFlag);
@@ -821,10 +1006,17 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
     // ready, fall through with the original recFlag — no crash, just no
     // live key-mapping override.
     const auto pad = game_state.getMainQuadrant();
-    if (is_battle_ptr == nullptr || system_red == nullptr
-        || system_red->m_BattleKey[pad] == nullptr)
+    if (!binds::use_mod_binds && (is_battle_ptr == nullptr || system_red == nullptr
+        || system_red->m_BattleKey[pad] == nullptr))
     {
         orig_UpdateBattleInput(Analyzer, recFlag);
+        return;
+    }
+
+    if (binds::use_mod_binds)
+    {
+        // Mod's own takeover binds: keyboard + XInput, independent of the game's key config.
+        orig_UpdateBattleInput(Analyzer, static_cast<RECFLG_ENUM>(binds::takeoverRecFlag()));
         return;
     }
 
@@ -848,21 +1040,175 @@ void hook_UpdateReplay(BattleReplayManager* Manager)
 {
     if (replay_manager.isAnalyzerSame(nullptr))
         orig_UpdateReplay(Manager);
+}
 
-    if (replay_manager.loadState)
+// Auto rewind point.  The engine owns all 20 BackupData slots, so instead of
+// keeping our own snapshot ring we simply re-place the single manual save point
+// on a timer.  Rewind depth is therefore "up to N seconds ago" rather than
+// arbitrary scrubbing, but it costs no extra memory and reuses the save/load
+// path that is already proven to work in replays.
+
+
+// ---- F9 effect repair -------------------------------------------------------
+// Every fight object (asw_entity) links one Unreal effect actor at +0x43C8, and
+// the actor links back to its owner at +0x668. F9 restores the fight objects but
+// not the actors. Online, the game's rollback tracks actors and cleans up after
+// re-simulating; offline that tracking is off. So after F9:
+//   - actors whose owner no longer links back to them are orphans (the stuck
+//     HC reticle, stacked FD): release them with the game's own steps
+//   - objects linking an actor that is gone or released get the link cleared,
+//     the way the game does when a link fails (avoids a dangling pointer)
+using funcFxRelease_t = void (*)(void*);
+funcFxRelease_t orig_FxRelease1 = nullptr;
+funcFxRelease_t orig_FxRelease2 = nullptr;
+static std::set<std::wstring> g_fx_classes;
+
+static void collectFightObjects(std::vector<uint8_t*>& out)
+{
+    auto* eng = asw_engine::get();
+    if (!eng) return;
+    const int n = (std::min)(eng->entity_count, 107);
+    for (int i = 0; i < n; i++)
+        if (auto* e = reinterpret_cast<uint8_t*>(eng->entities[i])) out.push_back(e);
+}
+
+// Each battle frame: remember the class of every linked effect actor, so F9 can list all of them.
+static void trackEffectClasses()
+{
+    static std::set<void*> seen;
+    std::vector<uint8_t*> objs;
+    collectFightObjects(objs);
+    for (auto* e : objs)
     {
-        replay_manager.loadState = false;
-        auto rollback = asw_rollback::get();
-        rollback->CurrentBackupDataIndex = 0;
-        rollback->RollbackFrame = 1;
-        rollback->TotalRollbackFrames = 0;
-        auto backupData = rollback->BackupData[19];
-        orig_Rollback(rollback);
-        rollback->BackupData[19] = backupData;
-        rollback->RollbackFrame = 0;
-        rollback->TotalRollbackFrames = 0;
-        replay_manager.restoreReplayHead();
+        auto* a = *reinterpret_cast<Unreal::UObject**>(e + 0x43C8);
+        if (!a) continue;
+        auto* cls = a->GetClassPrivate();
+        if (cls && seen.insert(cls).second) g_fx_classes.insert(cls->GetName());
     }
+}
+
+static void repairEffectsAfterLoad()
+{
+    if (!orig_FxRelease1 || !orig_FxRelease2 || g_fx_classes.empty()) return;
+    std::vector<uint8_t*> objs;
+    collectFightObjects(objs);
+    std::set<void*> linked;
+    for (auto* e : objs)
+        if (auto* a = *reinterpret_cast<void**>(e + 0x43C8)) linked.insert(a);
+
+    std::vector<Unreal::UObject*> actors;
+    for (const auto& name : g_fx_classes) UObjectGlobals::FindAllOf(name.c_str(), actors);
+
+    std::set<void*> usable;
+    int released = 0, cleared = 0;
+    for (auto* obj : actors)
+    {
+        auto* a = reinterpret_cast<uint8_t*>(obj);
+        if (a[0x432] & 0x80) continue;                          // already released
+        usable.insert(a);
+        if (*reinterpret_cast<void**>(a + 0x668) == nullptr) continue;  // not linked to a fight object
+        if (linked.count(a)) continue;                           // still owned
+        *reinterpret_cast<void**>(a + 0x668) = nullptr;          // same steps as the game's cleanup
+        a[0x432] |= 0x80;
+        using vfn_t = void (*)(void*, bool);
+        (*reinterpret_cast<vfn_t*>(*reinterpret_cast<uintptr_t*>(a) + 0x340))(a, true);
+        orig_FxRelease1(a);
+        orig_FxRelease2(a);
+        usable.erase(a);
+        released++;
+    }
+    for (auto* e : objs)
+    {
+        auto*& link = *reinterpret_cast<void**>(e + 0x43C8);
+        if (link && !usable.count(link))
+        {
+            link = nullptr;
+            e[0x5534] = 1;
+            cleared++;
+        }
+    }
+    COMBO_LOG("F9 effects: released " + std::to_string(released) + ", cleared " + std::to_string(cleared)
+              + ", tracked classes " + std::to_string(g_fx_classes.size()));
+}
+
+// ---- F9 DANGER banner sync ---------------------------------------------------
+// The Negative Penalty DANGER banner is driven by two game calls, show(side, 2, 0)
+// and hide(side), made only while the penalty value changes in normal play. F9
+// restores the value without either call, so the banner could stay up. After F9,
+// compare the restored value with the game's own threshold and call the right one.
+using funcDangerShow_t = void (*)(int side, int mode, int param);
+using funcDangerHide_t = void (*)(int side);
+funcDangerShow_t orig_DangerShow = nullptr;
+funcDangerHide_t orig_DangerHide = nullptr;
+
+static void syncDangerBanner()
+{
+    if (!orig_DangerShow || !orig_DangerHide) return;
+    auto* eng = asw_engine::get();
+    if (!eng) return;
+    for (int side = 0; side < 2; side++)
+    {
+        auto* e = reinterpret_cast<const uint8_t*>(eng->players[side].entity);
+        if (!e) continue;
+        const int value = *reinterpret_cast<const int*>(reinterpret_cast<const uint8_t*>(eng) + side * 0x198 + 0x170);
+        const int threshold = *reinterpret_cast<const int16_t*>(e + 0x9CB6) * 100;  // same check as the game
+        if (value > threshold) orig_DangerShow(side, 2, 0);
+        else orig_DangerHide(side);
+    }
+}
+
+static void placeRewindPoint()
+{
+    auto rollback = asw_rollback::get();
+    if (!rollback) return;
+    rollback->CurrentBackupDataIndex = 18;
+    orig_SaveBackup(rollback);
+    if (game_state.checkModeReplay()) replay_manager.saveBackup();
+}
+
+void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
+{
+    keybindings.checkBinds(false);
+
+    if (game_state.checkMode())
+    {
+        // No automatic rewind point. A timer that re-saved every N seconds
+        // destroyed the user's manual F6 point before they could return to it
+        // (F9 would only go back as far as the last automatic save), and in a
+        // replay it re-snapshotted all six read heads and reset takeover state
+        // on that same timer.
+
+        if (keybindings.getButtonState(keybindings.TOGGLE_SAVE_BUTTON))
+        {
+            keybindings.resetButton(keybindings.TOGGLE_SAVE_BUTTON);
+            placeRewindPoint();
+        }
+        if (replay_manager.loadState || (!game_state.checkModeReplay()
+            && keybindings.getButtonState(keybindings.TOGGLE_LOAD_BUTTON)))
+        {
+            keybindings.resetButton(keybindings.TOGGLE_LOAD_BUTTON);
+            replay_manager.loadState = false;
+            auto rollback = asw_rollback::get();
+            rollback->CurrentBackupDataIndex = 0;
+            rollback->RollbackFrame = 1;
+            rollback->TotalRollbackFrames = 0;
+            auto backupData = rollback->BackupData[19];
+            orig_Rollback(rollback);
+            if (orig_EffectCleanupA && orig_EffectCleanupB)
+            {
+                orig_EffectCleanupA(rollback);
+                orig_EffectCleanupB(rollback);
+            }
+            repairEffectsAfterLoad();
+            syncDangerBanner();
+            rollback->BackupData[19] = backupData;
+            rollback->RollbackFrame = 0;
+            rollback->TotalRollbackFrames = 0;
+            replay_manager.restoreReplayHead();
+        }
+    }
+
+    orig_UpdateOnPreTick(pThis, DeltaSeconds);
 }
 
 /* Mod Definition */
@@ -874,6 +1220,7 @@ public:
     PLH::x64Detour* UpdateBattleInput_Detour;
     PLH::x64Detour* UpdateSystem_Detour;
     PLH::x64Detour* UpdateReplay_Detour;
+    PLH::x64Detour* UpdateOnPreTick_Detour;
 
     StriveFrameData()
         : CppUserModBase()
@@ -937,6 +1284,13 @@ public:
                                                  reinterpret_cast<uint64_t*>(&orig_UpdateReplay));
         UpdateReplay_Detour->hook();
 
+        const uint64_t UpdateOnPreTick_Addr = sigscan::get().scan(
+            "\xE8\x00\x00\x00\x00\x33\xED\xC6\x86",
+            "x????xxxx") - 0x45;
+        UpdateOnPreTick_Detour = new PLH::x64Detour(UpdateOnPreTick_Addr, reinterpret_cast<uint64_t>(&hook_UpdateOnPreTick),
+                                                 reinterpret_cast<uint64_t*>(&orig_UpdateOnPreTick));
+        UpdateOnPreTick_Detour->hook();
+
         const uintptr_t GetGameMode_Addr = sigscan::get().scan("\x0F\xB6\x81\xF0\x02\x00\x00\xC3", "xxxxxxxx");
         orig_GetGameMode = reinterpret_cast<funcGetGameMode_t>(GetGameMode_Addr);
 
@@ -954,6 +1308,52 @@ public:
             "\x48\x89\x5C\x24\x00\x48\x89\x6C\x24\x00\x41\x56\x48\x83\xEC\x00\x8B\x81",
             "xxxx?xxxx?xxxxx?xx");
         orig_Rollback = reinterpret_cast<funcRollback_t>(Rollback_Addr);
+
+        // Netplay battle loop, last re-simulated frame:
+        //   call GetRollback ; mov rcx,rax ; call CleanupA ; call GetRollback ; mov rcx,rax ; call CleanupB ; call X ; test al,al
+        // Optional: if the pattern moves in a game update, F9 still works, effects just are not cleaned.
+        try
+        {
+            const uintptr_t hit = sigscan::get().scan(
+                "\xE8\x00\x00\x00\x00\x48\x8B\xC8\xE8\x00\x00\x00\x00\xE8\x00\x00\x00\x00\x48\x8B\xC8\xE8\x00\x00\x00\x00\xE8\x00\x00\x00\x00\x84\xC0",
+                "x????xxxx????x????xxxx????x????xx");
+            const auto rel = [](uintptr_t call) { return call + 5 + *reinterpret_cast<int32_t*>(call + 1); };
+            if (rel(hit) == rel(hit + 13))  // both getters must be the same function
+            {
+                orig_EffectCleanupA = reinterpret_cast<funcEffectCleanup_t>(rel(hit + 8));
+                orig_EffectCleanupB = reinterpret_cast<funcEffectCleanup_t>(rel(hit + 21));
+                const auto* body = reinterpret_cast<const uint8_t*>(orig_EffectCleanupA);
+                for (int i = 0; i < 0x400; i++)
+                {
+                    if (body[i] == 0x48 && body[i + 1] == 0x8B && body[i + 2] == 0x4B && body[i + 3] == 0x48 && body[i + 4] == 0xE8
+                        && body[i + 9] == 0x48 && body[i + 10] == 0x8B && body[i + 11] == 0x4B && body[i + 12] == 0x48 && body[i + 13] == 0xE8)
+                    {
+                        orig_FxRelease1 = reinterpret_cast<funcFxRelease_t>(rel(reinterpret_cast<uintptr_t>(body + i + 4)));
+                        orig_FxRelease2 = reinterpret_cast<funcFxRelease_t>(rel(reinterpret_cast<uintptr_t>(body + i + 13)));
+                        break;
+                    }
+                }
+            }
+        }
+        catch (...) {}
+
+        // DANGER banner: the game's Negative Penalty check, which calls show(side, 2, 0) or hide(side).
+        //   movsx eax,word[rdi+9CB6] ; test bpl,bpl ; jne ; imul edx,eax,64 ; cmp ecx,edx ; jle ;
+        //   movzx ecx,[rdi+4C] ; xor r8d,r8d ; lea edx,[r8+2] ; call SHOW
+        //   ... imul eax,eax,64 ; cmp ecx,eax ; jg ; movzx ecx,[rdi+4C] ; call HIDE
+        // Optional: if either moves in a game update, F9 just skips the banner sync.
+        try
+        {
+            const auto rel = [](uintptr_t call) { return call + 5 + *reinterpret_cast<int32_t*>(call + 1); };
+            const uintptr_t show = sigscan::get().scan(
+                "\x0F\xBF\x87\xB6\x9C\x00\x00\x40\x84\xED\x75\x00\x6B\xD0\x64\x3B\xCA\x7E\x00\x0F\xB6\x4F\x4C\x45\x33\xC0\x41\x8D\x50\x02\xE8",
+                "xxxxxxxxxxx?xxxxxx?xxxxxxxxxxxx");
+            const uintptr_t hide = sigscan::get().scan(
+                "\x6B\xC0\x64\x3B\xC8\x7F\x00\x0F\xB6\x4F\x4C\xE8", "xxxxxx?xxxxx");
+            orig_DangerShow = reinterpret_cast<funcDangerShow_t>(rel(show + 0x1E));
+            orig_DangerHide = reinterpret_cast<funcDangerHide_t>(rel(hide + 0xB));
+        }
+        catch (...) {}
 
         const uintptr_t GetReplayManager_Addr = sigscan::get().scan(
             "\x48\x8D\x05\x00\x00\x00\x00\xC3\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\x48\x63\xC1",
@@ -1026,6 +1426,8 @@ public:
         auto working_dir = UE4SSProgram::get_program().get_working_directory();
         ComboLog::instance().init(working_dir);
         COMBO_LOG("StriveLabs loaded");
+        COMBO_LOG(orig_FxRelease1 ? "effect repair: found" : "effect repair: NOT found");
+        COMBO_LOG(orig_DangerHide ? "danger sync: found" : "danger sync: NOT found");
     }
 };
 

@@ -78,11 +78,39 @@ bool writeSlot(int slot_index, const std::vector<uint16_t>& frames,
 bool exportSlot(int slot_index, const std::filesystem::path& path,
                 std::wstring& error);
 
+// Write an arbitrary frame array as notation (used by replay capture, which
+// never touches a MemorySlot).
+bool writeFramesToFile(const std::vector<uint16_t>& frames,
+                       const std::filesystem::path& path,
+                       int32_t direction, std::wstring& error);
+
 // Short slot summary for the menu.
 std::wstring describeSlot(int slot_index);
 
 // Self-describing filename stem, e.g. "110f_6_6_2S_2H". Empty if slot is empty.
 std::string suggestName(int slot_index);
+
+// ---- live stream -----------------------------------------------------------
+// Feeds inputs straight into the engine one frame at a time via the
+// UpdateBattleInput hook, instead of writing a MemorySlot. That bypasses the
+// 2700-frame slot buffer entirely, so a stream can be any length, and it stays
+// frame-exact because the engine pulls one word per frame it actually
+// processes (unlike a virtual controller, which pushes on a wall clock and
+// drifts on any hitch).
+// Arm a stream: it holds at frame 0 until the round-call event fires
+// (BOM_EVENT_BATTLE_START), so playback lines up with the round starting rather
+// than with whenever the menu button was pressed. Replay input buffers include
+// intro/menu frames, so the event is the only reliable anchor.
+void     streamArm(std::vector<uint16_t> frames);
+void     streamOnRoundStart();      // call when BATTLE_START fires
+bool     streamArmed();
+void     streamStart(std::vector<uint16_t> frames);   // start immediately
+void     streamStop();
+bool     streamActive();
+// Next frame's flags, or 0 when the stream is finished. Advances the cursor.
+uint16_t streamNext();
+size_t   streamPos();
+size_t   streamLen();
 
 // ---- files -----------------------------------------------------------------
 std::vector<std::filesystem::path> scanDir(const std::filesystem::path& dir);

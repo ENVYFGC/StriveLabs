@@ -32,8 +32,10 @@ struct TensionOptions {
   bool show_adv_change;
   PlayerDisplayMode bursts;
   PlayerDisplayMode pulses;
+  PlayerDisplayMode penalties;
   PlayerDisplayMode current_tension;
   PlayerDisplayMode wall_damage;
+  bool right_side;  // mirror the box to the other side of the frame bar anchor
 };
 
 // Positions for the two repositionable overlays.
@@ -89,6 +91,7 @@ public:
   void update(PressedKeys data);
   void draw();
 
+  bool isShowing() const { return is_showing; }
   bool barEnabled() const;
   bool hitboxEnabled() const;
   bool fadeEnabled() const;
@@ -97,6 +100,7 @@ public:
   bool dashEnabled() const;
   int pauseType() const;
   int delayAmount() const;
+  // 0 = off, else frames between automatic rewind points.
   bool crossupEnabled() const;
   TensionOptions getTensionOptions() const;
   LayoutPositions getLayoutPositions() const;

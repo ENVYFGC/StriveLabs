@@ -12,7 +12,8 @@ const sigscan &sigscan::get()
 
 sigscan::sigscan(const char *name)
 {
-	const auto module = GetModuleHandleA(name);
+	auto module = GetModuleHandleA(name);
+	if (module == nullptr) module = GetModuleHandleA(nullptr);  // Game Pass build is GGST-WinGDK-Shipping.exe
 	if (module == nullptr)
 		throw std::runtime_error("Module not found");
 

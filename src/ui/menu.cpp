@@ -1,6 +1,15 @@
 #include "menu.h"
+#include "keybinds.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 #include "recordings.h"
 #include "combo_log.h"
+
+// Defined in dllmain.cpp: pulls this round's inputs for a side out of the
+// replay buffer. Replay peers are one per seat: 0 = P1, 1 = P2.
+std::vector<uint16_t> captureCurrentRound(int peer);
 
 #include <vector>
 #include <string>
@@ -122,20 +131,26 @@ namespace Settings {
       OptionData{L"Tension Pulse:", 4,
                  {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
       "tension_pulse", 0};
+  SettingsEntry TENSION_PENALTY = SettingsEntry{
+      OptionData{L"Tension Penalty:", 4,
+                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+      "tension_penalty", 0};
+  SettingsEntry WALL_DAMAGE = SettingsEntry{
+      OptionData{L"Wall Damage:", 4,
+                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+      "wall_damage", 0};
+  SettingsEntry TENSION_SIDE = SettingsEntry{
+      OptionData{L"Overlay Side:", 2, {L"<    Left    >", L"<   Right    >"}},
+      "tension_side", 0};
   SettingsEntry TENSION_CURRENT = SettingsEntry{
       OptionData{L"Tension Now:", 4,
                  {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
       "tension_current", 0};
-  SettingsEntry TENSION_WALL_DAMAGE = SettingsEntry{
-      OptionData{L"Wall Damage:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
-      "tension_wall_damage", 3};
-  std::array<SettingsEntry *, 17> settings = {
+  std::array<SettingsEntry *, 19> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &PAUSE_TYPE, &DELAY_AMOUNT, &CROSSUP_ENABLED,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
-      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_CURRENT,
-      &TENSION_WALL_DAMAGE,
+      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE,
   };
 
   // Layout float settings
@@ -235,6 +250,8 @@ namespace Settings {
         }
       }
 
+      if (binds::loadLine(key, val_str)) continue;
+
       {
         int index = floatIndexById(key);
         if (index != -1) {
@@ -265,6 +282,7 @@ namespace Settings {
     for (auto &entry : float_settings) {
       configFile << entry->id_ << "=" << formatConfigFloat(entry->value) << "\n";
     }
+    binds::save(configFile);
     configFile.close();
     RC::Output::send<LogLevel::Verbose>(STR("Saved config file\n"));
   }
@@ -311,7 +329,7 @@ namespace {
   constexpr SectionDef SECTIONS[] = {
     {L"-- DISPLAY --",        0,  6},
     {L"-- TIMING & INPUT --", 6,  9},
-    {L"-- TENSION --",        9, 17},
+    {L"-- TENSION --",        9, 19},   // settings has 19 entries; end is exclusive
   };
   constexpr size_t SECTION_COUNT = sizeof(SECTIONS) / sizeof(SECTIONS[0]);
 
@@ -326,11 +344,13 @@ namespace {
     LayoutDetail,
     LayoutMenu,
     Recordings,
+    Keybinds,
+    TakeoverBinds,
   };
 
   // ---- Recordings page state ----------------------------------------------
   // Rows: 0 Back | 1 File | 2 Slot | 3 Side | 4 Load
-  constexpr size_t RECORDINGS_ROW_COUNT = 5;
+  constexpr size_t RECORDINGS_ROW_COUNT = 7;
   // Rows: 0 Slot | 1 Save | 2 File | 3 Side | 4 Load
 
   std::vector<std::filesystem::path> g_rec_files;
@@ -377,6 +397,41 @@ namespace {
     if (!recordings::exportSlot(g_rec_slot, path, err)) { g_rec_status = err; return; }
     g_rec_status = L"saved " + name;
     refreshRecordingFiles();
+  }
+
+  // Feed the selected file to the dummy through the input hook instead of a
+  // slot: no 2700-frame ceiling, and still frame-exact.
+  // Pull the opponent's inputs for the current replay round straight out of the
+  // replay buffer and save them as a .txt, ready to stream at the dummy.
+  void captureFromReplay() {
+    auto frames = captureCurrentRound(1);          // replay peer 1 = P2 seat
+    if (frames.empty()) { g_rec_status = L"capture failed - see combo_log"; return; }
+    auto dir = Settings::recordingsDir();
+    char stamp[32] = "";
+    { const std::time_t t = std::time(nullptr); std::tm tm{};
+      if (localtime_s(&tm, &t) == 0) std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H%M%S", &tm); }
+    auto path = dir / (std::string(stamp[0] ? stamp : "capture") + "_replay_"
+                       + std::to_string(frames.size()) + "f.txt");
+    std::wstring err;
+    if (!recordings::writeFramesToFile(frames, path, recordings::kDirLeft, err)) {
+      g_rec_status = err; return;
+    }
+    g_rec_status = L"captured " + std::to_wstring(frames.size()) + L"f from replay";
+    refreshRecordingFiles();
+  }
+
+  void streamSelectedRecording() {
+    if (recordings::streamActive() || recordings::streamArmed()) {
+      recordings::streamStop();
+      g_rec_status = L"stream stopped";
+      return;
+    }
+    if (g_rec_files.empty()) { g_rec_status = L"no .txt files found"; return; }
+    auto parsed = recordings::parseFile(g_rec_files[g_rec_file_idx], g_rec_side);
+    if (!parsed.ok()) { g_rec_status = parsed.error; return; }
+    const size_t n = parsed.frames.size();
+    recordings::streamArm(std::move(parsed.frames));
+    g_rec_status = L"armed " + std::to_wstring(n) + L"f - starts on round call";
   }
 
   void loadSelectedRecording() {
@@ -426,6 +481,8 @@ namespace {
     {MenuPage::Tension, L"Tension"},
     {MenuPage::Layout, L"Layout"},
     {MenuPage::Recordings, L"Recordings"},
+    {MenuPage::Keybinds, L"Keybinds"},
+    {MenuPage::TakeoverBinds, L"Takeover Binds"},
   };
   constexpr size_t ROOT_PAGE_COUNT = sizeof(ROOT_PAGES) / sizeof(ROOT_PAGES[0]);
 
@@ -574,6 +631,8 @@ namespace {
       case MenuPage::LayoutDetail:  return L"-- DETAIL PANEL --";
       case MenuPage::LayoutMenu:    return L"-- MOD MENU --";
       case MenuPage::Recordings:    return L"-- RECORDINGS --";
+      case MenuPage::Keybinds:      return L"-- KEYBINDS --";
+      case MenuPage::TakeoverBinds: return L"-- TAKEOVER BINDS --";
     }
     return L"-- MENU --";
   }
@@ -615,6 +674,8 @@ namespace {
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
       case MenuPage::LayoutMenu:    return LAYOUT_MENU_ROW_COUNT + 1;
       case MenuPage::Recordings:    return RECORDINGS_ROW_COUNT + 1;
+      case MenuPage::Keybinds:      return binds::COUNT + 1;
+      case MenuPage::TakeoverBinds: return binds::G_COUNT + 2;
     }
     return ROOT_PAGE_COUNT;
   }
@@ -632,6 +693,37 @@ namespace {
   constexpr double DESC_BLOCK_H = DESC_LINES * DESC_LINE_H + 10.0; // +padding below
 
   constexpr double CREDIT_LINE_H = 28.0; // extra height reserved for the WistfulHopes credit footer
+
+  // Bottom-right logo watermark, drawn inside the panel under the text.
+  constexpr int LOGO_SIZE = 320;
+  constexpr int LOGO_PAD = 12;
+  constexpr float LOGO_OPACITY = 0.70f;
+  Unreal::UObject* g_logo = nullptr;
+  bool g_logo_tried = false;
+  // Loads ue4ss/StriveLabs_logo.png once through the engine's own PNG importer and roots it against GC.
+  Unreal::UObject* logoTexture(Unreal::UObject* world_context) {
+    if (g_logo || g_logo_tried || !world_context) return g_logo;
+    g_logo_tried = true;
+    auto* lib = UObjectGlobals::StaticFindObject<Unreal::UObject*>(nullptr, nullptr, STR("/Script/Engine.Default__KismetRenderingLibrary"));
+    if (!lib) return nullptr;
+    static auto fn_name = Unreal::FName(STR("ImportFileAsTexture2D"), Unreal::FNAME_Add);
+    auto* fn = lib->GetFunctionByNameInChain(fn_name);
+    if (!fn) return nullptr;
+    struct { Unreal::UObject* WorldContextObject; Unreal::FString Filename; Unreal::UObject* ReturnValue; } params{
+        world_context, Unreal::FString((Settings::WORKING_DIRECTORY / "StriveLabs_logo.png").wstring().c_str()), nullptr};
+    lib->ProcessEvent(fn, &params);
+    if (params.ReturnValue) {
+      // Root it against GC. The shipped UE4SS.dll exports UObject::SetRootSet as a function, while the
+      // headers we build against inline it through FUObjectArray::IndexToObject, which that dll does not
+      // export. Resolve the export by name so the mod loads on the shipped UE4SS.
+      using SetRootSetFn = void (*)(Unreal::UObject*);
+      static auto set_root = reinterpret_cast<SetRootSetFn>(
+          GetProcAddress(GetModuleHandleA("UE4SS.dll"), "?SetRootSet@UObject@Unreal@RC@@QEAAXXZ"));
+      if (set_root) set_root(params.ReturnValue);
+      g_logo = params.ReturnValue;
+    }
+    return g_logo;
+  }
 
   double computePageHeight(MenuPage page) {
     double base = PANEL_PADDING_TOP + PANEL_PADDING_BOTTOM + OPTION_HEIGHT + TITLE_BOTTOM_MARGIN +
@@ -686,6 +778,9 @@ void ModMenu::update(PressedKeys data) {
   }
 
   if (!is_showing) return;
+
+  if (binds::consumeDirty()) Settings::saveConfig();
+  if (binds::capturing >= 0) return;  // waiting for a key/button; inputs go to the capture
 
   const auto page = static_cast<MenuPage>(current_page);
 
@@ -750,8 +845,27 @@ void ModMenu::update(PressedKeys data) {
       case 4:                                   // Load file -> slot
         loadSelectedRecording();
         break;
+      case 5:                                   // Stream file -> dummy
+        streamSelectedRecording();
+        break;
+      case 6:                                   // Capture opponent from replay
+        captureFromReplay();
+        break;
       default: break;
     }
+    return;
+  }
+
+  if (page == MenuPage::Keybinds) {
+    if ((data.rotate_left || data.rotate_right) && local_idx < binds::COUNT)
+      binds::beginCapture(static_cast<int>(local_idx));
+    return;
+  }
+
+  if (page == MenuPage::TakeoverBinds) {
+    if (!(data.rotate_left || data.rotate_right)) return;
+    if (local_idx == 0) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
+    else if (local_idx - 1 < binds::G_COUNT) binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - 1));
     return;
   }
 
@@ -828,6 +942,14 @@ void ModMenu::draw() {
   tool.drawRect(menu_left, menu_top, MENU_WIDTH, menu_height, PANEL_BG);
   // Top accent line
   tool.drawRect(menu_left, menu_top, MENU_WIDTH, 1.0, BORDER_ACCENT);
+  // Logo watermark, bottom-right, under the text
+  if (auto* logo = logoTexture(tool.hud())) {
+    const int size = static_cast<int>(std::min<double>(LOGO_SIZE, menu_height - 2 * LOGO_PAD));
+    tool.drawTexture(logo,
+                     static_cast<int>(menu_left + MENU_WIDTH) - size - LOGO_PAD,
+                     static_cast<int>(menu_top + menu_height) - size - LOGO_PAD,
+                     size, size, LOGO_OPACITY);
+  }
 
   double cy = menu_top + PANEL_PADDING_TOP;
   // Accent mark next to title
@@ -890,6 +1012,11 @@ void ModMenu::draw() {
       {L"Player Side",                 g_rec_side == recordings::kDirLeft
                                            ? L"<     2P     >" : L"<     1P     >"},
       {L"Load into Game's Slot " + slot_no, L">>  load"},
+      {L"Stream to Dummy",             (recordings::streamActive() || recordings::streamArmed())
+                                           ? (L">>  stop  (" + std::to_wstring(recordings::streamPos())
+                                              + L"/" + std::to_wstring(recordings::streamLen()) + L")")
+                                           : std::wstring(L">>  start  (no length limit)")},
+      {L"Capture Opponent (replay)",   L">>  this round -> .txt"},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
@@ -925,6 +1052,54 @@ void ModMenu::draw() {
       tool.drawOutlinedText(label_left, cy + 8.0, FString(relevant.title), LABEL_SCALE);
       tool.drawOutlinedText(value_left, cy + 8.0,
                             FString(relevant.values[Settings::settings[settings_idx]->value]), VALUE_SCALE);
+      cy += OPTION_HEIGHT + OPTION_SPACING;
+    }
+    return;
+  }
+
+  if (page == MenuPage::Keybinds) {
+    for (size_t i = 0; i < binds::COUNT; i++) {
+      const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
+      if (sel) {
+        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
+        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
+        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
+      }
+      const std::wstring val = (binds::capturing == static_cast<int>(i))
+          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
+          : binds::keyName(binds::key[i]) + L"  |  " + binds::padName(binds::pad[i]);
+      tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::LABELS[i]), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
+      cy += OPTION_HEIGHT + OPTION_SPACING;
+    }
+    return;
+  }
+
+  if (page == MenuPage::TakeoverBinds) {
+    {
+      const bool sel = (cursor_position == 1);
+      if (sel) {
+        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
+        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
+        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
+      }
+      tool.drawOutlinedText(label_left, cy + 8.0, FString(L"Use these binds in takeover"), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0,
+                            FString(binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >"), VALUE_SCALE);
+      cy += OPTION_HEIGHT + OPTION_SPACING;
+    }
+    for (size_t i = 0; i < binds::G_COUNT; i++) {
+      const bool sel = (static_cast<size_t>(cursor_position) == i + 2);
+      if (sel) {
+        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
+        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
+        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
+      }
+      const std::wstring val = (binds::capturing == binds::GAME_BASE + static_cast<int>(i))
+          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
+          : binds::keyName(binds::gkey[i]) + L"  |  " + binds::padName(binds::gpad[i]);
+      tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::G_LABELS[i]), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
       cy += OPTION_HEIGHT + OPTION_SPACING;
     }
     return;
@@ -1037,8 +1212,10 @@ TensionOptions ModMenu::getTensionOptions() const {
       static_cast<bool>(Settings::TENSION_ADV_CHANGE.value),
       static_cast<PlayerDisplayMode>(Settings::TENSION_BURST.value),
       static_cast<PlayerDisplayMode>(Settings::TENSION_PULSE.value),
+      static_cast<PlayerDisplayMode>(Settings::TENSION_PENALTY.value),
       static_cast<PlayerDisplayMode>(Settings::TENSION_CURRENT.value),
-      static_cast<PlayerDisplayMode>(Settings::TENSION_WALL_DAMAGE.value),
+      static_cast<PlayerDisplayMode>(Settings::WALL_DAMAGE.value),
+      Settings::TENSION_SIDE.value == 1,
   };
 }
 

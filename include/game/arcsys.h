@@ -13,9 +13,24 @@ struct SimpleFVector {
 
 class AGameState : public RC::Unreal::AActor {};
 
+class AWorldSettings : public RC::Unreal::AActor
+{
+public:
+  FIELD(0x378, AActor*, PauserPlayerState);
+};
+
+class ULevel : public RC::Unreal::UObject
+{
+public:
+  FIELD(0x240, AWorldSettings*, WorldSettings);
+};
+
 class UWorld : public RC::Unreal::UObject {
 public:
+  FIELD(0x30, ULevel*, PersistentLevel);
   FIELD(0x130, AGameState*, GameState);
+
+  static UWorld** GWorld;
 };
 
 class AREDGameState_Battle : public AGameState {
@@ -30,12 +45,21 @@ public:
 class asw_rollback
 {
 public:
+  // Element stride is 0x8750, read out of the game's own indexing code rather
+  // than inferred -- both SaveBackup and Rollback compute the slot address as
+  //     imul rsi,rax,00008750 ; add rsi,[rcx+10]
+  // The struct was 0x8740 here, so BackupData[i] addressed 0x10*i bytes low.
+  // At i=19 that is 0xB0 short of the real slot, which is what made the
+  // save-state copy in the rewind path read and write across a slot boundary.
   struct backup_data
   {
     FIELD(0x0, bool, bSet);
 
-    char pad[0x8740];
+    char pad[0x8750];
   };
+  static_assert(sizeof(backup_data) == 0x8750,
+                "backup_data must match the engine's 0x8750 element stride; "
+                "BackupData[i] indexing depends on it");
   
   static asw_rollback *get();
   
@@ -367,8 +391,7 @@ public:
   FIELD(0x3D4, int, scale_z);
   FIELD(0x4D0, int, vel_x);
   FIELD(0x4D4, int, vel_y);
-  // GGST Community CT v3 verified this as OBJ_CCharBase::m_WorldSideBreakPoint.
-  FIELD(0x4D8, int, wall_damage_point);
+  FIELD(0x4D8, int, gravity);
   FIELD(0x510, int, pushbox_front_offset);
   FIELD(0x758, atk_param, atk_param_hit);
   FIELD(0x798, int, activation_range_x_max);

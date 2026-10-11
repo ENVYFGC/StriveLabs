@@ -18,35 +18,37 @@ DrawTool &DrawTool::instance() {
 }
 
 Unreal::UObject *getFont() {
+  // The engine font never unloads. Search the object list once, not on every match start or reset.
+  static Unreal::UObject *cached = nullptr;
+  if (cached) return cached;
   static auto ufont_class_name = Unreal::FName(STR("Font"), Unreal::FNAME_Add);
   std::vector<RC::Unreal::UObject *> all_fonts;
   UObjectGlobals::FindAllOf(ufont_class_name, all_fonts);
   for (auto *font : all_fonts) {
     if (font->GetName() == L"RobotoDistanceField") {
-      return font;
+      return cached = font;
     }
   }
   return nullptr;
 }
 
-void DrawTool::initialize() {
+void DrawTool::updateRefs()
+{
+  if (!ref_hud) return;
   valid = false;
-
-  static auto hud_class_name = Unreal::FName(STR("REDHUD_Battle"), Unreal::FNAME_Add);
+  
   static auto hud_drawrect_func_name = Unreal::FName(STR("DrawRect"), Unreal::FNAME_Add);
   static auto hud_drawtext_func_name = Unreal::FName(STR("DrawText"), Unreal::FNAME_Add);
   static auto hud_drawline_func_name = Unreal::FName(STR("DrawLine"), Unreal::FNAME_Add);
+  static auto hud_drawtexture_func_name = Unreal::FName(STR("DrawTexture"), Unreal::FNAME_Add);
   static auto hud_project_func_name = Unreal::FName(STR("Project"), Unreal::FNAME_Add);
   static auto hud_getplayer_func_name = Unreal::FName(STR("GetOwningPlayerController"), Unreal::FNAME_Add);
   static auto player_getsize_func_name = Unreal::FName(STR("GetViewportSize"), Unreal::FNAME_Add);
 
-  ref_hud = UObjectGlobals::FindFirstOf(hud_class_name);
-  if (!ref_hud)
-    return;
-
   ref_drawrect = ref_hud->GetFunctionByNameInChain(hud_drawrect_func_name);
   ref_drawtext = ref_hud->GetFunctionByNameInChain(hud_drawtext_func_name);
   ref_drawline = ref_hud->GetFunctionByNameInChain(hud_drawline_func_name);
+  ref_drawtexture = ref_hud->GetFunctionByNameInChain(hud_drawtexture_func_name);  // optional: logo only
   ref_project = ref_hud->GetFunctionByNameInChain(hud_project_func_name);
   Unreal::UFunction *getplayer_func = ref_hud->GetFunctionByNameInChain(hud_getplayer_func_name);
   if (!ref_drawrect || !ref_drawtext || !getplayer_func || !ref_project || !ref_drawline)
@@ -69,8 +71,23 @@ void DrawTool::initialize() {
 }
 
 bool DrawTool::update(void *actual_hud) {
-  if (!valid || actual_hud != ref_hud)
+  if (actual_hud != ref_hud)
+  {
+    valid = false;
+    
+    if (matchStarted)
+    {
+      matchStarted = false;
+      
+      ref_hud = (UObject *)actual_hud;
+      updateRefs();
+    }
+  }
+  
+  if (!valid)
+  {
     return false;
+  }
 
   DrawParams::Size size_data;
   ref_player->ProcessEvent(ref_getsize, &size_data);

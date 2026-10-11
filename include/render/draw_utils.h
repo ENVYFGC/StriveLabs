@@ -129,6 +129,8 @@ namespace DrawParams {
 
 class DrawTool {
   bool valid = false;
+  bool matchStarted = false;
+  
   Unreal::UObject *ref_hud = nullptr;
   Unreal::UObject *ref_player = nullptr;
   Unreal::UObject *ref_font = nullptr;
@@ -137,6 +139,7 @@ class DrawTool {
   Unreal::UFunction *ref_drawrect = nullptr;
   Unreal::UFunction *ref_drawtext = nullptr;
   Unreal::UFunction *ref_drawline = nullptr;
+  Unreal::UFunction *ref_drawtexture = nullptr;
 
   double screen_width = 0.0;
   double screen_height = 0.0;
@@ -151,12 +154,18 @@ public:
 
   static DrawTool &instance();
 
-  void initialize();
+  void matchStart()
+  {
+    matchStarted = true;
+  }
+  
   bool update(void *actual_hud);
   double getWidth() const { return screen_width; }
   double getHeight() const { return screen_height; }
   double getUnits() const { return units; }
 
+  void updateRefs();
+  
   SimpleFVector project(const SimpleFVector &world_coords) const {
     DrawParams::Project params{
         world_coords,
@@ -197,6 +206,20 @@ public:
     ref_hud->ProcessEvent(ref_drawline, &params);
   }
   void drawOutlinedText(double left, double top, const Unreal::FString &text, double scale) const;
+  // Whole texture, stretched to w x h, alpha-blended with the given opacity.
+  void drawTexture(void *texture, double left, double top, double width, double height, float opacity) const {
+    if (!ref_drawtexture || !texture) return;
+    DrawParams::Icon params{
+        texture,
+        static_cast<float>(left), static_cast<float>(top),
+        static_cast<float>(width), static_cast<float>(height),
+        0.f, 0.f, 1.f, 1.f,
+        FLinearColor{1.f, 1.f, 1.f, opacity},
+        BLEND_Translucent,
+        1.f, false, 0.f, FVector2D{0.f, 0.f}};
+    ref_hud->ProcessEvent(ref_drawtexture, &params);
+  }
+  Unreal::UObject *hud() const { return ref_hud; }
 };
 
 // handles transformation from draw space to screen space
@@ -250,6 +273,12 @@ public:
     double prj_scale = units * scale;
     tool->drawOutlinedText(prj_x, prj_y, text, prj_scale);
   }
+  void drawTexture(void *texture, int x, int y, int width, int height, float opacity) const {
+    double units = tool->getUnits();
+    tool->drawTexture(texture, center_offset_x + units * x, center_offset_y + units * y,
+                      units * width, units * height, opacity);
+  }
+  Unreal::UObject *hud() const { return tool->hud(); }
   void drawColoredText(int x, int y, const Unreal::FString &text, const FLinearColor &color, double scale) const {
     double units = tool->getUnits();
     double prj_x = center_offset_x + (units * x);

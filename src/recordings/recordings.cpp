@@ -122,6 +122,24 @@ std::string emitRun(uint16_t prev, uint16_t cur, size_t run_len, int32_t side) {
   return out;
 }
 
+std::string framesToNotation(const uint16_t* flags, int32_t n, int32_t side) {
+  if (n <= 0) return {};
+  std::string out;
+  uint16_t prev = 0;
+  int32_t i = 0, tokens_on_line = 0;
+  while (i < n) {
+    const uint16_t v = flags[i] & IF_Any;
+    int32_t j = i + 1;
+    while (j < n && (flags[j] & IF_Any) == v) j++;
+    out += emitRun(prev, v, static_cast<size_t>(j - i), side);
+    if (++tokens_on_line >= 6) { out += "\n"; tokens_on_line = 0; } else out += " ";
+    prev = v; i = j;
+  }
+  if (!out.empty() && out.back() == ' ') out.pop_back();
+  out += "\n";
+  return out;
+}
+
 std::string slotToNotation(const MemorySlot& slot) {
   const int32_t n = slot.max_time;
   if (n <= 4) return {};
@@ -366,6 +384,24 @@ bool exportSlot(int slot_index, const std::filesystem::path& path,
   return out.good();
 }
 
+bool writeFramesToFile(const std::vector<uint16_t>& frames,
+                       const std::filesystem::path& path,
+                       int32_t direction, std::wstring& error) {
+  if (frames.empty()) { error = L"nothing to write"; return false; }
+  const std::string body = framesToNotation(frames.data(),
+                                            static_cast<int32_t>(frames.size()), direction);
+  if (body.empty()) { error = L"nothing to write"; return false; }
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) { error = L"could not write file"; return false; }
+  out << "# captured from replay\n";
+  out << "# " << frames.size() << " frames, side "
+      << (direction == kDirLeft ? "2P" : "1P") << "\n";
+  out << body;
+  return out.good();
+}
+
 std::string suggestName(int slot_index) {
   if (slot_index < 0 || slot_index >= kSlotCount) return {};
   auto* slots = findSlots();
@@ -408,6 +444,46 @@ std::wstring describeSlot(int slot_index) {
   if (slot.max_time <= 4) return L"empty";
   return std::to_wstring(slot.max_time) + L"f  " +
          (slot.direction == kDirLeft ? L"2P" : L"1P");
+}
+
+// ---- live stream -----------------------------------------------------------
+
+namespace {
+  std::vector<uint16_t> g_stream;
+  size_t                g_stream_pos = 0;
+  bool                  g_stream_on  = false;
+  bool                  g_stream_armed = false;
+}
+
+void streamArm(std::vector<uint16_t> frames) {
+  g_stream = std::move(frames);
+  g_stream_pos = 0;
+  g_stream_on = false;
+  g_stream_armed = !g_stream.empty();
+}
+
+void streamOnRoundStart() {
+  if (!g_stream_armed) return;
+  g_stream_pos = 0;
+  g_stream_on = true;      // stays armed so it re-syncs on every round reset
+}
+
+bool streamArmed() { return g_stream_armed; }
+
+void streamStart(std::vector<uint16_t> frames) {
+  g_stream = std::move(frames);
+  g_stream_pos = 0;
+  g_stream_on = !g_stream.empty();
+}
+
+void streamStop() { g_stream_on = false; g_stream_armed = false; g_stream_pos = 0; g_stream.clear(); }
+bool streamActive() { return g_stream_on; }
+size_t streamPos() { return g_stream_pos; }
+size_t streamLen() { return g_stream.size(); }
+
+uint16_t streamNext() {
+  if (!g_stream_on || g_stream_pos >= g_stream.size()) { g_stream_on = false; return 0; }
+  return g_stream[g_stream_pos++];
 }
 
 // ---- files -----------------------------------------------------------------
