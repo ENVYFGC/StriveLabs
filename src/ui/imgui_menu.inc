@@ -94,6 +94,24 @@ namespace menu_ui {
   void text(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s) {
     dl->AddText(f, f->FontSize, p, col, s.c_str());
   }
+  void text_outlined(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s) {
+    const float width = std::max(S, 1.0f);
+    for (int dy = -1; dy <= 1; dy++)
+      for (int dx = -1; dx <= 1; dx++)
+        if (dx || dy) {
+          // Equal radius on axes and diagonals, rather than a square stencil.
+          const float step = (dx && dy) ? width * 0.70710678f : width;
+          const int first_vertex = dl->VtxBuffer.Size;
+          text(dl, f, p, RGBA(0, 0, 0), s);
+          // AddText snaps positions to pixels. Offset the emitted vertices so
+          // fractional shifts stay symmetric and are filtered by the renderer.
+          for (int i = first_vertex; i < dl->VtxBuffer.Size; i++) {
+            dl->VtxBuffer[i].pos.x += dx * step;
+            dl->VtxBuffer[i].pos.y += dy * step;
+          }
+        }
+    text(dl, f, p, col, s);
+  }
   float text_w(ImFont* f, const std::string& s) { return f->CalcTextSizeA(f->FontSize, FLT_MAX, 0.0f, s.c_str()).x; }
   std::string upper(std::string s) {
     for (auto& c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
@@ -515,9 +533,9 @@ namespace menu_ui {
         const std::string value = cut == std::string::npos ? std::string() : line.substr(cut + 2);
         const bool hot = value.rfind("STICK", 0) == 0;
         const float vx = f.o.x + f.w - pad - text_w(f_bold, value);
-        text(f.dl, f_bold, ImVec2(vx, y + (lh - f_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
+        text_outlined(f.dl, f_bold, ImVec2(vx, y + (lh - f_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
         f.dl->PushClipRect(ImVec2(f.o.x, y), ImVec2(std::max(f.o.x, vx - 8 * S), y + lh), true);
-        text(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), MUTED, label);
+        text_outlined(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), MUTED, label);
         f.dl->PopClipRect();
         y += lh;
       }
