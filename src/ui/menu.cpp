@@ -912,11 +912,8 @@ void ModMenu::updateInner(PressedKeys data) {
   if (data.toggle_framebar) changeSetting(Settings::FRAMEBAR_INDEX);
   if (data.toggle_hitbox)   changeSetting(Settings::HITBOX_INDEX);
   if (data.toggle_menu) {
+    // Keep the current page and cursor when reopening the menu.
     is_showing = !is_showing;
-    if (is_showing) {
-      current_page = static_cast<size_t>(MenuPage::Root);
-      cursor_position = 0;
-    }
   }
 
   if (!is_showing) return;
