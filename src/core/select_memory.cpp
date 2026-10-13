@@ -1,16 +1,16 @@
 // Remember character select picks across restarts.
 //
 // Character select keeps the last picks of both sides (character, color, costume,
-// script, stage, music...) in a static record, AREDGameState_CharaSelect::CharaHistory,
-// and starts the next select on them. The record is not part of the save file, so
-// it is empty after every restart. This saves it to ue4ss/StriveLabs_last_picks.txt
-// when a match starts, and writes it back at startup, before the first select.
+// stage, music...) in one static record in memory and starts the next select on
+// them. That record is not saved anywhere, so it is empty after every restart.
+// This saves it to ue4ss/StriveLabs_last_picks.txt when a match starts, and writes
+// it back at startup, before the first select.
 //
-// Layout (RED/Public/CharaSelect/REDGameState_CharaSelect.h, SDecideInfoHistory):
-//   SDecideInfo 1P, SDecideInfo 2P   8 x int32 each: chara, color, costume, script,
-//                                    stage, bgm, sp flag, skill set
-//   bool IsValid                     +0x40
-//   SIDE_ID MainSide                 +0x44 (side that picked stage and music)
+// Layout, as read from the running game:
+//   1P picks, 2P picks   8 x int32 each: chara, color, costume, script,
+//                        stage, bgm, sp flag, skill set
+//   uint8 valid          +0x40
+//   int32 main side      +0x44 (side that picked stage and music)
 #include "sigscan.h"
 #include "combo_log.h"
 
@@ -29,7 +29,7 @@ namespace {
     uint8_t pad[3];
     int32_t main_side;
   };
-  static_assert(sizeof(History) == 0x48, "CharaHistory layout");
+  static_assert(sizeof(History) == 0x48, "picks record layout");
 
   History* g_history = nullptr;
   std::filesystem::path g_file;
@@ -51,7 +51,7 @@ namespace select_memory {
   void init(const std::filesystem::path& dir) {
     g_file = dir / "StriveLabs_last_picks.txt";
     try {
-      // GotoBattleSetting: mov byte ptr [CharaHistory.IsValid], 1 ; lea rsi,[rcx+SideInfo] ; movups xmm0,[rsi]
+      // The code that fills the record on entering a match: mov byte ptr [valid], 1 ; lea rsi,[rcx+picks] ; movups xmm0,[rsi]
       const uintptr_t hit = sigscan::get().scan("\xC6\x05\x00\x00\x00\x00\x01\x48\x8D\xB1\x00\x00\x00\x00\x0F\x10\x06",
                                                 "xx????xxxx????xxx");
       const uintptr_t is_valid = hit + 7 + *reinterpret_cast<const int32_t*>(hit + 2);
