@@ -262,8 +262,9 @@ namespace menu_ui {
   // Starts a window with our square chrome. Always pair with end_window().
   // pos_anchor: (0,0) top-left, (0.5,0.5) centered on pos.
   Frame begin_window(const std::string& id, const std::string& title, ImVec2 def_pos, ImVec2 def_size,
-                     ImVec2 min_size, bool interactive, ImU32 bg = PANEL) {
+                     ImVec2 min_size, bool interactive, ImU32 bg = PANEL, bool hide_decorations = false) {
     WinState& ws = g_win[id];
+    const bool hide_chrome = !interactive && hide_decorations;
     Frame f;
     f.head = HEAD * S;
     const int gen = g_layout_gen;
@@ -288,6 +289,7 @@ namespace menu_ui {
                              ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing;
     if (ws.collapsed) flags |= ImGuiWindowFlags_NoResize;
     if (!interactive) flags |= ImGuiWindowFlags_NoInputs;
+    if (hide_chrome) flags |= ImGuiWindowFlags_NoBackground;
     ImGui::Begin(id.c_str(), nullptr, flags);
     f.dl = ImGui::GetWindowDrawList();
     f.o = ImGui::GetWindowPos();
@@ -296,6 +298,9 @@ namespace menu_ui {
     f.collapsed = ws.collapsed;
     ImDrawList* dl = f.dl;
     const ImVec2 o = f.o;
+
+    // Skip the chrome and background, keeping the title space and content geometry.
+    if (hide_chrome) return f;
 
     dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.h), bg);
     dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.head), SECTION);
@@ -390,7 +395,7 @@ namespace menu_ui {
   ImVec4 bar_rect(0, 0, 0, 0);   // x, y, w, h of the frame bar window this frame
   int bar_frame = -1;            // ImGui frame the bar was drawn on
 
-  void draw_framebar(bool interactive) {
+  void draw_framebar(bool interactive, bool hide_decorations) {
     imgui_overlay::FrameBarView fb;
     std::string info[2];
     {
@@ -403,7 +408,7 @@ namespace menu_ui {
     const ImVec2 def_size(1660 * S, 150 * S);
     Frame f = begin_window("Frame bar##sl_bar", "Frame bar",
                            ImVec2(io.DisplaySize.x * 0.5f - def_size.x * 0.5f, io.DisplaySize.y * 0.8f - def_size.y * 0.5f),
-                           def_size, ImVec2(360 * S, (HEAD + 60) * S), interactive, BAR_BG);
+                           def_size, ImVec2(360 * S, (HEAD + 60) * S), interactive, BAR_BG, hide_decorations);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::BarWindow, 0, 0});
     bar_rect = ImVec4(f.o.x, f.o.y, f.w, f.h);
     bar_frame = ImGui::GetFrameCount();
@@ -456,7 +461,7 @@ namespace menu_ui {
 
   // The meters overlay as its own window. Always on screen while enabled; it can
   // be moved, resized or minimized only while the F5 menu is open.
-  void draw_meters(bool interactive, bool right_side, bool snap) {
+  void draw_meters(bool interactive, bool right_side, bool snap, bool hide_decorations) {
     std::vector<std::string> lines;
     {
       std::lock_guard<std::mutex> lock(t_mutex);
@@ -494,7 +499,7 @@ namespace menu_ui {
     }
     last_side = side;
     Frame f = begin_window("Meters##sl_tension", "Meters", ImVec2(40 * S, io.DisplaySize.y * 0.40f),
-                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG);
+                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, 0, 0});
     if (!f.collapsed) {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
@@ -708,8 +713,8 @@ namespace menu_ui {
     if (!modScreenActive()) { g_timeline_visible = false; return; }
     const MenuView v = ModMenu::instance().view();
     apply_theme(v);
-    draw_framebar(v.showing);
-    draw_meters(v.showing, v.meters_right, v.meters_snap);
+    draw_framebar(v.showing, v.hide_window_decorations);
+    draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
     draw_timeline(v);
     if (!v.showing) return;
     ImGuiIO& io = ImGui::GetIO();

@@ -170,11 +170,15 @@ namespace Settings {
   SettingsEntry METERS_SNAP = SettingsEntry{
       OptionData{L"Snap Meters to Frame Bar:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "meters_snap", 0};
-  std::array<SettingsEntry *, 22> settings = {
+  SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
+      OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "ui_hide_window_decorations", 0};
+  std::array<SettingsEntry *, 23> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
       &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
+      &UI_HIDE_WINDOW_DECORATIONS,
   };
 
   // Layout float settings
@@ -783,7 +787,7 @@ namespace {
       case MenuPage::Tension:
         return settingsCountForPage(page) + 1;
       // Layout root: Back + 4 subs + Reset = 6
-      case MenuPage::Layout:        return imgui_overlay::running() ? 7 : LAYOUT_SUB_COUNT + 2;
+      case MenuPage::Layout:        return imgui_overlay::running() ? 8 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
       case MenuPage::LayoutTension: return LAYOUT_TENSION_ROW_COUNT + 1;
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
@@ -1029,6 +1033,7 @@ void ModMenu::updateInner(PressedKeys data) {
     else if (local_idx == 3) { Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; }
     else if (local_idx == 4) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_opacity")), data.rotate_right);
     else if (local_idx == 5) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale")), data.rotate_right);
+    else if (local_idx == 6) changeSetting(static_cast<size_t>(Settings::indexById("ui_hide_window_decorations")), data.rotate_right);
     return;
   }
 
@@ -1531,6 +1536,11 @@ void ModMenu::applyClick(const MenuClick& c) {
     Settings::saveConfig();
     return;
   }
+  if (page == MenuPage::Layout && c.a == 7 && imgui_overlay::running()) {
+    Settings::UI_HIDE_WINDOW_DECORATIONS.value = c.b ? 1 : 0;
+    Settings::saveConfig();
+    return;
+  }
   if (page == MenuPage::Keybinds && c.a == static_cast<int>(binds::COUNT) + 1) {
     binds::use_mod_binds = c.b ? 1 : 0;
     Settings::saveConfig();
@@ -1638,6 +1648,8 @@ void ModMenu::buildView() {
       row(MenuRowView::Kind::Number, "Panel opacity", utf8(b)); }
     { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_SCALE.value * 100)));
       row(MenuRowView::Kind::Number, "UI size", utf8(b)); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Hide decorations when menu is closed";
+      r.choices = {"Disabled", "Enabled"}; r.choice = Settings::UI_HIDE_WINDOW_DECORATIONS.value ? 1 : 0; out.push_back(r); }
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
     row(MenuRowView::Kind::Action, "Reset all to defaults", "Reset");
@@ -1657,6 +1669,7 @@ void ModMenu::buildView() {
   v.tension_on = Settings::TENSION_ENABLED.value != 0;
   v.meters_right = Settings::TENSION_SIDE.value == 1;
   v.meters_snap = Settings::METERS_SNAP.value != 0;
+  v.hide_window_decorations = Settings::UI_HIDE_WINDOW_DECORATIONS.value != 0;
   {
     static constexpr unsigned kAccents[6] = {0xFF0000, 0x2B8CFF, 0x00C8AA, 0xA05AFF, 0xFFBE00, 0xE6E6EB};
     auto byte = [](double x) { return static_cast<unsigned>(std::lround(std::clamp(x, 0.0, 1.0) * 255.0)); };
