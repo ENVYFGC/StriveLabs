@@ -1,6 +1,7 @@
 #include "hitboxes.h"
 
 #include <algorithm>
+#include <cstring>
 #include <valarray>
 
 #include "arcsys.h"
@@ -81,6 +82,7 @@ bool line_box_intersection(
 
 struct DrawnHitbox {
   hitbox::box_type type;
+  bool hollow = false;  // outline only: an object's hurtbox while it can't be hit
 
   // Unclipped corners of filled box
   std::array<FVector2D, 4> corners;
@@ -260,6 +262,7 @@ void draw_hitbox(const DrawTool &tool, const asw_entity &entity, const DrawnHitb
       box.corners[3].x, box.corners[3].y);
 
   for (auto fill : box.fill) {
+    if (box.hollow) break;
     TOO_MUCH_DEBUG(
         STR("  Init Fill: {},{} . {},{} . {},{} . {},{}\n"),
         fill[0].x, fill[0].y,
@@ -380,11 +383,20 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
     // Don't show inactive hitboxes
     if (box.type == hitbox::box_type::hit && !active) {
       continue;
-    } else if (box.type == hitbox::box_type::hurt && entity.is_strike_invuln()) {
-        continue;
     }
 
-    hitboxes.push_back(DrawnHitbox(box));
+    DrawnHitbox drawn(box);
+    if (box.type == hitbox::box_type::hurt && entity.is_strike_invuln()) {
+      // Hidden, except Faust's items (afro, banana...): they sit unhittable but
+      // still matter, so they keep an outline. Owner's sprite name at +0x12F8
+      // starts with the character code, "fau" for Faust.
+      const auto *owner = entity.parent_ply;
+      const bool faust_item = !entity.is_player && owner &&
+          std::strncmp(reinterpret_cast<const char *>(owner) + 0x12F8, "fau", 3) == 0;
+      if (!faust_item) continue;
+      drawn.hollow = true;
+    }
+    hitboxes.push_back(drawn);
   }
   
   if(entity.is_player){
@@ -501,18 +513,18 @@ void draw_pushbox(const DrawTool &tool, const asw_entity &entity) {
       corners[2].x, corners[2].y,
       corners[3].x, corners[3].y);
 
-  // Show hollow pushbox when throw invuln or can't interact
+  // Filled: normal. Yellow outline: throw invuln or can't interact.
+  // Grey outline: both at once (Slayer's dash), so the box still shows.
+  const bool throw_invuln = entity.is_throw_invuln();
+  const bool pushbox_active = entity.is_pushbox_active();
   FLinearColor color;
-  if (entity.is_throw_invuln() || !entity.is_pushbox_active())
+  if (throw_invuln && !pushbox_active)
+    color = FLinearColor{.6f, .6f, .6f, 0.f};
+  else if (throw_invuln || !pushbox_active)
     color = FLinearColor{1.f, 1.f, 0.f, 0.f};
   else
     color = FLinearColor{1.f, 1.f, 0.f, .2f};
-
-  // Show outlined pushbox when pushbox doesn't have intangibility
-  if (entity.is_pushbox_active() || !entity.is_throw_invuln())
-    draw_rect(tool, corners, color);
-//  else
-//    draw_rect_no_outline(tool, corners, color);
+  draw_rect(tool, corners, color);
 }
 
 void drawAllBoxes() {

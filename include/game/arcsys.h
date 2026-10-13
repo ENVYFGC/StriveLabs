@@ -188,6 +188,10 @@ public:
   FIELD(0x14C8, int, P1BurstRaw);
   FIELD(0x14CC, int, P2BurstRaw);
   FIELD(0x910, int, entity_count);
+  // Every object slot, active or not. The game rebuilds entities[] from it and
+  // its round reset walks it, releasing each slot's linked effect actor.
+  ARRAY_FIELD(0x928, class asw_entity* [107], pool);
+  FIELD(0x1330, int, pool_count);
   ARRAY_FIELD(0xC80, class asw_entity* [107], entities);
   ARRAY_FIELD(0x3868, asw_inputs[6], inputs);
   FIELD(0x3E7C, int, GameFrame);

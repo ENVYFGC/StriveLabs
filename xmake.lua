@@ -21,9 +21,22 @@ target(projectName)
     add_files("src/core/sigscan.cpp")
     add_files("src/render/tension_overlay.cpp")
     add_files("src/recordings/recordings.cpp")
+    add_files("src/ui/imgui_overlay.cpp")
+    add_files("src/core/crash_log.cpp")
+    add_files("src/core/select_memory.cpp")
 
-    add_syslinks("ole32")
+    -- Dear ImGui (MIT, third_party/imgui/LICENSE.txt), drawn through a DirectX 11 Present hook
+    add_includedirs("third_party/imgui")
+    add_files("third_party/imgui/imgui.cpp", "third_party/imgui/imgui_draw.cpp",
+              "third_party/imgui/imgui_tables.cpp", "third_party/imgui/imgui_widgets.cpp",
+              "third_party/imgui/backends/imgui_impl_dx11.cpp", "third_party/imgui/backends/imgui_impl_win32.cpp")
+    add_syslinks("d3d11", "dxgi", "d3dcompiler", "windowscodecs")
 
-    -- Strip embedded source paths from release DLL
+    add_syslinks("ole32", "user32", "comdlg32")
+
+    -- Keep local folder paths out of the release DLL: the debug record only names
+    -- the .pdb file, and no_source_paths.h compiles out the asserts that embed
+    -- header paths
     add_cxflags("/Z7-", "/Zo-", {force = true})
-    add_ldflags("/DEBUG:NONE", {force = true})
+    add_shflags("/PDBALTPATH:%_PDB%", {force = true})
+    add_cxflags("/FIno_source_paths.h", {force = true})

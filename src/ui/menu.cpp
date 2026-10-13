@@ -6,10 +6,25 @@
 #include <Windows.h>
 #include "recordings.h"
 #include "combo_log.h"
+#include "imgui_overlay.h"
+#include <mutex>
+#include <atomic>
+#include <thread>
+#include <commdlg.h>
 
 // Defined in dllmain.cpp: pulls this round's inputs for a side out of the
 // replay buffer. Replay peers are one per seat: 0 = P1, 1 = P2.
 std::vector<uint16_t> captureCurrentRound(int peer);
+bool replayCaptureStart(int peer, std::wstring& err);
+std::vector<uint16_t> replayCaptureStop(std::wstring& err);
+bool replayCaptureActive();
+bool replayCaptureFull();
+uint32_t replayCaptureFrames();
+void timelinePressHotkey(int action);
+void timelineSetPaused(bool paused);
+bool timelinePaused();
+void timelineStep();
+int timelineMode();
 
 #include <vector>
 #include <string>
@@ -41,7 +56,7 @@ FLinearColor convSRGB(int r, int g, int b, int a) {
 struct OptionData {
   const wchar_t *title;
   size_t count;
-  std::array<const wchar_t *, 5> values;
+  std::array<const wchar_t *, 8> values;
 };
 
 struct SettingsEntry {
@@ -111,7 +126,7 @@ namespace Settings {
       OptionData{L"Show Crossup: ", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "crossup_enabled", 0};
   SettingsEntry TENSION_ENABLED = SettingsEntry{
-      OptionData{L"Tension Overlay:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      OptionData{L"Meters Overlay:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "tension_enabled", 0};
   SettingsEntry TENSION_GAIN = SettingsEntry{
       OptionData{L"Tension Gain:", 4,
@@ -146,11 +161,20 @@ namespace Settings {
       OptionData{L"Tension Now:", 4,
                  {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
       "tension_current", 0};
-  std::array<SettingsEntry *, 19> settings = {
+  SettingsEntry UI_ACCENT = SettingsEntry{
+      OptionData{L"Accent Color:", 7, {L"Red", L"Blue", L"Teal", L"Purple", L"Gold", L"White", L"Custom"}},
+      "ui_accent", 0};
+  SettingsEntry TIMELINE_ON = SettingsEntry{
+      OptionData{L"Timeline Window:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "timeline_on", 0};  // off until you turn it on; remembered across restarts
+  SettingsEntry METERS_SNAP = SettingsEntry{
+      OptionData{L"Snap Meters to Frame Bar:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "meters_snap", 0};
+  std::array<SettingsEntry *, 22> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
-      &SHOW_DASH_FRAMES, &PAUSE_TYPE, &DELAY_AMOUNT, &CROSSUP_ENABLED,
+      &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
-      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE,
+      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
   };
 
   // Layout float settings
@@ -184,8 +208,14 @@ namespace Settings {
   FloatSetting DETAIL_PANEL_WIDTH  = {"detail_panel_width",      903.0,  903.0, 300.0, 1600.0, 10.0};
   // Manual widening on top of the auto-computed menu width.
   FloatSetting MENU_WIDTH_EXTRA    = {"menu_width_extra",          0.0,    0.0,   0.0,  900.0,  20.0};
+  // Appearance (ImGui menu). "ui_" settings are not touched by resetLayout().
+  FloatSetting UI_OPACITY  = {"ui_opacity",  0.94, 0.94, 0.50, 1.00, 0.02};
+  FloatSetting UI_SCALE    = {"ui_scale",    1.00, 1.00, 0.75, 1.50, 0.05};
+  FloatSetting UI_CUSTOM_R = {"ui_custom_r", 1.00, 1.00, 0.00, 1.00, 0.01};
+  FloatSetting UI_CUSTOM_G = {"ui_custom_g", 0.00, 0.00, 0.00, 1.00, 0.01};
+  FloatSetting UI_CUSTOM_B = {"ui_custom_b", 0.00, 0.00, 0.00, 1.00, 0.01};
 
-  std::array<FloatSetting *, 10> float_settings = {
+  std::array<FloatSetting *, 15> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -196,6 +226,11 @@ namespace Settings {
       &DETAIL_MARGIN_R,       // 7
       &DETAIL_PANEL_WIDTH,    // 8
       &MENU_WIDTH_EXTRA,      // 9
+      &UI_OPACITY,            // 10
+      &UI_SCALE,              // 11
+      &UI_CUSTOM_R,           // 12
+      &UI_CUSTOM_G,           // 13
+      &UI_CUSTOM_B,           // 14
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
@@ -288,7 +323,8 @@ namespace Settings {
   }
 
   void resetLayout() {
-    for (auto *f : float_settings) f->reset();
+    for (auto *f : float_settings)
+      if (f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
     saveConfig();
   }
 }
@@ -327,9 +363,9 @@ namespace {
 
   struct SectionDef { const wchar_t* label; size_t start; size_t end; };
   constexpr SectionDef SECTIONS[] = {
-    {L"-- DISPLAY --",        0,  6},
-    {L"-- TIMING & INPUT --", 6,  9},
-    {L"-- TENSION --",        9, 19},   // settings has 19 entries; end is exclusive
+    {L"-- OVERLAYS --",       0,  7},
+    {L"-- TRAINING --",       7,  9},
+    {L"-- METERS --",         9, 19},   // settings has 19 entries; end is exclusive
   };
   constexpr size_t SECTION_COUNT = sizeof(SECTIONS) / sizeof(SECTIONS[0]);
 
@@ -350,7 +386,7 @@ namespace {
 
   // ---- Recordings page state ----------------------------------------------
   // Rows: 0 Back | 1 File | 2 Slot | 3 Side | 4 Load
-  constexpr size_t RECORDINGS_ROW_COUNT = 7;
+  constexpr size_t RECORDINGS_ROW_COUNT = 10;
   // Rows: 0 Slot | 1 Save | 2 File | 3 Side | 4 Load
 
   std::vector<std::filesystem::path> g_rec_files;
@@ -369,6 +405,60 @@ namespace {
   void refreshRecordingFiles() {
     g_rec_files = recordings::scanDir(Settings::recordingsDir());
     if (g_rec_file_idx >= g_rec_files.size()) g_rec_file_idx = 0;
+  }
+
+  // ---- Browse: Windows file picker for a recording ------------------------
+  // Runs on its own thread so the game keeps running while it is open. The pick
+  // is handed back and applied on the game thread in ModMenu::update().
+  std::mutex g_browse_mutex;
+  std::filesystem::path g_browse_pick;
+  std::atomic<bool> g_browse_open{false};
+
+  void startBrowse() {
+    if (g_browse_open.exchange(true)) return;  // already open
+    const std::wstring dir = Settings::recordingsDir().wstring();
+    HWND owner = GetForegroundWindow();
+    std::thread([dir, owner] {
+      wchar_t file[MAX_PATH] = L"";
+      OPENFILENAMEW ofn{};
+      ofn.lStructSize = sizeof(ofn);
+      ofn.hwndOwner = owner;
+      ofn.lpstrFilter = L"Recordings (*.txt)\0*.txt\0All files\0*.*\0";
+      ofn.lpstrFile = file;
+      ofn.nMaxFile = MAX_PATH;
+      ofn.lpstrInitialDir = dir.c_str();
+      ofn.lpstrTitle = L"Pick a recording";
+      ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+      if (GetOpenFileNameW(&ofn)) {
+        std::lock_guard<std::mutex> lock(g_browse_mutex);
+        g_browse_pick = file;
+      }
+      g_browse_open = false;
+    }).detach();
+  }
+
+  // Game thread: select the picked file. Files from elsewhere are copied into the
+  // recordings folder so they stay in the File list.
+  void applyBrowsePick() {
+    std::filesystem::path pick;
+    {
+      std::lock_guard<std::mutex> lock(g_browse_mutex);
+      pick.swap(g_browse_pick);
+    }
+    if (pick.empty()) return;
+    const auto dir = Settings::recordingsDir();
+    std::error_code ec;
+    auto target = pick;
+    if (!std::filesystem::equivalent(pick.parent_path(), dir, ec)) {
+      target = dir / pick.filename();
+      if (!std::filesystem::exists(target, ec))
+        std::filesystem::copy_file(pick, target, ec);
+      if (ec) { g_rec_status = L"Could not copy " + pick.filename().wstring(); return; }
+    }
+    refreshRecordingFiles();
+    for (size_t i = 0; i < g_rec_files.size(); i++)
+      if (g_rec_files[i].filename() == target.filename()) { g_rec_file_idx = i; break; }
+    g_rec_status = L"Picked " + target.filename().wstring();
   }
 
   // Slot -> .txt. Independent of GGST's save system, which only flushes on exit.
@@ -403,21 +493,46 @@ namespace {
   // slot: no 2700-frame ceiling, and still frame-exact.
   // Pull the opponent's inputs for the current replay round straight out of the
   // replay buffer and save them as a .txt, ready to stream at the dummy.
-  void captureFromReplay() {
-    auto frames = captureCurrentRound(1);          // replay peer 1 = P2 seat
-    if (frames.empty()) { g_rec_status = L"capture failed - see combo_log"; return; }
-    auto dir = Settings::recordingsDir();
+  // ---- Capture from a replay: start / stop, 40 seconds at most -------------
+  int g_cap_side = 1;  // 0 = P1, 1 = P2
+  // Timeline window switch, saved in the config
+  bool timelineOn() { return Settings::TIMELINE_ON.value != 0; }
+  void setTimelineOn(bool on) { Settings::TIMELINE_ON.value = on ? 1 : 0; Settings::saveConfig(); }
+
+  std::wstring secondsText(uint32_t frames) {
+    wchar_t buf[32];
+    swprintf_s(buf, L"%.1f s", frames / 60.0);
+    return buf;
+  }
+
+  void finishCapture() {
+    std::wstring err;
+    auto frames = replayCaptureStop(err);
+    if (frames.empty()) { g_rec_status = err.empty() ? L"Nothing was captured" : err; return; }
     char stamp[32] = "";
     { const std::time_t t = std::time(nullptr); std::tm tm{};
       if (localtime_s(&tm, &t) == 0) std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H%M%S", &tm); }
-    auto path = dir / (std::string(stamp[0] ? stamp : "capture") + "_replay_"
-                       + std::to_string(frames.size()) + "f.txt");
-    std::wstring err;
-    if (!recordings::writeFramesToFile(frames, path, recordings::kDirLeft, err)) {
-      g_rec_status = err; return;
+    const auto path = Settings::recordingsDir() /
+        (std::string(stamp[0] ? stamp : "capture") + "_replay_" + (g_cap_side == 0 ? "P1_" : "P2_") +
+         std::to_string(frames.size()) + "f.txt");
+    std::wstring werr;
+    if (!recordings::writeFramesToFile(frames, path, g_cap_side == 0 ? recordings::kDirRight : recordings::kDirLeft, werr)) {
+      g_rec_status = werr;
+      return;
     }
-    g_rec_status = L"captured " + std::to_wstring(frames.size()) + L"f from replay";
     refreshRecordingFiles();
+    for (size_t i = 0; i < g_rec_files.size(); i++)
+      if (g_rec_files[i].filename() == path.filename()) { g_rec_file_idx = i; break; }
+    g_rec_status = L"Saved " + path.filename().wstring() + L" (" + secondsText(static_cast<uint32_t>(frames.size())) +
+                   L"). Load it into a slot above.";
+  }
+
+  void toggleCapture() {
+    if (replayCaptureActive()) { finishCapture(); return; }
+    std::wstring err;
+    if (!replayCaptureStart(g_cap_side, err)) { g_rec_status = err; return; }
+    g_rec_status = std::wstring(L"Capturing ") + (g_cap_side == 0 ? L"P1" : L"P2") +
+                   L". Press again to stop, or it stops at 40 s.";
   }
 
   void streamSelectedRecording() {
@@ -476,14 +591,14 @@ namespace {
   };
 
   constexpr RootPageDef ROOT_PAGES[] = {
-    {MenuPage::Display, L"Display"},
-    {MenuPage::TimingInput, L"Timing & Input"},
-    {MenuPage::Tension, L"Tension"},
-    {MenuPage::Layout, L"Layout"},
+    {MenuPage::Display, L"Overlays"},
+    {MenuPage::TimingInput, L"Training"},
+    {MenuPage::Tension, L"Meters"},
     {MenuPage::Recordings, L"Recordings"},
-    {MenuPage::Keybinds, L"Keybinds"},
-    {MenuPage::TakeoverBinds, L"Takeover Binds"},
+    {MenuPage::Keybinds, L"Controls"},
+    {MenuPage::Layout, L"Appearance"},
   };
+
   constexpr size_t ROOT_PAGE_COUNT = sizeof(ROOT_PAGES) / sizeof(ROOT_PAGES[0]);
 
   struct LayoutRowDef { const wchar_t* label; size_t float_idx; };
@@ -622,16 +737,16 @@ namespace {
   const wchar_t* pageLabel(MenuPage page) {
     switch (page) {
       case MenuPage::Root:          return L"-- MENU --";
-      case MenuPage::Display:       return L"-- DISPLAY --";
-      case MenuPage::TimingInput:   return L"-- TIMING & INPUT --";
-      case MenuPage::Tension:       return L"-- TENSION --";
-      case MenuPage::Layout:        return L"-- LAYOUT --";
+      case MenuPage::Display:       return L"-- OVERLAYS --";
+      case MenuPage::TimingInput:   return L"-- TRAINING --";
+      case MenuPage::Tension:       return L"-- METERS --";
+      case MenuPage::Layout:        return L"-- APPEARANCE --";
       case MenuPage::LayoutBar:     return L"-- FRAME BAR --";
       case MenuPage::LayoutTension: return L"-- TENSION BOX --";
       case MenuPage::LayoutDetail:  return L"-- DETAIL PANEL --";
       case MenuPage::LayoutMenu:    return L"-- MOD MENU --";
       case MenuPage::Recordings:    return L"-- RECORDINGS --";
-      case MenuPage::Keybinds:      return L"-- KEYBINDS --";
+      case MenuPage::Keybinds:      return L"-- CONTROLS --";
       case MenuPage::TakeoverBinds: return L"-- TAKEOVER BINDS --";
     }
     return L"-- MENU --";
@@ -668,13 +783,13 @@ namespace {
       case MenuPage::Tension:
         return settingsCountForPage(page) + 1;
       // Layout root: Back + 4 subs + Reset = 6
-      case MenuPage::Layout:        return LAYOUT_SUB_COUNT + 2;
+      case MenuPage::Layout:        return imgui_overlay::running() ? 7 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
       case MenuPage::LayoutTension: return LAYOUT_TENSION_ROW_COUNT + 1;
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
       case MenuPage::LayoutMenu:    return LAYOUT_MENU_ROW_COUNT + 1;
       case MenuPage::Recordings:    return RECORDINGS_ROW_COUNT + 1;
-      case MenuPage::Keybinds:      return binds::COUNT + 1;
+      case MenuPage::Keybinds:      return binds::COUNT + binds::G_COUNT + 2;  // hotkeys, takeover switch, takeover buttons
       case MenuPage::TakeoverBinds: return binds::G_COUNT + 2;
     }
     return ROOT_PAGE_COUNT;
@@ -748,6 +863,8 @@ void ModMenu::changeSetting(size_t idx, bool right) {
   Settings::saveConfig();
 }
 
+int g_picker_seq = 0;  // bumped to open the custom color picker
+
 void changeLayoutFloat(size_t float_idx, bool right) {
   auto *f = Settings::float_settings[float_idx];
   f->value += right ? f->step : -f->step;
@@ -766,7 +883,32 @@ ModMenu::ModMenu()
   Settings::readConfig();
 }
 
+void changeLayoutFloat(size_t float_idx, bool right);
+extern int g_picker_seq;
+
+namespace {
+  std::mutex g_view_mutex;
+  MenuView g_view;
+  std::vector<MenuClick> g_clicks;
+  std::atomic<unsigned> g_popped{0};
+}
+
 void ModMenu::update(PressedKeys data) {
+  std::vector<MenuClick> clicks;
+  {
+    std::lock_guard<std::mutex> lock(g_view_mutex);
+    clicks.swap(g_clicks);
+  }
+  for (const auto& c : clicks)
+    if (c.type == MenuClick::Type::Move || c.type >= MenuClick::Type::TlRewind ||
+        (binds::capturing < 0 && (is_showing || c.page >= 0))) applyClick(c);
+  applyBrowsePick();
+  if (replayCaptureFull()) finishCapture();
+  updateInner(data);
+  buildView();
+}
+
+void ModMenu::updateInner(PressedKeys data) {
   if (data.toggle_framebar) changeSetting(Settings::FRAMEBAR_INDEX);
   if (data.toggle_hitbox)   changeSetting(Settings::HITBOX_INDEX);
   if (data.toggle_menu) {
@@ -794,7 +936,8 @@ void ModMenu::update(PressedKeys data) {
   if (page == MenuPage::Root) {
     if ((data.rotate_left || data.rotate_right) && cp < ROOT_PAGE_COUNT) {
       current_page = static_cast<size_t>(ROOT_PAGES[cp].page);
-      cursor_position = 0;
+      // Start on the first setting, not on Back.
+      cursor_position = rowCountForPage(static_cast<MenuPage>(current_page)) > 1 ? 1 : 0;
       // Create + scan on entry so the folder exists to drop files into.
       if (static_cast<MenuPage>(current_page) == MenuPage::Recordings)
         refreshRecordingFiles();
@@ -838,27 +981,39 @@ void ModMenu::update(PressedKeys data) {
         if (g_rec_files.empty()) { refreshRecordingFiles(); break; }
         g_rec_file_idx = rotateVal(g_rec_file_idx, right, g_rec_files.size());
         break;
-      case 3:                                   // Side
+      case 3:                                   // Browse for a file
+        startBrowse();
+        break;
+      case 4:                                   // Side
         g_rec_side = (g_rec_side == recordings::kDirLeft) ? recordings::kDirRight
                                                           : recordings::kDirLeft;
         break;
-      case 4:                                   // Load file -> slot
+      case 5:                                   // Load file -> slot
         loadSelectedRecording();
         break;
-      case 5:                                   // Stream file -> dummy
+      case 6:                                   // Stream file -> dummy
         streamSelectedRecording();
         break;
-      case 6:                                   // Capture opponent from replay
-        captureFromReplay();
+      case 7:                                   // Capture side
+        g_cap_side ^= 1;
+        break;
+      case 8:                                   // Capture from replay: start / stop
+        toggleCapture();
+        break;
+      case 9:                                   // Timeline window
+        setTimelineOn(!timelineOn());
         break;
       default: break;
     }
     return;
   }
 
-  if (page == MenuPage::Keybinds) {
-    if ((data.rotate_left || data.rotate_right) && local_idx < binds::COUNT)
-      binds::beginCapture(static_cast<int>(local_idx));
+  if (page == MenuPage::Keybinds) {  // Controls: hotkeys, takeover switch, takeover buttons
+    if (!(data.rotate_left || data.rotate_right)) return;
+    if (local_idx < binds::COUNT) binds::beginCapture(static_cast<int>(local_idx));
+    else if (local_idx == binds::COUNT) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
+    else if (local_idx - binds::COUNT - 1 < binds::G_COUNT)
+      binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - binds::COUNT - 1));
     return;
   }
 
@@ -869,12 +1024,23 @@ void ModMenu::update(PressedKeys data) {
     return;
   }
 
+  if (page == MenuPage::Layout && imgui_overlay::running()) {
+    if (!(data.rotate_left || data.rotate_right)) return;
+    if (local_idx == 0) changeSetting(static_cast<size_t>(Settings::indexById("meters_snap")), data.rotate_right);
+    else if (local_idx == 1) { Settings::resetLayout(); Settings::saveConfig(); imgui_overlay::resetWindows(); }
+    else if (local_idx == 2) changeSetting(static_cast<size_t>(Settings::indexById("ui_accent")), data.rotate_right);
+    else if (local_idx == 3) { Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; }
+    else if (local_idx == 4) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_opacity")), data.rotate_right);
+    else if (local_idx == 5) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale")), data.rotate_right);
+    return;
+  }
+
   if (page == MenuPage::Layout) {
     if (local_idx < LAYOUT_SUB_COUNT) {
       // Enter the submenu
       if (data.rotate_left || data.rotate_right) {
         current_page = static_cast<size_t>(LAYOUT_SUBS[local_idx].page);
-        cursor_position = 0;
+        cursor_position = rowCountForPage(static_cast<MenuPage>(current_page)) > 1 ? 1 : 0;
       }
     } else if (data.rotate_left || data.rotate_right) {
       Settings::resetLayout();
@@ -895,6 +1061,11 @@ void ModMenu::update(PressedKeys data) {
 
 void ModMenu::draw() {
   if (!is_showing) return;
+  hud_panel = !imgui_overlay::running();
+  if (!hud_panel) {
+    if (isLayoutSubPage(static_cast<MenuPage>(current_page))) drawLayoutGhost(static_cast<int>(current_page));
+    return;
+  }
 
   // Apply configurable menu position
   tool.setRatios(Settings::MENU_CENTER_X_RATIO.value, Settings::MENU_CENTER_Y_RATIO.value);
@@ -1009,6 +1180,7 @@ void ModMenu::draw() {
                                        recordings::describeSlot(g_rec_slot)},
       {L"Save Slot " + slot_no + L" into txt", L">>  save"},
       {L"File Selection",              file_val},
+      {L"Browse for a file",           L">>  browse"},
       {L"Player Side",                 g_rec_side == recordings::kDirLeft
                                            ? L"<     2P     >" : L"<     1P     >"},
       {L"Load into Game's Slot " + slot_no, L">>  load"},
@@ -1016,7 +1188,11 @@ void ModMenu::draw() {
                                            ? (L">>  stop  (" + std::to_wstring(recordings::streamPos())
                                               + L"/" + std::to_wstring(recordings::streamLen()) + L")")
                                            : std::wstring(L">>  start  (no length limit)")},
-      {L"Capture Opponent (replay)",   L">>  this round -> .txt"},
+      {L"Capture Side",                g_cap_side == 0 ? L"<     1P     >" : L"<     2P     >"},
+      {L"Capture from Replay",         replayCaptureActive()
+                                           ? (L">>  stop  (" + secondsText(replayCaptureFrames()) + L" / 40 s)")
+                                           : std::wstring(L">>  start  (40 s max)")},
+      {L"Timeline Window",             timelineOn() ? L"<  Enabled   >" : L"<  Disabled  >"},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
@@ -1069,6 +1245,32 @@ void ModMenu::draw() {
           ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
           : binds::keyName(binds::key[i]) + L"  |  " + binds::padName(binds::pad[i]);
       tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::LABELS[i]), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
+      cy += OPTION_HEIGHT + OPTION_SPACING;
+    }
+    {
+      const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 1);
+      if (sel) {
+        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
+        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
+        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
+      }
+      tool.drawOutlinedText(label_left, cy + 8.0, FString(L"Use these buttons in takeover"), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0,
+                            FString(binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >"), VALUE_SCALE);
+      cy += OPTION_HEIGHT + OPTION_SPACING;
+    }
+    for (size_t i = 0; i < binds::G_COUNT; i++) {
+      const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 2 + i);
+      if (sel) {
+        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
+        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
+        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
+      }
+      const std::wstring val = (binds::capturing == binds::GAME_BASE + static_cast<int>(i))
+          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
+          : binds::keyName(binds::gkey[i]) + L"  |  " + binds::padName(binds::gpad[i]);
+      tool.drawOutlinedText(label_left, cy + 8.0, FString((std::wstring(L"Takeover ") + binds::G_LABELS[i]).c_str()), LABEL_SCALE);
       tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
       cy += OPTION_HEIGHT + OPTION_SPACING;
     }
@@ -1148,51 +1350,351 @@ void ModMenu::draw() {
       }
     }
 
-    // ── Always-on ghost preview for this sub-page ────────────────────
-    const auto layout = getLayoutPositions();
-    FLinearColor GHOST_FILL  {1.0f, 1.0f, 1.0f, 0.12f};
-    FLinearColor GHOST_BORDER{sRGBToLinear(255), 0.0f, 0.0f, 0.85f};
-
-    if (page == MenuPage::LayoutBar || page == MenuPage::LayoutTension) {
-      tool.setRatios(layout.framebar_center_x_ratio, layout.framebar_center_y_ratio);
-      tool.update();
-      constexpr int BAR_L = -1442, BAR_W = 2884, BAR_H = 44;
-      constexpr int ONE_TOP = -48, TWO_TOP = 4;
-      tool.drawRect(BAR_L, ONE_TOP, BAR_W, BAR_H, GHOST_FILL);
-      tool.drawRect(BAR_L, TWO_TOP, BAR_W, BAR_H, GHOST_FILL);
-      tool.drawRect(BAR_L, ONE_TOP, BAR_W, 2, GHOST_BORDER);
-      tool.drawRect(BAR_L, TWO_TOP, BAR_W, 2, GHOST_BORDER);
-      if (page == MenuPage::LayoutTension) {
-        constexpr int BOX_W = 620, BOX_H = 72;
-        const int box_top = ONE_TOP - layout.tension_bottom_gap - BOX_H;
-        tool.drawRect(layout.tension_left_offset, box_top, BOX_W, BOX_H, GHOST_FILL);
-        tool.drawRect(layout.tension_left_offset, box_top, BOX_W, 2, GHOST_BORDER);
-        tool.drawRect(layout.tension_left_offset, box_top + BOX_H - 2, BOX_W, 2, GHOST_BORDER);
-      }
-      tool.setRatios(Settings::MENU_CENTER_X_RATIO.value, Settings::MENU_CENTER_Y_RATIO.value);
-      tool.update();
-    }
-    else if (page == MenuPage::LayoutDetail) {
-      const double pw = static_cast<double>(layout.detail_panel_width);
-      const double ph = 132.0;
-      const double px = tool.screenRightEdge() - layout.detail_margin_r - pw;
-      const double py = tool.screenTopEdge()   + layout.detail_margin_t;
-      tool.drawRect(static_cast<int>(px), static_cast<int>(py),
-                    static_cast<int>(pw), static_cast<int>(ph), GHOST_FILL);
-      tool.drawRect(static_cast<int>(px), static_cast<int>(py),
-                    static_cast<int>(pw), 2, GHOST_BORDER);
-      tool.drawRect(static_cast<int>(px + pw - 2), static_cast<int>(py),
-                    2, static_cast<int>(ph), GHOST_BORDER);
-      tool.drawRect(static_cast<int>(px), static_cast<int>(py + ph - 2),
-                    static_cast<int>(pw), 2, GHOST_BORDER);
-    }
-    else if (page == MenuPage::LayoutMenu) {
-      // Crosshair at current menu anchor
-      tool.drawRect(-1, -30, 2, 60, GHOST_BORDER);
-      tool.drawRect(-30, -1, 60, 2, GHOST_BORDER);
-    }
+    drawLayoutGhost(static_cast<int>(page));
     return;
   }
+}
+
+
+void ModMenu::drawLayoutGhost(int page_i) {
+  const auto page = static_cast<MenuPage>(page_i);
+  tool.setRatios(Settings::MENU_CENTER_X_RATIO.value, Settings::MENU_CENTER_Y_RATIO.value);
+  tool.update();
+  // ── Always-on ghost preview for this sub-page ────────────────────
+  const auto layout = getLayoutPositions();
+  FLinearColor GHOST_FILL  {1.0f, 1.0f, 1.0f, 0.12f};
+  FLinearColor GHOST_BORDER{sRGBToLinear(255), 0.0f, 0.0f, 0.85f};
+
+  if (page == MenuPage::LayoutBar || page == MenuPage::LayoutTension) {
+    tool.setRatios(layout.framebar_center_x_ratio, layout.framebar_center_y_ratio);
+    tool.update();
+    constexpr int BAR_L = -1442, BAR_W = 2884, BAR_H = 44;
+    constexpr int ONE_TOP = -48, TWO_TOP = 4;
+    tool.drawRect(BAR_L, ONE_TOP, BAR_W, BAR_H, GHOST_FILL);
+    tool.drawRect(BAR_L, TWO_TOP, BAR_W, BAR_H, GHOST_FILL);
+    tool.drawRect(BAR_L, ONE_TOP, BAR_W, 2, GHOST_BORDER);
+    tool.drawRect(BAR_L, TWO_TOP, BAR_W, 2, GHOST_BORDER);
+    if (page == MenuPage::LayoutTension) {
+      constexpr int BOX_W = 620, BOX_H = 72;
+      const int box_top = ONE_TOP - layout.tension_bottom_gap - BOX_H;
+      tool.drawRect(layout.tension_left_offset, box_top, BOX_W, BOX_H, GHOST_FILL);
+      tool.drawRect(layout.tension_left_offset, box_top, BOX_W, 2, GHOST_BORDER);
+      tool.drawRect(layout.tension_left_offset, box_top + BOX_H - 2, BOX_W, 2, GHOST_BORDER);
+    }
+    tool.setRatios(Settings::MENU_CENTER_X_RATIO.value, Settings::MENU_CENTER_Y_RATIO.value);
+    tool.update();
+  }
+  else if (page == MenuPage::LayoutDetail) {
+    const double pw = static_cast<double>(layout.detail_panel_width);
+    const double ph = 132.0;
+    const double px = tool.screenRightEdge() - layout.detail_margin_r - pw;
+    const double py = tool.screenTopEdge()   + layout.detail_margin_t;
+    tool.drawRect(static_cast<int>(px), static_cast<int>(py),
+                  static_cast<int>(pw), static_cast<int>(ph), GHOST_FILL);
+    tool.drawRect(static_cast<int>(px), static_cast<int>(py),
+                  static_cast<int>(pw), 2, GHOST_BORDER);
+    tool.drawRect(static_cast<int>(px + pw - 2), static_cast<int>(py),
+                  2, static_cast<int>(ph), GHOST_BORDER);
+    tool.drawRect(static_cast<int>(px), static_cast<int>(py + ph - 2),
+                  static_cast<int>(pw), 2, GHOST_BORDER);
+  }
+  else if (page == MenuPage::LayoutMenu) {
+    // Crosshair at current menu anchor
+    tool.drawRect(-1, -30, 2, 60, GHOST_BORDER);
+    tool.drawRect(-30, -1, 60, 2, GHOST_BORDER);
+  }
+}
+
+// ---- ImGui menu snapshot ------------------------------------------------------
+namespace {
+  std::string utf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+    return out;
+  }
+  // "<  Enabled   >" -> "Enabled", "Frame Bar:" -> "Frame Bar"
+  std::string clean(const wchar_t* w) {
+    std::wstring s = w ? w : L"";
+    for (wchar_t& c : s) if (c == L'<' || c == L'>') c = L' ';
+    const auto a = s.find_first_not_of(L' ');
+    const auto b = s.find_last_not_of(L' ');
+    s = (a == std::wstring::npos) ? L"" : s.substr(a, b - a + 1);
+    if (!s.empty() && s.back() == L':') s.pop_back();
+    return utf8(s);
+  }
+}
+
+std::filesystem::path ModMenu::dataDir() { return Settings::WORKING_DIRECTORY; }
+float ModMenu::uiScale() { return static_cast<float>(std::clamp(Settings::UI_SCALE.value, 0.75, 1.5)); }
+
+void ModMenu::hide() {
+  if (!is_showing) return;
+  is_showing = false;
+  buildView();
+}
+
+MenuView ModMenu::view() const {
+  std::lock_guard<std::mutex> lock(g_view_mutex);
+  return g_view;
+}
+
+void ModMenu::click(const MenuClick& c) {
+  std::lock_guard<std::mutex> lock(g_view_mutex);
+  if (g_clicks.size() < 16) g_clicks.push_back(c);
+}
+
+void ModMenu::setPopped(unsigned mask) { g_popped = mask; }
+
+void ModMenu::applyClick(const MenuClick& c) {
+  if (c.type == MenuClick::Type::CloseMenu) { is_showing = false; return; }
+  if (c.type == MenuClick::Type::SetColor) {
+    Settings::UI_CUSTOM_R.value = ((c.a >> 16) & 0xFF) / 255.0;
+    Settings::UI_CUSTOM_G.value = ((c.a >> 8) & 0xFF) / 255.0;
+    Settings::UI_CUSTOM_B.value = (c.a & 0xFF) / 255.0;
+    Settings::UI_ACCENT.value = 6;
+    Settings::saveConfig();
+    return;
+  }
+  if (c.type == MenuClick::Type::BarWindow) {
+    Settings::FRAMEBAR.value = c.b ? 1 : 0;
+    Settings::saveConfig();
+    return;
+  }
+  switch (c.type) {  // timeline window
+    case MenuClick::Type::TlRewind:
+      timelinePressHotkey(binds::LOAD);
+      if (timelinePaused()) timelineStep();  // show the restored moment
+      return;
+    case MenuClick::Type::TlSetPoint: timelinePressHotkey(binds::SAVE); return;
+    case MenuClick::Type::TlPlay:     timelineSetPaused(!timelinePaused()); return;
+    case MenuClick::Type::TlStep:     if (timelinePaused()) timelineStep(); return;
+    case MenuClick::Type::TlRecord:   toggleCapture(); return;
+    case MenuClick::Type::TlShow:     setTimelineOn(c.b != 0); return;
+    default: break;
+  }
+  if (c.type == MenuClick::Type::TensionWindow) {
+    Settings::TENSION_ENABLED.value = c.b ? 1 : 0;
+    Settings::saveConfig();
+    return;
+  }
+  // A click in a popped-out window acts on that window's page, then the main
+  // menu goes back to where it was.
+  if (c.page >= 0 && (c.type == MenuClick::Type::Row || c.type == MenuClick::Type::SetChoice)) {
+    const size_t saved_page = current_page;
+    const int saved_cursor = cursor_position;
+    const bool saved_showing = is_showing;
+    current_page = static_cast<size_t>(c.page);
+    is_showing = true;  // the timeline works with the F5 menu closed
+    MenuClick inner = c;
+    inner.page = -1;
+    applyClick(inner);
+    current_page = saved_page;
+    cursor_position = saved_cursor;
+    is_showing = saved_showing;
+    return;
+  }
+  auto page = static_cast<MenuPage>(current_page);
+  if (c.type == MenuClick::Type::Move) {  // dragged in ImGui: keep it there
+    Settings::MENU_CENTER_X_RATIO.value = std::clamp(c.a / 10000.0, 0.0, 1.0);
+    Settings::MENU_CENTER_Y_RATIO.value = std::clamp(c.b / 10000.0, 0.0, 1.0);
+    Settings::saveConfig();
+    return;
+  }
+  if (c.type == MenuClick::Type::OpenNav) {
+    if (c.a < 0 || static_cast<size_t>(c.a) >= ROOT_PAGE_COUNT) return;
+    current_page = static_cast<size_t>(MenuPage::Root);
+    cursor_position = c.a;
+    updateInner(PressedKeys{false, false, false, false, false, true, false});  // enter that page
+    return;
+  }
+  if (page == MenuPage::Root) return;
+  if (c.a < 0 || static_cast<size_t>(c.a) >= rowCountForPage(page)) return;
+  cursor_position = c.a;
+  if (c.type == MenuClick::Type::Row) {
+    updateInner(PressedKeys{false, false, false, false, false, c.b == 1, c.b == 0});
+    return;
+  }
+  // SetChoice: jump straight to that option
+  if (page == MenuPage::Recordings) {
+    if (c.a == 1) g_rec_slot = std::clamp(c.b, 0, recordings::kSlotCount - 1);
+    if (c.a == 8) g_cap_side = c.b ? 1 : 0;
+    if (c.a == 10) setTimelineOn(c.b != 0);
+    if (c.a == 5) g_rec_side = c.b == 0 ? recordings::kDirRight : recordings::kDirLeft;
+    return;
+  }
+  if (page == MenuPage::Layout && c.a == 3 && imgui_overlay::running()) {
+    Settings::UI_ACCENT.value = static_cast<size_t>(std::clamp(c.b, 0, 6));
+    Settings::saveConfig();
+    return;
+  }
+  if (page == MenuPage::Layout && c.a == 1 && imgui_overlay::running()) {
+    Settings::METERS_SNAP.value = c.b ? 1 : 0;
+    Settings::saveConfig();
+    return;
+  }
+  if (page == MenuPage::Keybinds && c.a == static_cast<int>(binds::COUNT) + 1) {
+    binds::use_mod_binds = c.b ? 1 : 0;
+    Settings::saveConfig();
+    return;
+  }
+  if (isSettingsPage(page) && c.a >= 1) {
+    const size_t idx = settingsStartForPage(page) + static_cast<size_t>(c.a - 1);
+    auto* setting = Settings::settings[idx];
+    if (c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
+      setting->value = static_cast<size_t>(c.b);
+      Settings::saveConfig();
+    }
+  }
+}
+
+void ModMenu::buildView() {
+  MenuView v;
+  v.showing = is_showing;
+  const auto page = static_cast<MenuPage>(current_page);
+  for (size_t i = 0; i < ROOT_PAGE_COUNT; i++) v.nav_items.push_back(clean(ROOT_PAGES[i].label));
+  v.nav_focus = (page == MenuPage::Root);
+  // On the root page the right pane previews the highlighted page.
+  const MenuPage shown = v.nav_focus ? ROOT_PAGES[static_cast<size_t>(cursor_position) % ROOT_PAGE_COUNT].page : page;
+  v.nav = static_cast<int>(v.nav_focus ? static_cast<size_t>(cursor_position) : rootIndexForPage(isLayoutSubPage(page) ? MenuPage::Layout : page));
+  // The ImGui menu has no Back row: the side menu entry stands in for it.
+  v.back_focus = !v.nav_focus && cursor_position == 0;
+  v.cursor = v.nav_focus ? -1 : cursor_position - 1;
+  v.title = clean(pageLabel(shown));
+  for (auto& ch : v.title) ch = static_cast<char>(ch == '-' ? ' ' : ch);
+  { const auto a = v.title.find_first_not_of(' '); const auto b = v.title.find_last_not_of(' ');
+    v.title = a == std::string::npos ? "" : v.title.substr(a, b - a + 1); }
+  v.x_ratio = static_cast<float>(Settings::MENU_CENTER_X_RATIO.value);
+  v.y_ratio = static_cast<float>(Settings::MENU_CENTER_Y_RATIO.value);
+  v.extra_width = static_cast<float>(Settings::MENU_WIDTH_EXTRA.value);
+
+  // Rows of one page; used for the right pane and for every popped-out window.
+  auto buildRows = [&](MenuPage shown, std::vector<MenuRowView>& out, std::string& status) {
+  auto row = [&](MenuRowView::Kind k, const std::string& label, const std::string& value = {}) {
+    MenuRowView r; r.kind = k; r.label = label; r.value = value; out.push_back(r);
+  };
+
+  if (isSettingsPage(shown)) {
+    const size_t start = settingsStartForPage(shown), count = settingsCountForPage(shown);
+    for (size_t i = 0; i < count; i++) {
+      const auto* s = Settings::settings[start + i];
+      MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = clean(s->display.title);
+      for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
+      r.choice = static_cast<int>(s->value);
+      out.push_back(r);
+    }
+  } else if (shown == MenuPage::Recordings) {
+    const std::wstring slot_no = std::to_wstring(g_rec_slot + 1);
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Slot";
+      for (int i = 1; i <= recordings::kSlotCount; i++) r.choices.push_back(std::to_string(i));
+      r.choice = g_rec_slot; r.value = utf8(recordings::describeSlot(g_rec_slot)); out.push_back(r); }
+    row(MenuRowView::Kind::Action, utf8(L"Save slot " + slot_no + L" to a file"), "Save");
+    row(MenuRowView::Kind::Number, "File", g_rec_files.empty() ? "no .txt files" : utf8(fitValue(g_rec_files[g_rec_file_idx].stem().wstring(), 40)));
+    row(MenuRowView::Kind::Action, "Browse for a file", "Browse");
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Player side";
+      r.choices = {"1P", "2P"}; r.choice = g_rec_side == recordings::kDirLeft ? 1 : 0; out.push_back(r); }
+    row(MenuRowView::Kind::Action, utf8(L"Load file into slot " + slot_no), "Load");
+    row(MenuRowView::Kind::Action, "Stream to dummy",
+        (recordings::streamActive() || recordings::streamArmed())
+          ? "Stop (" + std::to_string(recordings::streamPos()) + "/" + std::to_string(recordings::streamLen()) + ")" : "Start");
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Capture side";
+      r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
+    row(MenuRowView::Kind::Action, "Capture from replay",
+        replayCaptureActive() ? utf8(L"Stop (" + secondsText(replayCaptureFrames()) + L" / 40 s)") : std::string("Start"));
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Timeline window";
+      r.choices = {"Disabled", "Enabled"}; r.choice = timelineOn() ? 1 : 0; out.push_back(r); }
+    status = utf8(g_rec_status);
+  } else if (shown == MenuPage::Keybinds) {
+    for (size_t i = 0; i < binds::COUNT; i++) {
+      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = utf8(binds::LABELS[i]);
+      r.capturing = binds::capturing == static_cast<int>(i);
+      r.value = utf8(binds::keyName(binds::key[i])); r.choices = {utf8(binds::padName(binds::pad[i]))};
+      out.push_back(r);
+    }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Use these buttons in takeover";
+      r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0; out.push_back(r); }
+    for (size_t i = 0; i < binds::G_COUNT; i++) {
+      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = "Takeover " + utf8(binds::G_LABELS[i]);
+      r.capturing = binds::capturing == binds::GAME_BASE + static_cast<int>(i);
+      r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
+      out.push_back(r);
+    }
+  } else if (shown == MenuPage::TakeoverBinds) {
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Use these binds in takeover";
+      r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0; out.push_back(r); }
+    for (size_t i = 0; i < binds::G_COUNT; i++) {
+      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = utf8(binds::G_LABELS[i]);
+      r.capturing = binds::capturing == binds::GAME_BASE + static_cast<int>(i);
+      r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
+      out.push_back(r);
+    }
+  } else if (shown == MenuPage::Layout && imgui_overlay::running()) {
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Snap meters to frame bar";
+      r.choices = {"Disabled", "Enabled"}; r.choice = Settings::METERS_SNAP.value ? 1 : 0; out.push_back(r); }
+    row(MenuRowView::Kind::Action, "Reset all window positions", "Reset");
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Accent color";
+      for (size_t c = 0; c < Settings::UI_ACCENT.display.count; c++) r.choices.push_back(clean(Settings::UI_ACCENT.display.values[c]));
+      r.choice = static_cast<int>(Settings::UI_ACCENT.value); out.push_back(r); }
+    row(MenuRowView::Kind::Action, "Custom color", "Pick");
+    { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_OPACITY.value * 100)));
+      row(MenuRowView::Kind::Number, "Panel opacity", utf8(b)); }
+    { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_SCALE.value * 100)));
+      row(MenuRowView::Kind::Number, "UI size", utf8(b)); }
+  } else if (shown == MenuPage::Layout) {
+    for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
+    row(MenuRowView::Kind::Action, "Reset all to defaults", "Reset");
+  } else if (isLayoutSubPage(shown)) {
+    size_t count = 0;
+    const LayoutRowDef* rows = layoutRowsForPage(shown, count);
+    for (size_t i = 0; rows && i < count; i++)
+      row(MenuRowView::Kind::Number, utf8(rows[i].label), utf8(formatMenuFloat(Settings::float_settings[rows[i].float_idx]->value)));
+  }
+
+  };
+  buildRows(shown, v.rows, v.status);
+  v.page = static_cast<int>(shown);
+  v.tension_page = shown == MenuPage::Tension;
+  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings ||
+               shown == MenuPage::Keybinds || shown == MenuPage::TakeoverBinds;
+  v.tension_on = Settings::TENSION_ENABLED.value != 0;
+  v.meters_right = Settings::TENSION_SIDE.value == 1;
+  v.meters_snap = Settings::METERS_SNAP.value != 0;
+  {
+    static constexpr unsigned kAccents[6] = {0xFF0000, 0x2B8CFF, 0x00C8AA, 0xA05AFF, 0xFFBE00, 0xE6E6EB};
+    auto byte = [](double x) { return static_cast<unsigned>(std::lround(std::clamp(x, 0.0, 1.0) * 255.0)); };
+    v.custom_rgb = (byte(Settings::UI_CUSTOM_R.value) << 16) | (byte(Settings::UI_CUSTOM_G.value) << 8) | byte(Settings::UI_CUSTOM_B.value);
+    v.accent_rgb = Settings::UI_ACCENT.value < 6 ? kAccents[Settings::UI_ACCENT.value] : v.custom_rgb;
+    v.opacity = static_cast<float>(Settings::UI_OPACITY.value);
+    v.picker_seq = g_picker_seq;
+  }
+  v.mode = timelineMode();
+  v.timeline_on = timelineOn();
+  v.paused = timelinePaused();
+  v.recording = replayCaptureActive();
+  v.rec_frames = replayCaptureFrames();
+  v.rec_status = utf8(g_rec_status);
+  if (v.mode != 0) {
+    static bool scanned = false;  // the timeline lists files before the Recordings page is ever opened
+    if (!scanned) { scanned = true; refreshRecordingFiles(); }
+    std::string unused;
+    buildRows(MenuPage::Recordings, v.rec_rows, unused);
+  }
+  const unsigned mask = g_popped;
+  for (size_t i = 0; i < 32; i++) {
+    if (!(mask & (1u << i))) continue;
+    MenuPanelView pv;
+    pv.page = static_cast<int>(i);
+    pv.title = clean(pageLabel(static_cast<MenuPage>(i)));
+    for (auto& ch : pv.title) ch = static_cast<char>(ch == '-' ? ' ' : ch);
+    { const auto a2 = pv.title.find_first_not_of(' '); const auto b2 = pv.title.find_last_not_of(' ');
+      pv.title = a2 == std::string::npos ? "" : pv.title.substr(a2, b2 - a2 + 1); }
+    buildRows(static_cast<MenuPage>(i), pv.rows, pv.status);
+    v.panels.push_back(std::move(pv));
+  }
+
+  std::lock_guard<std::mutex> lock(g_view_mutex);
+  g_view = std::move(v);
 }
 
 bool ModMenu::barEnabled() const { return Settings::FRAMEBAR.value; }

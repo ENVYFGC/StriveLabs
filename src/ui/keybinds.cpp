@@ -123,7 +123,7 @@ namespace binds {
   }
   void cancelCapture() { capturing = -1; BindWatcherI::setCaptureAll(false); }
 
-  // ponytail: first 300 ms ignored so the confirm key's own repeat does not get captured.
+  // The first 300 ms are ignored so the confirm key's own repeat does not get captured.
   static bool tooEarly() { return GetTickCount64() - capture_start < 300; }
 
   void offerKey(int vk) {

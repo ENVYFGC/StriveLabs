@@ -3,6 +3,8 @@
 #include "draw_utils.h"
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
 struct Palette {
   FLinearColor projectile_color;
@@ -74,6 +76,68 @@ struct PressedKeys {
 };
 
 
+// What the ImGui menu draws. Built on the game thread at the end of each menu
+// update and copied under a lock by the render thread, so ImGui never touches
+// live menu state. Strings are UTF-8.
+struct MenuRowView {
+  enum class Kind { Back, Open, Choice, Action, Number, Bind } kind = Kind::Open;
+  std::string label;
+  std::string value;                 // Action/Number/Bind/Open text
+  std::vector<std::string> choices;  // Choice options, cleaned of the old "<  >" padding
+  int choice = -1;                   // selected index for Choice
+  bool capturing = false;            // Bind row waiting for an input
+};
+
+// A page popped out into its own ImGui window.
+struct MenuPanelView {
+  int page = 0;
+  std::string title;
+  std::vector<MenuRowView> rows;
+  std::string status;
+};
+
+struct MenuView {
+  bool showing = false;
+  int page = 0;              // page shown in the right pane (MenuPage value)
+  bool poppable = false;     // that page can be popped out into its own window
+  bool tension_page = false; // its header button toggles the tension overlay window instead
+  bool tension_on = false;   // Tension Overlay setting
+  bool meters_right = false; // Overlay Side setting: put the meters window on the right
+  bool meters_snap = false;  // Layout: keep the meters window on top of the frame bar
+  // Appearance
+  unsigned accent_rgb = 0xFF0000;  // 0xRRGGBB
+  unsigned custom_rgb = 0xFF0000;
+  float opacity = 0.94f;           // panel background alpha
+  int picker_seq = 0;              // changes when the custom color picker should open
+  // Timeline window
+  int mode = 0;              // 0 = other, 1 = training, 2 = replay
+  bool timeline_on = true;
+  bool paused = false;
+  bool recording = false;
+  unsigned rec_frames = 0;
+  std::string rec_status;
+  std::vector<MenuRowView> rec_rows;  // Recordings page rows, for the timeline window
+  std::vector<MenuPanelView> panels;
+  int nav = 0;               // highlighted entry in the side menu
+  bool nav_focus = true;     // true on the root page: the cursor is in the side menu
+  bool back_focus = false;   // in a page, on the hidden Back row: shown on the side menu entry
+  std::vector<std::string> nav_items;
+  std::string title;
+  std::vector<MenuRowView> rows;
+  int cursor = 0;            // selected row in the right pane, -1 = none (rows never include Back)
+  std::string status;
+  float x_ratio = 0.5f, y_ratio = 0.5f, extra_width = 0.0f;
+};
+
+// Mouse actions from the ImGui menu, applied on the game thread in update().
+struct MenuClick {
+  enum class Type { OpenNav, Row, SetChoice, Move, TensionWindow, CloseMenu,
+                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
+  int a = 0;          // nav index or row index
+  int b = 0;          // Row: 1 = right / activate, 0 = left; SetChoice: choice index
+  int page = -1;      // Row / SetChoice in a popped-out window: that window's page
+};
+
 class ModMenu {
   DrawContext tool;
 
@@ -82,6 +146,11 @@ class ModMenu {
   size_t current_page = 0;
 
   void changeSetting(size_t idx, bool right=true);
+  void buildView();
+  void applyClick(const MenuClick& click);
+  void updateInner(PressedKeys data);
+  void drawLayoutGhost(int page);   // layout sub-page preview boxes, drawn on the HUD
+  bool hud_panel = true;            // false while ImGui draws the menu
 
   ModMenu();
 public:
@@ -92,6 +161,12 @@ public:
   void draw();
 
   bool isShowing() const { return is_showing; }
+  void hide();                           // game thread: close the menu (left training / replay)
+  MenuView view() const;                 // render thread: copy of the latest snapshot
+  void click(const MenuClick& click);    // render thread: queue a mouse action
+  void setPopped(unsigned mask);         // render thread: bit per MenuPage shown in its own window
+  static std::filesystem::path dataDir(); // ue4ss folder (fonts, logo, config)
+  static float uiScale();                 // UI size setting, 0.75 to 1.5 (any thread)
   bool barEnabled() const;
   bool hitboxEnabled() const;
   bool fadeEnabled() const;

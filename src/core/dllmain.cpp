@@ -7,6 +7,9 @@
 #include "framebar.h"
 #include "hitboxes.h"
 #include "keybinds.h"
+#include "imgui_overlay.h"
+namespace crash_log { void install(const std::filesystem::path& dir); }
+namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
 #include "menu.h"
 #include "recordings.h"
 #include "sigscan.h"
@@ -180,6 +183,9 @@ using funcUpdateOnPreTick_t = void (*)(AREDGameState_Battle*, float);
 void hook_AHUDPostRender(void*);
 void hook_ACamUpdateCamera(void*, float);
 void hook_MatchStart(AREDGameState_Battle*);
+void replayCaptureCancel();
+void timelineSetPaused(bool paused);
+static bool g_skip_frame;
 void hook_UpdateBattle(AREDGameState_Battle*, float);
 
 // Enums
@@ -276,6 +282,9 @@ class StateMgr
 {
     UREDGameCommon* GameCommon = nullptr;
     int last_mode = GAME_MODE_DEBUG_BATTLE;
+public:
+    bool mode_battle_logged = false;  // logs which game modes run the mod, for user reports
+private:
     bool in_allowed_mode = false;
     std::vector<int> allowed_modes = {GAME_MODE_TRAINING, GAME_MODE_REPLAY, GAME_MODE_MISSION, GAME_MODE_UNDECIDED};
 
@@ -291,6 +300,10 @@ public:
         {
             //       RC::Output::send<LogLevel::Warning>(STR("Mode Change: {}\n"), current_mode);
             last_mode = current_mode;
+            mode_battle_logged = false;
+            { char b[64]; snprintf(b, sizeof(b), "mode: %d (%s)", current_mode,
+                (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.end()) ? "mod active" : "mod idle");
+              COMBO_LOG(b); }
             in_allowed_mode = (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.
                 end());
         }
@@ -707,10 +720,17 @@ TensionOverlay tension_overlay;
 static bool g_overlays_visible = true;
 // Loading screens (e.g. changing character from the training menu) keep the mode at
 // training but stop the battle update, so also require a battle update in the last 300 ms.
-static unsigned long long g_last_battle_update = 0;
+static std::atomic<unsigned long long> g_last_battle_update{0};
+
+// Render thread: true while a training or replay fight is on screen (not menus,
+// loading screens or character select). StriveLabs windows hide otherwise.
+bool modScreenActive() { return GetTickCount64() - g_last_battle_update < 300; }
 
 void hook_MatchStart(AREDGameState_Battle* GameState)
 {
+    replayCaptureCancel();  // a new match or replay: the old capture start means nothing
+    select_memory::save();  // remember this character select's picks for the next restart
+    timelineSetPaused(false);
     g_overlays_visible = false;
     game_state.matchStarted = true;
     game_state.roundActive = false;
@@ -737,6 +757,7 @@ void hook_AHUDPostRender(void* hud)
     if (!game_state.checkMode())
     {
         g_overlays_visible = false;
+        ModMenu::instance().hide();  // left training / replay: close the F5 menu
         orig_AHUDPostRender(hud);
         return;
     }
@@ -771,7 +792,7 @@ void hook_ACamUpdateCamera(void* cam, float DeltaTime)
 
 // Gamepad: Back+Start toggles the menu, D-pad navigates. Feeds the same button
 // states the keyboard hook does, so the menu code does not know the difference.
-// ponytail: polls all 4 XInput slots every battle tick; DirectInput-only pads not covered.
+// Polls all 4 XInput slots every battle tick. DirectInput-only pads are not covered.
 static void pollGamepad()
 {
     // One merged mask across all pads, with triggers and left stick folded in (see binds::heldPadMask).
@@ -795,6 +816,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         return;
     }
     g_last_battle_update = GetTickCount64();
+    if (!game_state.mode_battle_logged) { game_state.mode_battle_logged = true; COMBO_LOG("battle code running in this mode"); }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
 
@@ -867,6 +889,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         tension_overlay.reset();
     }
 
+    if (g_skip_frame) return;  // timeline pause: no fight update this frame
     orig_UpdateBattle(GameState, DeltaTime);
 
     if (game_state.matchStarted)
@@ -913,6 +936,21 @@ static bool is_ptr_in_game_module(const void* p)
 //   m_Count         = frames already consumed inside the current entry
 //   m_SolidPosition = absolute FRAME position
 // Taking the low half alone would collapse every hold to a single frame.
+// Replay entries keep the direction as a numpad digit in the low 4 bits, screen
+// absolute (6 = right for both players), and buttons in the same bits as RECFLG.
+// Verified live: P1 3 -> fed 0x0A (down+right), P2 6 -> fed 0x08 (right), 0x13 -> 0x1A.
+// Training slots and .txt files use RECFLG direction bits, so convert.
+static uint16_t replayToRecflg(uint32_t entry)
+{
+    static constexpr uint16_t kNumpad[16] = {
+        0x0,                      // 0: none
+        0x6, 0x2, 0xA,            // 1 2 3: down-left, down, down-right
+        0x4, 0x0, 0x8,            // 4 5 6: left, neutral, right
+        0x5, 0x1, 0x9,            // 7 8 9: up-left, up, up-right
+        0, 0, 0, 0, 0, 0};
+    return static_cast<uint16_t>((entry & 0xFFF0) | kNumpad[entry & 0xF]);
+}
+
 std::vector<uint16_t> captureReplayInputs(int peer, uint32_t fromEntry,
                                           uint32_t entryCount, uint32_t tailFrames)
 {
@@ -927,7 +965,7 @@ std::vector<uint16_t> captureReplayInputs(int peer, uint32_t fromEntry,
         const uint32_t w = buf[fromEntry + i];
         if (i < 8) { char t[16]; snprintf(t, sizeof(t), "%08X ", w); raw += t; }
 
-        const uint16_t flags = static_cast<uint16_t>(w & 0xFFFF);
+        const uint16_t flags = replayToRecflg(w);
         uint32_t hold = w >> 16;
         // A zero-length run would silently drop an input; treat it as one frame.
         if (hold == 0) hold = 1;
@@ -939,8 +977,7 @@ std::vector<uint16_t> captureReplayInputs(int peer, uint32_t fromEntry,
     // consumed, otherwise the capture runs past where the user paused.
     if (tailFrames)
     {
-        const uint16_t flags =
-            static_cast<uint16_t>(buf[fromEntry + entryCount] & 0xFFFF);
+        const uint16_t flags = replayToRecflg(buf[fromEntry + entryCount]);
         out.insert(out.end(), tailFrames, flags);
     }
 
@@ -974,7 +1011,12 @@ std::vector<uint16_t> captureCurrentRound(int peer)
 void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 {
     // Menu open: swallow pad/keyboard so the D-pad drives the menu, not the character.
-    if (ModMenu::instance().isShowing()) recFlag = static_cast<RECFLG_ENUM>(0);
+    // In a replay only the side being taken over is the player's; every other side
+    // is fed from the replay itself, and zeroing it froze both characters and
+    // desynced the replay.
+    if (ModMenu::instance().isShowing() &&
+        (!game_state.checkModeReplay() || (!replay_manager.isAnalyzerSame(nullptr) && replay_manager.isAnalyzerSame(Analyzer))))
+        recFlag = static_cast<RECFLG_ENUM>(0);
 
     // Live stream: feed our own per-frame flags to the P2 (dummy) analyzer.
     // asw_engine::inputs[0..2] belong to P1 and [3..5] to P2, so [3] is the
@@ -1016,7 +1058,8 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
     if (binds::use_mod_binds)
     {
         // Mod's own takeover binds: keyboard + XInput, independent of the game's key config.
-        orig_UpdateBattleInput(Analyzer, static_cast<RECFLG_ENUM>(binds::takeoverRecFlag()));
+        // Menu open: the inputs drive the menu instead.
+        orig_UpdateBattleInput(Analyzer, static_cast<RECFLG_ENUM>(ModMenu::instance().isShowing() ? 0u : binds::takeoverRecFlag()));
         return;
     }
 
@@ -1027,7 +1070,7 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
     const auto newRecflag = orig_GameKeyToRecFlag(pad, gameKeyFlag, false);
 
     *is_battle_ptr = bak;
-    orig_UpdateBattleInput(Analyzer, newRecflag);
+    orig_UpdateBattleInput(Analyzer, ModMenu::instance().isShowing() ? static_cast<RECFLG_ENUM>(0) : newRecflag);
 }
 
 void hook_UpdateSystem(uintptr_t System)
@@ -1036,10 +1079,65 @@ void hook_UpdateSystem(uintptr_t System)
     system_red = (AASystemRED*)System;
 }
 
+
+// ---- Replay capture: up to 40 seconds of one side's inputs ------------------
+// Start remembers the side's replay read position; stop collects everything from
+// there to the current position. Frames are counted as the replay plays, and the
+// menu stops the capture itself once 2400 frames (one training slot) are in.
+namespace {
+    bool g_cap_active = false;
+    int g_cap_peer = 1;           // replay peer 0 = P1 seat, 1 = P2 seat
+    ReplayHead g_cap_start{};
+    uint32_t g_cap_frames = 0;
+}
+
+void replayCaptureCancel() { g_cap_active = false; }
+bool replayCaptureActive() { return g_cap_active; }
+uint32_t replayCaptureFrames() { return g_cap_frames; }
+bool replayCaptureFull() { return g_cap_active && g_cap_frames >= recordings::kMaxFrames; }
+
+bool replayCaptureStart(int peer, std::wstring& err)
+{
+    if (!game_state.checkModeReplay()) { err = L"Open a replay first"; return false; }
+    ReplayHead h{};
+    if (!replay_manager.peerReadHead(peer, h)) { err = L"The replay isn't ready yet"; return false; }
+    g_cap_active = true;
+    g_cap_peer = peer;
+    g_cap_start = h;
+    g_cap_frames = 0;
+    return true;
+}
+
+std::vector<uint16_t> replayCaptureStop(std::wstring& err)
+{
+    std::vector<uint16_t> out;
+    if (!g_cap_active) return out;
+    g_cap_active = false;
+    ReplayHead cur{};
+    if (!replay_manager.peerReadHead(g_cap_peer, cur)) { err = L"The replay isn't ready"; return out; }
+    if (cur.m_Cursor < g_cap_start.m_Cursor ||
+        (cur.m_Cursor == g_cap_start.m_Cursor && cur.m_Count < g_cap_start.m_Count))
+    {
+        err = L"The replay went back before the capture started";
+        return out;
+    }
+    out = captureReplayInputs(g_cap_peer, g_cap_start.m_Cursor, cur.m_Cursor - g_cap_start.m_Cursor, cur.m_Count);
+    // The first entry was partly played before the capture started.
+    const size_t skip = std::min<size_t>(g_cap_start.m_Count, out.size());
+    out.erase(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(skip));
+    if (out.size() > recordings::kMaxFrames) out.resize(recordings::kMaxFrames);
+    if (out.empty()) err = L"Nothing was captured";
+    return out;
+}
+
 void hook_UpdateReplay(BattleReplayManager* Manager)
 {
+    if (g_skip_frame) return;  // timeline pause: the replay waits too
     if (replay_manager.isAnalyzerSame(nullptr))
+    {
         orig_UpdateReplay(Manager);
+        if (g_cap_active) g_cap_frames++;  // one replay frame played
+    }
 }
 
 // Auto rewind point.  The engine owns all 20 BackupData slots, so instead of
@@ -1063,13 +1161,26 @@ funcFxRelease_t orig_FxRelease1 = nullptr;
 funcFxRelease_t orig_FxRelease2 = nullptr;
 static std::set<std::wstring> g_fx_classes;
 
-static void collectFightObjects(std::vector<uint8_t*>& out)
+// Second kind of linked actor: fight object +0x43A0 <-> actor +0x29C98, with an
+// "unlinked" flag at actor +0x2A094. The game's second rollback cleanup retires
+// them per class: clear the link, set the flag, call that class's release. A
+// rewind across a round change left one linked to a fight slot that no longer
+// owned it, and the actor's update then crashed reading through that link.
+using funcActorClass_t = Unreal::UClass* (*)();
+using funcActorRelease_t = void (*)(void*);
+funcActorClass_t orig_ActorClassA = nullptr, orig_ActorClassB = nullptr;
+funcActorRelease_t orig_ActorReleaseA = nullptr, orig_ActorReleaseB = nullptr;
+static std::set<std::wstring> g_actor_classes;
+
+// Active objects own their links. whole_pool adds the inactive slots too: F9
+// restores their links as well, and the next reset releases every slot's link.
+static void collectFightObjects(std::vector<uint8_t*>& out, bool whole_pool = false)
 {
     auto* eng = asw_engine::get();
     if (!eng) return;
-    const int n = (std::min)(eng->entity_count, 107);
+    const int n = (std::min)(whole_pool ? eng->pool_count : eng->entity_count, 107);
     for (int i = 0; i < n; i++)
-        if (auto* e = reinterpret_cast<uint8_t*>(eng->entities[i])) out.push_back(e);
+        if (auto* e = reinterpret_cast<uint8_t*>(whole_pool ? eng->pool[i] : eng->entities[i])) out.push_back(e);
 }
 
 // Each battle frame: remember the class of every linked effect actor, so F9 can list all of them.
@@ -1080,10 +1191,14 @@ static void trackEffectClasses()
     collectFightObjects(objs);
     for (auto* e : objs)
     {
-        auto* a = *reinterpret_cast<Unreal::UObject**>(e + 0x43C8);
-        if (!a) continue;
-        auto* cls = a->GetClassPrivate();
-        if (cls && seen.insert(cls).second) g_fx_classes.insert(cls->GetName());
+        if (auto* a = *reinterpret_cast<Unreal::UObject**>(e + 0x43C8)) {
+            auto* cls = a->GetClassPrivate();
+            if (cls && seen.insert(cls).second) g_fx_classes.insert(cls->GetName());
+        }
+        if (auto* a = *reinterpret_cast<Unreal::UObject**>(e + 0x43A0)) {
+            auto* cls = a->GetClassPrivate();
+            if (cls && seen.insert(cls).second) g_actor_classes.insert(cls->GetName());
+        }
     }
 }
 
@@ -1117,7 +1232,9 @@ static void repairEffectsAfterLoad()
         usable.erase(a);
         released++;
     }
-    for (auto* e : objs)
+    std::vector<uint8_t*> slots;
+    collectFightObjects(slots, true);
+    for (auto* e : slots)
     {
         auto*& link = *reinterpret_cast<void**>(e + 0x43C8);
         if (link && !usable.count(link))
@@ -1127,8 +1244,32 @@ static void repairEffectsAfterLoad()
             cleared++;
         }
     }
+    // Second kind: actors whose fight object no longer links back to them
+    int released_b = 0;
+    if (orig_ActorClassA && orig_ActorClassB && orig_ActorReleaseA && orig_ActorReleaseB && !g_actor_classes.empty())
+    {
+        std::set<void*> linked_b;
+        for (auto* e : objs)
+            if (auto* a = *reinterpret_cast<void**>(e + 0x43A0)) linked_b.insert(a);
+        std::vector<Unreal::UObject*> bs;
+        for (const auto& name : g_actor_classes) UObjectGlobals::FindAllOf(name.c_str(), bs);
+        Unreal::UClass* class_a = orig_ActorClassA();
+        Unreal::UClass* class_b = orig_ActorClassB();
+        for (auto* obj : bs)
+        {
+            auto* a = reinterpret_cast<uint8_t*>(obj);
+            auto*& link = *reinterpret_cast<void**>(a + 0x29C98);
+            if (!link || linked_b.count(a)) continue;
+            link = nullptr;
+            a[0x2A094] = 1;
+            if (class_a && obj->IsA(class_a)) orig_ActorReleaseA(obj);
+            else if (class_b && obj->IsA(class_b)) orig_ActorReleaseB(obj);
+            released_b++;
+        }
+    }
     COMBO_LOG("F9 effects: released " + std::to_string(released) + ", cleared " + std::to_string(cleared)
-              + ", tracked classes " + std::to_string(g_fx_classes.size()));
+              + ", actors released " + std::to_string(released_b)
+              + ", tracked classes " + std::to_string(g_fx_classes.size()) + "+" + std::to_string(g_actor_classes.size()));
 }
 
 // ---- F9 DANGER banner sync ---------------------------------------------------
@@ -1166,9 +1307,36 @@ static void placeRewindPoint()
     if (game_state.checkModeReplay()) replay_manager.saveBackup();
 }
 
+
+// ---- Timeline window controls --------------------------------------------------
+// The timeline's pause skips the fight and replay updates frame by frame while the
+// game keeps drawing, so its Play button can still be clicked. (F3 instead holds
+// the whole update loop, which stops drawing too.) Its buttons queue hotkey
+// presses for the start of the next frame, where the mod reads F6 / F9.
+static std::atomic<bool> g_soft_pause{false};
+static std::atomic<int> g_soft_steps{0};
+static std::atomic<unsigned> g_pending_hotkeys{0};
+
+void timelinePressHotkey(int action) { g_pending_hotkeys |= 1u << action; }
+void timelineSetPaused(bool paused) { g_soft_pause = paused; if (!paused) g_soft_steps = 0; }
+bool timelinePaused() { return g_soft_pause; }
+void timelineStep() { g_soft_steps++; }
+int timelineMode() { return !game_state.checkMode() ? 0 : game_state.checkModeReplay() ? 2 : 1; }
+
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
 {
     keybindings.checkBinds(false);
+    for (unsigned m = g_pending_hotkeys.exchange(0), a = 0; m; m >>= 1, a++)
+        if (m & 1) keybindings.setButtonIndex(static_cast<int>(a), true);
+
+    // Timeline pause: skip this frame's fight and replay updates (one step lets one through).
+    g_skip_frame = false;
+    if (g_soft_pause && game_state.checkMode())
+    {
+        if (g_soft_steps > 0) g_soft_steps--;
+        else g_skip_frame = true;
+    }
+    else if (g_soft_pause) g_soft_pause = false;  // left training / replay
 
     if (game_state.checkMode())
     {
@@ -1322,6 +1490,31 @@ public:
             {
                 orig_EffectCleanupA = reinterpret_cast<funcEffectCleanup_t>(rel(hit + 8));
                 orig_EffectCleanupB = reinterpret_cast<funcEffectCleanup_t>(rel(hit + 21));
+                // Inside the second cleanup, per actor:
+                //   mov rbx,[rbx+50] ; call ClassA
+                //   mov rcx,rbx ; je +3 ; mov rcx,r12 ; call ReleaseA ; call ClassB
+                //   mov rbx,r12 ; mov rcx,rbx ; call ReleaseB
+                const auto* cb = reinterpret_cast<const uint8_t*>(orig_EffectCleanupB);
+                auto find = [cb](std::initializer_list<int> pat) -> int {
+                    const int n = static_cast<int>(pat.size());
+                    for (int i = 0; i < 0x500 - n; i++) {
+                        int k = 0;
+                        for (int b : pat) { if (b >= 0 && cb[i + k] != b) break; k++; }
+                        if (k == n) return i + n - 1;  // index of the final E8
+                    }
+                    return -1;
+                };
+                const int ca = find({0x48, 0x8B, 0x5B, 0x50, 0xE8});
+                const int ra = find({0x48, 0x8B, 0xCB, 0x74, 0x03, 0x49, 0x8B, 0xCC, 0xE8});
+                const int rb = find({0x49, 0x8B, 0xDC, 0x48, 0x8B, 0xCB, 0xE8});
+                if (ca >= 0 && ra >= 0 && rb >= 0 && cb[ra + 5] == 0xE8)
+                {
+                    const auto at = [cb](int i) { return reinterpret_cast<uintptr_t>(cb + i); };
+                    orig_ActorClassA = reinterpret_cast<funcActorClass_t>(rel(at(ca)));
+                    orig_ActorReleaseA = reinterpret_cast<funcActorRelease_t>(rel(at(ra)));
+                    orig_ActorClassB = reinterpret_cast<funcActorClass_t>(rel(at(ra + 5)));
+                    orig_ActorReleaseB = reinterpret_cast<funcActorRelease_t>(rel(at(rb)));
+                }
                 const auto* body = reinterpret_cast<const uint8_t*>(orig_EffectCleanupA);
                 for (int i = 0; i < 0x400; i++)
                 {
@@ -1426,8 +1619,12 @@ public:
         auto working_dir = UE4SSProgram::get_program().get_working_directory();
         ComboLog::instance().init(working_dir);
         COMBO_LOG("StriveLabs loaded");
+        crash_log::install(working_dir);  // first hard fault -> combo_log.txt + StriveLabs_crash.dmp, for user reports
+        select_memory::init(working_dir);
+        imgui_overlay::install();
         COMBO_LOG(orig_FxRelease1 ? "effect repair: found" : "effect repair: NOT found");
         COMBO_LOG(orig_DangerHide ? "danger sync: found" : "danger sync: NOT found");
+        COMBO_LOG(orig_ActorReleaseB ? "actor repair: found" : "actor repair: NOT found");
     }
 };
 

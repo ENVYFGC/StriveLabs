@@ -1,14 +1,15 @@
-Put Eddienput-style .txt recordings here.
+This is where your recordings go. They're plain .txt files in Eddienput style.
 
-In game: F5 -> Recordings
-  Save Slot N into txt     writes the slot here, named by date + inputs
-  File Selection           pick a .txt
-  Player Side              side the recording plays back on (dummy = 2P)
-  Load into Game's Slot N  writes it into that training slot
+In game, open F5 and go to Recordings:
+  Save Slot N into txt     saves that training slot in here
+  Browse / File Selection  picks a .txt
+  Player Side              which side it plays on (the dummy is usually 2P)
+  Load into Game's Slot N  puts the file into that training slot
 
-Then use the game's own playback button. Nothing is simulated -- the mod only
-fills the training slot; GGST plays it.
+Then play it with the game's own playback button. StriveLabs only fills the
+slot, the game does the playing.
 
-Syntax:  W<n> wait, X tap, [X] hold, ]X[ release, + same frame, # comment
-Symbols: 1-9 numpad, P K S H D, Dash, RC, FD, Respect
-Limit:   2400 frames (40s) per slot
+How the files are written:
+  W<n> wait, X tap, [X] hold, ]X[ release, + same frame, # comment
+  Inputs are numpad 1 to 9, P K S H D, Dash, RC, FD and Respect.
+  A slot holds up to 2400 frames, which is 40 seconds.

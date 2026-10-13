@@ -1,4 +1,7 @@
 #include "framebar_p.h"
+#include "imgui_overlay.h"
+#include <algorithm>
+#include <cmath>
 
 #include <Windows.h>
 
@@ -648,6 +651,42 @@ void FrameBar::Data::draw() {
 
   auto player_one_info = makeStatsText(data.first.displayed_stats, advantage);
   auto player_two_info = makeStatsText(data.second.displayed_stats, -advantage);
+
+  // With ImGui running, the frame bar is its own window: hand over the cells.
+  if (imgui_overlay::running()) {
+    auto pack = [](FLinearColor c) {  // linear -> sRGB bytes, IM_COL32 layout
+      auto ch = [](float v) {
+        v = std::clamp(v, 0.0f, 1.0f);
+        const float s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+        return static_cast<unsigned>(std::lround(s * 255.0f));
+      };
+      const unsigned a = static_cast<unsigned>(std::lround(std::clamp(c.A, 0.0f, 1.0f) * 255.0f));
+      return ch(c.R) | (ch(c.G) << 8) | (ch(c.B) << 16) | (a << 24);
+    };
+    static imgui_overlay::FrameBarView view;
+    view.info[0] = player_one_info;
+    view.info[1] = player_two_info;
+    view.bg = pack(options.palette.background_color);
+    view.delim = options.show_delim;
+    view.cancels = options.show_cancels;
+    view.crossups = options.show_crossups;
+    const PlayerData* rows[2] = {&data.first, &data.second};
+    for (int r = 0; r < 2; r++) {
+      for (int i = 0; i < FRAME_SEGMENTS && i < 120; i++) {
+        const FrameInfo& in = rows[r]->segments[i];
+        auto& out = view.rows[r][i];
+        out.on = in.state != PST_None;
+        if (!out.on) continue;
+        auto color = options.palette.state_colors[in.state];
+        if (options.show_fade) color = color * static_cast<float>(in.decay);
+        out.color = pack(color);
+        out.mods = static_cast<unsigned char>(in.mods);
+        out.trunc = in.trunc;
+      }
+    }
+    imgui_overlay::setFrameBar(view);
+    return;
+  }
 
   tool.drawOutlinedText(BAR_LEFT, INFO_ONE_LOC, Unreal::FString(player_one_info.c_str()), BAR_TEXT_SIZE);
   tool.drawOutlinedText(BAR_LEFT, INFO_TWO_LOC, Unreal::FString(player_two_info.c_str()), BAR_TEXT_SIZE);

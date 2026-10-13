@@ -19,6 +19,7 @@
 
 #include "arcsys.h"
 #include "menu.h"
+#include "imgui_overlay.h"
 
 #include <UnrealDef.hpp>
 
@@ -39,7 +40,7 @@ namespace {
   // wall code). Once it is at 3000 or more, the next wall hit sticks the defender
   // and the game adds 10000; at 10000 or more the next hit breaks the wall, and it
   // resets to 0.
-  // ponytail: thresholds are the game's globals hardcoded; read them if a patch changes them.
+  // Thresholds are the game's own values, hardcoded. Read them from the game if a patch changes them.
   constexpr int WALL_DAMAGE_OFFSET = 0xD860;
   constexpr int WALL_STICK = 3000;
   constexpr int WALL_BREAK = 10000;
@@ -379,6 +380,10 @@ struct TensionOverlay::Data {
     append_player_lines(lines, options.penalties, L"P1 Tension Penalty: ", p1_tension_penalty, L"P2 Tension Penalty: ", p2_tension_penalty);
     append_player_lines(lines, options.current_tension, L"P1 Tension: ", p1_tension, L"P2 Tension: ", p2_tension);
     append_wall_lines(lines, options.wall_damage, p1_wall_damage, p2_wall_damage);
+
+    // With ImGui running, the lines go to the tension overlay window instead.
+    imgui_overlay::setTensionLines(lines);
+    if (imgui_overlay::running()) return;
 
     if (lines.empty()) {
       return;
