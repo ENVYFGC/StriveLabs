@@ -468,9 +468,12 @@ namespace menu_ui {
       const float x0 = f.o.x + pad, x1 = f.o.x + f.w - pad;
       float y = f.o.y + f.head + 3 * S;
       const float bar_h = std::max((f.o.y + f.h - 4 * S - y - 2 * lh - gap) * 0.5f, 6 * S);
-      const float cell = (x1 - x0) / 120.0f;
-      const float sp = std::max(cell * (4.0f / 24.0f), 1.0f);
-      const float seg_w = std::max(cell - sp, 1.0f);
+      // Like the HUD bar, fit 120 cells plus a trailing gap into the background.
+      // Keep enough space for the delimiter and crossup markers at either edge.
+      const float desired_sp = std::max((x1 - x0) * (4.0f / (120 * 24.0f + 4.0f)), std::max(1.5f * S, 1.0f));
+      const float sp = std::min(desired_sp, (x1 - x0) / (120 * 2.0f + 1.0f));
+      const float cell = (x1 - x0 - sp) / 120.0f;
+      const float seg_w = cell - sp;
       const float vsp = bar_h * (4.0f / 44.0f);
       auto stats = [&](const std::string& s, float ty) {
         const float outline = std::max(S, 1.0f);
@@ -480,7 +483,7 @@ namespace menu_ui {
       };
       auto bar = [&](int row, float top) {
         dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, top + bar_h), fb.bg);
-        const float sy = top + vsp, sh = bar_h - 2 * vsp, bt = std::max(1.5f * S, 1.0f);
+        const float sy = top + vsp, sh = bar_h - 2 * vsp, bt = std::min(sp, std::max(1.5f * S, 1.0f));
         for (int i = 0; i < 120; i++) {
           const auto& c = fb.rows[row][i];
           if (!c.on) continue;
