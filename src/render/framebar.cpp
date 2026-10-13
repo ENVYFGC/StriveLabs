@@ -516,6 +516,13 @@ void FrameBar::Data::addFrame() {
   if (!engine)
     return;
 
+  // Native replay pause can keep calling UpdateBattle without advancing the
+  // simulation. Only process each game frame once, including projectile state.
+  const int game_frame = engine->GameFrame;
+  if (game_frame == last_game_frame)
+    return;
+  last_game_frame = game_frame;
+
   auto &p_one = *engine->players[0].entity;
   auto &p_two = *engine->players[1].entity;
 
@@ -632,6 +639,7 @@ void FrameBar::Data::addFrame() {
   combo_active = true;
 }
 void FrameBar::Data::reset() {
+  last_game_frame = -1;
   combo_active = false;
   data.first.current_state = PlayerState();
   data.second.current_state = PlayerState();
