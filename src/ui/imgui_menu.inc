@@ -719,7 +719,12 @@ namespace menu_ui {
     static float applied_x = -1, applied_y = -1;
     static bool pending = false;
     static ImVec2 last_size(0, 0);
-    if (pending && std::fabs(v.x_ratio - applied_x) < 0.0005f && std::fabs(v.y_ratio - applied_y) < 0.0005f) pending = false;
+    if (pending && std::fabs(v.x_ratio - applied_x) < 0.0005f && std::fabs(v.y_ratio - applied_y) < 0.0005f) {
+      // Saving rounds the ratios. Acknowledge that result without moving the
+      // window again: ImGui's pixel rounding would otherwise feed back into saves.
+      applied_x = v.x_ratio; applied_y = v.y_ratio;
+      pending = false;
+    }
     if (!pending && (v.x_ratio != applied_x || v.y_ratio != applied_y) && last_size.x > 0) {
       ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * v.x_ratio - last_size.x * 0.5f,
                                      io.DisplaySize.y * v.y_ratio - last_size.y * 0.5f), ImGuiCond_Always);
