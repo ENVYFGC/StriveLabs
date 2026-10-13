@@ -535,7 +535,7 @@ namespace menu_ui {
         const float vx = f.o.x + f.w - pad - text_w(f_bold, value);
         text_outlined(f.dl, f_bold, ImVec2(vx, y + (lh - f_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
         f.dl->PushClipRect(ImVec2(f.o.x, y), ImVec2(std::max(f.o.x, vx - 8 * S), y + lh), true);
-        text_outlined(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), MUTED, label);
+        text_outlined(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, label);
         f.dl->PopClipRect();
         y += lh;
       }
