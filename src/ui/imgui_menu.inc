@@ -304,7 +304,8 @@ namespace menu_ui {
     // Buttons, right to left: close, minimize
     const float bs = f.head - 12 * S;
     if (!title.empty()) {
-      const float title_end = o.x + f.w - 8 * S - 2 * (bs + 4 * S) - 6 * S;
+      const float title_end = interactive ? o.x + f.w - 8 * S - 2 * (bs + 4 * S) - 6 * S
+                                          : o.x + f.w - PAD * S;
       dl->PushClipRect(ImVec2(o.x, o.y), ImVec2(std::max(o.x, title_end), o.y + f.head), true);
       text(dl, f_bold, ImVec2(o.x + PAD * S, o.y + (f.head - f_bold->FontSize) * 0.5f + 1 * S), RED_TEXT, upper(title));
       dl->PopClipRect();
@@ -329,14 +330,17 @@ namespace menu_ui {
       bx -= bs + 4 * S;
       return hit;
     };
-    if (square_button("close", true)) f.closed = true;
-    if (square_button("min", false)) {
-      if (!ws.collapsed) { ws.collapsed = true; ws.open_h = f.h; }
-      else { ws.collapsed = false; }
+    // Passive overlays keep their title and content, but have no window controls.
+    if (interactive) {
+      if (square_button("close", true)) f.closed = true;
+      if (square_button("min", false)) {
+        if (!ws.collapsed) { ws.collapsed = true; ws.open_h = f.h; }
+        else { ws.collapsed = false; }
+      }
     }
 
     // Our own square resize grip, bottom-right
-    if (!ws.collapsed) {
+    if (interactive && !ws.collapsed) {
       const float g = 10 * S;
       const ImVec2 c(o.x + f.w - 3 * S, o.y + f.h - 3 * S);
       dl->AddRectFilled(ImVec2(c.x - 3 * S, c.y - g), c, RED_LINE);
