@@ -33,6 +33,8 @@ namespace menu_ui {
   ImFont* f_bold = nullptr;
   ImFont* f_title = nullptr;
   ImFont* f_small = nullptr;
+  ImFont* f_framebar = nullptr;
+  ImFont* f_framebar_stats = nullptr;
   ImFont* f_overlay_bold = nullptr;
   ImFont* f_meters = nullptr;
   ImFont* f_meters_bold = nullptr;
@@ -61,6 +63,8 @@ namespace menu_ui {
     f_bold = add("Barlow-SemiBold.ttf", 17.0f);
     f_title = add("BarlowCondensed-Bold.ttf", 24.0f);
     f_small = add("Barlow-Medium.ttf", 14.0f);
+    f_framebar = add("Barlow-Medium.ttf", 20.0f);
+    f_framebar_stats = add("Barlow-Medium.ttf", 24.0f);
     f_overlay_bold = add("Barlow-SemiBold.ttf", 20.0f);
     f_meters = add("Barlow-Medium.ttf", 32.0f);
     f_meters_bold = add("Barlow-SemiBold.ttf", 32.0f);
@@ -69,10 +73,15 @@ namespace menu_ui {
       f_body = f_bold = f_title = f_small = io.Fonts->AddFontDefault(&cfg);
       COMBO_LOG("imgui: StriveLabs_fonts not found, using the default font");
     }
-    if (!f_overlay_bold) {
+    if (!f_framebar) {
       ImFontConfig cfg; cfg.SizePixels = 20.0f * S;
-      f_overlay_bold = io.Fonts->AddFontDefault(&cfg);
+      f_framebar = io.Fonts->AddFontDefault(&cfg);
     }
+    if (!f_framebar_stats) {
+      ImFontConfig cfg; cfg.SizePixels = 24.0f * S;
+      f_framebar_stats = io.Fonts->AddFontDefault(&cfg);
+    }
+    if (!f_overlay_bold) f_overlay_bold = f_framebar;
     if (!f_meters) {
       ImFontConfig cfg; cfg.SizePixels = 32.0f * S;
       f_meters = io.Fonts->AddFontDefault(&cfg);
@@ -446,15 +455,16 @@ namespace menu_ui {
     }
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 def_size(1660 * S, 150 * S);
+    const float lh = f_framebar_stats->FontSize + 4 * S;
     Frame f = begin_window("Frame bar##sl_bar", "Frame bar",
                            ImVec2(io.DisplaySize.x * 0.5f - def_size.x * 0.5f, io.DisplaySize.y * 0.8f - def_size.y * 0.5f),
-                           def_size, ImVec2(360 * S, (HEAD + 60) * S), interactive, BAR_BG, hide_decorations);
+                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + 60 * S), interactive, BAR_BG, hide_decorations, f_overlay_bold);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::BarWindow, 0, 0});
     bar_rect = ImVec4(f.o.x, f.o.y, f.w, f.h);
     bar_frame = ImGui::GetFrameCount();
     if (!f.collapsed) {
       ImDrawList* dl = f.dl;
-      const float pad = 10 * S, lh = f_small->FontSize + 4 * S, gap = 4 * S;
+      const float pad = 10 * S, gap = 4 * S;
       const float x0 = f.o.x + pad, x1 = f.o.x + f.w - pad;
       float y = f.o.y + f.head + 3 * S;
       const float bar_h = std::max((f.o.y + f.h - 4 * S - y - 2 * lh - gap) * 0.5f, 6 * S);
@@ -465,7 +475,7 @@ namespace menu_ui {
       auto stats = [&](const std::string& s, float ty) {
         const float outline = std::max(S, 1.0f);
         dl->PushClipRect(ImVec2(x0 - outline, ty - outline), ImVec2(x1 + outline, ty + lh + outline), true);
-        text_outlined(dl, f_small, ImVec2(x0, ty), TEXT, s);
+        text_outlined(dl, f_framebar_stats, ImVec2(x0, ty), TEXT, s);
         dl->PopClipRect();
       };
       auto bar = [&](int row, float top) {
@@ -485,9 +495,9 @@ namespace menu_ui {
           const auto& c = fb.rows[row][i];
           if (!c.on || c.trunc <= 0) continue;
           const std::string n = std::to_string(c.trunc);
-          const float tx = x0 + cell * (i + 1) - text_w(f_small, n);
-          const float ty = sy + (sh - f_small->FontSize) * 0.5f;
-          text_outlined(dl, f_small, ImVec2(tx, ty), TEXT, n);
+          const float tx = x0 + cell * (i + 1) - text_w(f_framebar, n);
+          const float ty = sy + (sh - f_framebar->FontSize) * 0.5f;
+          text_outlined(dl, f_framebar, ImVec2(tx, ty), TEXT, n);
         }
       };
       stats(info[0], y);            y += lh;
