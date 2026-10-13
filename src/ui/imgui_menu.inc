@@ -463,9 +463,9 @@ namespace menu_ui {
       const float seg_w = std::max(cell - sp, 1.0f);
       const float vsp = bar_h * (4.0f / 44.0f);
       auto stats = [&](const std::string& s, float ty) {
-        dl->PushClipRect(ImVec2(x0, ty), ImVec2(x1, ty + lh), true);
-        text(dl, f_small, ImVec2(x0 + 1, ty + 1), RGBA(0, 0, 0, 200), s);
-        text(dl, f_small, ImVec2(x0, ty), TEXT, s);
+        const float outline = std::max(S, 1.0f);
+        dl->PushClipRect(ImVec2(x0 - outline, ty - outline), ImVec2(x1 + outline, ty + lh + outline), true);
+        text_outlined(dl, f_small, ImVec2(x0, ty), TEXT, s);
         dl->PopClipRect();
       };
       auto bar = [&](int row, float top) {
@@ -487,8 +487,7 @@ namespace menu_ui {
           const std::string n = std::to_string(c.trunc);
           const float tx = x0 + cell * (i + 1) - text_w(f_small, n);
           const float ty = sy + (sh - f_small->FontSize) * 0.5f;
-          text(dl, f_small, ImVec2(tx + 1, ty + 1), RGBA(0, 0, 0, 230), n);
-          text(dl, f_small, ImVec2(tx, ty), TEXT, n);
+          text_outlined(dl, f_small, ImVec2(tx, ty), TEXT, n);
         }
       };
       stats(info[0], y);            y += lh;
