@@ -33,6 +33,11 @@ namespace menu_ui {
   ImFont* f_bold = nullptr;
   ImFont* f_title = nullptr;
   ImFont* f_small = nullptr;
+  ImFont* f_framebar = nullptr;
+  ImFont* f_framebar_stats = nullptr;
+  ImFont* f_overlay_bold = nullptr;
+  ImFont* f_meters = nullptr;
+  ImFont* f_meters_bold = nullptr;
   float S = 1.0f;  // UI scale, 1.0 at 1080p
 
   // Sizes at 1080p, multiplied by S
@@ -58,11 +63,30 @@ namespace menu_ui {
     f_bold = add("Barlow-SemiBold.ttf", 17.0f);
     f_title = add("BarlowCondensed-Bold.ttf", 24.0f);
     f_small = add("Barlow-Medium.ttf", 14.0f);
+    f_framebar = add("Barlow-Medium.ttf", 20.0f);
+    f_framebar_stats = add("Barlow-Medium.ttf", 24.0f);
+    f_overlay_bold = add("Barlow-SemiBold.ttf", 20.0f);
+    f_meters = add("Barlow-Medium.ttf", 32.0f);
+    f_meters_bold = add("Barlow-SemiBold.ttf", 32.0f);
     if (!f_body) {  // fonts missing: fall back to ImGui's own font, scaled
       ImFontConfig cfg; cfg.SizePixels = 14.0f * S;
       f_body = f_bold = f_title = f_small = io.Fonts->AddFontDefault(&cfg);
       COMBO_LOG("imgui: StriveLabs_fonts not found, using the default font");
     }
+    if (!f_framebar) {
+      ImFontConfig cfg; cfg.SizePixels = 20.0f * S;
+      f_framebar = io.Fonts->AddFontDefault(&cfg);
+    }
+    if (!f_framebar_stats) {
+      ImFontConfig cfg; cfg.SizePixels = 24.0f * S;
+      f_framebar_stats = io.Fonts->AddFontDefault(&cfg);
+    }
+    if (!f_overlay_bold) f_overlay_bold = f_framebar;
+    if (!f_meters) {
+      ImFontConfig cfg; cfg.SizePixels = 32.0f * S;
+      f_meters = io.Fonts->AddFontDefault(&cfg);
+    }
+    if (!f_meters_bold) f_meters_bold = f_meters;
   }
 
   void style() {
@@ -94,6 +118,24 @@ namespace menu_ui {
   void text(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s) {
     dl->AddText(f, f->FontSize, p, col, s.c_str());
   }
+  void text_outlined(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s) {
+    const float width = std::max(S, 1.0f);
+    for (int dy = -1; dy <= 1; dy++)
+      for (int dx = -1; dx <= 1; dx++)
+        if (dx || dy) {
+          // Equal radius on axes and diagonals, rather than a square stencil.
+          const float step = (dx && dy) ? width * 0.70710678f : width;
+          const int first_vertex = dl->VtxBuffer.Size;
+          text(dl, f, p, RGBA(0, 0, 0), s);
+          // AddText snaps positions to pixels. Offset the emitted vertices so
+          // fractional shifts stay symmetric and are filtered by the renderer.
+          for (int i = first_vertex; i < dl->VtxBuffer.Size; i++) {
+            dl->VtxBuffer[i].pos.x += dx * step;
+            dl->VtxBuffer[i].pos.y += dy * step;
+          }
+        }
+    text(dl, f, p, col, s);
+  }
   float text_w(ImFont* f, const std::string& s) { return f->CalcTextSizeA(f->FontSize, FLT_MAX, 0.0f, s.c_str()).x; }
   std::string upper(std::string s) {
     for (auto& c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
@@ -115,6 +157,17 @@ namespace menu_ui {
   }
 
   struct ScrollState { float scroll = 0; int last_cursor = -1; std::string key; };
+
+  void draw_scrollbar(ImDrawList* dl, float x1, float top, float bottom, float content_h, float scroll) {
+    const float view_h = std::max(bottom - top, 0.0f);
+    const float max_scroll = content_h - view_h;
+    if (max_scroll <= 0 || view_h <= 0) return;
+    const float tx = x1 - 5 * S;
+    const float thumb_h = std::min(view_h, std::max(view_h * view_h / content_h, 20 * S));
+    const float thumb_y = top + (view_h - thumb_h) * (scroll / max_scroll);
+    dl->AddRectFilled(ImVec2(tx, top), ImVec2(tx + 3 * S, bottom), CHIP);
+    dl->AddRectFilled(ImVec2(tx, thumb_y), ImVec2(tx + 3 * S, thumb_y + thumb_h), RED);
+  }
 
   // Rows of one page between top and bottom, scrolled with the wheel and kept on
   // the selected row. cursor = -1 when nothing is selected.
@@ -236,13 +289,7 @@ namespace menu_ui {
     ImGui::PopClipRect();
 
     // Square scrollbar, only when the page is longer than the pane
-    if (max_scroll > 0) {
-      const float tx = x1 - 5 * S;
-      const float thumb_h = std::max(view_h * view_h / rows_h, 20 * S);
-      const float thumb_y = top + (view_h - thumb_h) * (scroll / max_scroll);
-      dl->AddRectFilled(ImVec2(tx, top), ImVec2(tx + 3 * S, bottom), CHIP);
-      dl->AddRectFilled(ImVec2(tx, thumb_y), ImVec2(tx + 3 * S, thumb_y + thumb_h), RED);
-    }
+    draw_scrollbar(dl, x1, top, bottom, rows_h, scroll);
   }
 
   // ---- Window chrome: title strip, minimize, close, resize --------------------
@@ -262,8 +309,10 @@ namespace menu_ui {
   // Starts a window with our square chrome. Always pair with end_window().
   // pos_anchor: (0,0) top-left, (0.5,0.5) centered on pos.
   Frame begin_window(const std::string& id, const std::string& title, ImVec2 def_pos, ImVec2 def_size,
-                     ImVec2 min_size, bool interactive, ImU32 bg = PANEL) {
+                     ImVec2 min_size, bool interactive, ImU32 bg = PANEL, bool hide_decorations = false,
+                     ImFont* title_font = nullptr) {
     WinState& ws = g_win[id];
+    const bool hide_chrome = !interactive && hide_decorations;
     Frame f;
     f.head = HEAD * S;
     const int gen = g_layout_gen;
@@ -288,6 +337,7 @@ namespace menu_ui {
                              ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing;
     if (ws.collapsed) flags |= ImGuiWindowFlags_NoResize;
     if (!interactive) flags |= ImGuiWindowFlags_NoInputs;
+    if (hide_chrome) flags |= ImGuiWindowFlags_NoBackground;
     ImGui::Begin(id.c_str(), nullptr, flags);
     f.dl = ImGui::GetWindowDrawList();
     f.o = ImGui::GetWindowPos();
@@ -297,6 +347,9 @@ namespace menu_ui {
     ImDrawList* dl = f.dl;
     const ImVec2 o = f.o;
 
+    // Skip the chrome and background, keeping the title space and content geometry.
+    if (hide_chrome) return f;
+
     dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.h), bg);
     dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.head), SECTION);
     dl->AddRect(o, ImVec2(o.x + f.w, o.y + f.h), BORDER);
@@ -304,9 +357,11 @@ namespace menu_ui {
     // Buttons, right to left: close, minimize
     const float bs = f.head - 12 * S;
     if (!title.empty()) {
-      const float title_end = o.x + f.w - 8 * S - 2 * (bs + 4 * S) - 6 * S;
+      if (!title_font) title_font = f_bold;
+      const float title_end = interactive ? o.x + f.w - 8 * S - 2 * (bs + 4 * S) - 6 * S
+                                          : o.x + f.w - PAD * S;
       dl->PushClipRect(ImVec2(o.x, o.y), ImVec2(std::max(o.x, title_end), o.y + f.head), true);
-      text(dl, f_bold, ImVec2(o.x + PAD * S, o.y + (f.head - f_bold->FontSize) * 0.5f + 1 * S), RED_TEXT, upper(title));
+      text(dl, title_font, ImVec2(o.x + PAD * S, o.y + (f.head - title_font->FontSize) * 0.5f + 1 * S), RED_TEXT, upper(title));
       dl->PopClipRect();
     }
     float bx = o.x + f.w - 8 * S - bs;
@@ -329,14 +384,17 @@ namespace menu_ui {
       bx -= bs + 4 * S;
       return hit;
     };
-    if (square_button("close", true)) f.closed = true;
-    if (square_button("min", false)) {
-      if (!ws.collapsed) { ws.collapsed = true; ws.open_h = f.h; }
-      else { ws.collapsed = false; }
+    // Passive overlays keep their title and content, but have no window controls.
+    if (interactive) {
+      if (square_button("close", true)) f.closed = true;
+      if (square_button("min", false)) {
+        if (!ws.collapsed) { ws.collapsed = true; ws.open_h = f.h; }
+        else { ws.collapsed = false; }
+      }
     }
 
     // Our own square resize grip, bottom-right
-    if (!ws.collapsed) {
+    if (interactive && !ws.collapsed) {
       const float g = 10 * S;
       const ImVec2 c(o.x + f.w - 3 * S, o.y + f.h - 3 * S);
       dl->AddRectFilled(ImVec2(c.x - 3 * S, c.y - g), c, RED_LINE);
@@ -386,7 +444,7 @@ namespace menu_ui {
   ImVec4 bar_rect(0, 0, 0, 0);   // x, y, w, h of the frame bar window this frame
   int bar_frame = -1;            // ImGui frame the bar was drawn on
 
-  void draw_framebar(bool interactive) {
+  void draw_framebar(bool interactive, bool hide_decorations) {
     imgui_overlay::FrameBarView fb;
     std::string info[2];
     {
@@ -397,31 +455,35 @@ namespace menu_ui {
     }
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 def_size(1660 * S, 150 * S);
+    const float lh = f_framebar_stats->FontSize + 4 * S;
     Frame f = begin_window("Frame bar##sl_bar", "Frame bar",
                            ImVec2(io.DisplaySize.x * 0.5f - def_size.x * 0.5f, io.DisplaySize.y * 0.8f - def_size.y * 0.5f),
-                           def_size, ImVec2(360 * S, (HEAD + 60) * S), interactive, BAR_BG);
+                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + 60 * S), interactive, BAR_BG, hide_decorations, f_overlay_bold);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::BarWindow, 0, 0});
     bar_rect = ImVec4(f.o.x, f.o.y, f.w, f.h);
     bar_frame = ImGui::GetFrameCount();
     if (!f.collapsed) {
       ImDrawList* dl = f.dl;
-      const float pad = 10 * S, lh = f_small->FontSize + 4 * S, gap = 4 * S;
+      const float pad = 10 * S, gap = 4 * S;
       const float x0 = f.o.x + pad, x1 = f.o.x + f.w - pad;
       float y = f.o.y + f.head + 3 * S;
       const float bar_h = std::max((f.o.y + f.h - 4 * S - y - 2 * lh - gap) * 0.5f, 6 * S);
-      const float cell = (x1 - x0) / 120.0f;
-      const float sp = std::max(cell * (4.0f / 24.0f), 1.0f);
-      const float seg_w = std::max(cell - sp, 1.0f);
+      // Like the HUD bar, fit 120 cells plus a trailing gap into the background.
+      // Keep enough space for the delimiter and crossup markers at either edge.
+      const float desired_sp = std::max((x1 - x0) * (4.0f / (120 * 24.0f + 4.0f)), std::max(1.5f * S, 1.0f));
+      const float sp = std::min(desired_sp, (x1 - x0) / (120 * 2.0f + 1.0f));
+      const float cell = (x1 - x0 - sp) / 120.0f;
+      const float seg_w = cell - sp;
       const float vsp = bar_h * (4.0f / 44.0f);
       auto stats = [&](const std::string& s, float ty) {
-        dl->PushClipRect(ImVec2(x0, ty), ImVec2(x1, ty + lh), true);
-        text(dl, f_small, ImVec2(x0 + 1, ty + 1), RGBA(0, 0, 0, 200), s);
-        text(dl, f_small, ImVec2(x0, ty), TEXT, s);
+        const float outline = std::max(S, 1.0f);
+        dl->PushClipRect(ImVec2(x0 - outline, ty - outline), ImVec2(x1 + outline, ty + lh + outline), true);
+        text_outlined(dl, f_framebar_stats, ImVec2(x0, ty), TEXT, s);
         dl->PopClipRect();
       };
       auto bar = [&](int row, float top) {
         dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, top + bar_h), fb.bg);
-        const float sy = top + vsp, sh = bar_h - 2 * vsp, bt = std::max(1.5f * S, 1.0f);
+        const float sy = top + vsp, sh = bar_h - 2 * vsp, bt = std::min(sp, std::max(1.5f * S, 1.0f));
         for (int i = 0; i < 120; i++) {
           const auto& c = fb.rows[row][i];
           if (!c.on) continue;
@@ -436,10 +498,9 @@ namespace menu_ui {
           const auto& c = fb.rows[row][i];
           if (!c.on || c.trunc <= 0) continue;
           const std::string n = std::to_string(c.trunc);
-          const float tx = x0 + cell * (i + 1) - text_w(f_small, n);
-          const float ty = sy + (sh - f_small->FontSize) * 0.5f;
-          text(dl, f_small, ImVec2(tx + 1, ty + 1), RGBA(0, 0, 0, 230), n);
-          text(dl, f_small, ImVec2(tx, ty), TEXT, n);
+          const float tx = x0 + cell * (i + 1) - text_w(f_framebar, n);
+          const float ty = sy + (sh - f_framebar->FontSize) * 0.5f;
+          text_outlined(dl, f_framebar, ImVec2(tx, ty), TEXT, n);
         }
       };
       stats(info[0], y);            y += lh;
@@ -452,7 +513,7 @@ namespace menu_ui {
 
   // The meters overlay as its own window. Always on screen while enabled; it can
   // be moved, resized or minimized only while the F5 menu is open.
-  void draw_meters(bool interactive, bool right_side, bool snap) {
+  void draw_meters(bool interactive, bool right_side, bool snap, bool hide_decorations) {
     std::vector<std::string> lines;
     {
       std::lock_guard<std::mutex> lock(t_mutex);
@@ -461,7 +522,7 @@ namespace menu_ui {
     }
     if (lines.empty()) return;
     ImGuiIO& io = ImGui::GetIO();
-    const float lh = 22 * S, pad = 12 * S;
+    const float lh = std::max(f_meters->FontSize, f_meters_bold->FontSize) + 4 * S, pad = 12 * S;
     const float def_h = HEAD * S + lh * static_cast<float>(lines.size()) + pad;
     // Snapped: sit right on top of the frame bar, on the Overlay Side edge. While the
     // mouse is held on the window (resizing or dragging it), the snap waits, so it
@@ -490,14 +551,18 @@ namespace menu_ui {
     }
     last_side = side;
     Frame f = begin_window("Meters##sl_tension", "Meters", ImVec2(40 * S, io.DisplaySize.y * 0.40f),
-                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG);
+                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations, f_overlay_bold);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, 0, 0});
     if (!f.collapsed) {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
       static float scroll = 0;
       const float content = lh * static_cast<float>(lines.size());
+      const float view_h = std::max(bottom - top, 0.0f);
+      const float max_scroll = std::max(0.0f, content - view_h);
       if (interactive && ImGui::IsMouseHoveringRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), false)) scroll -= io.MouseWheel * lh;
-      scroll = std::clamp(scroll, 0.0f, std::max(0.0f, content - (bottom - top)));
+      scroll = std::clamp(scroll, 0.0f, max_scroll);
+      // Reserve the same space even when the menu is closed, so text stays put.
+      const float rx = f.o.x + f.w - pad - (max_scroll > 0 ? 6 * S : 0);
       ImGui::PushClipRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), true);
       float y = top - scroll;
       for (const auto& line : lines) {
@@ -505,14 +570,15 @@ namespace menu_ui {
         const std::string label = cut == std::string::npos ? line : line.substr(0, cut);
         const std::string value = cut == std::string::npos ? std::string() : line.substr(cut + 2);
         const bool hot = value.rfind("STICK", 0) == 0;
-        const float vx = f.o.x + f.w - pad - text_w(f_bold, value);
-        text(f.dl, f_bold, ImVec2(vx, y + (lh - f_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
+        const float vx = rx - text_w(f_meters_bold, value);
+        text_outlined(f.dl, f_meters_bold, ImVec2(vx, y + (lh - f_meters_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
         f.dl->PushClipRect(ImVec2(f.o.x, y), ImVec2(std::max(f.o.x, vx - 8 * S), y + lh), true);
-        text(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), MUTED, label);
+        text_outlined(f.dl, f_meters, ImVec2(f.o.x + pad, y + (lh - f_meters->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, label);
         f.dl->PopClipRect();
         y += lh;
       }
       ImGui::PopClipRect();
+      if (interactive) draw_scrollbar(f.dl, f.o.x + f.w, top, bottom, content, scroll);
     }
     end_window();
   }
@@ -704,8 +770,8 @@ namespace menu_ui {
     if (!modScreenActive()) { g_timeline_visible = false; return; }
     const MenuView v = ModMenu::instance().view();
     apply_theme(v);
-    draw_framebar(v.showing);
-    draw_meters(v.showing, v.meters_right, v.meters_snap);
+    draw_framebar(v.showing, v.hide_window_decorations);
+    draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
     draw_timeline(v);
     if (!v.showing) return;
     ImGuiIO& io = ImGui::GetIO();
@@ -715,7 +781,12 @@ namespace menu_ui {
     static float applied_x = -1, applied_y = -1;
     static bool pending = false;
     static ImVec2 last_size(0, 0);
-    if (pending && std::fabs(v.x_ratio - applied_x) < 0.0005f && std::fabs(v.y_ratio - applied_y) < 0.0005f) pending = false;
+    if (pending && std::fabs(v.x_ratio - applied_x) < 0.0005f && std::fabs(v.y_ratio - applied_y) < 0.0005f) {
+      // Saving rounds the ratios. Acknowledge that result without moving the
+      // window again: ImGui's pixel rounding would otherwise feed back into saves.
+      applied_x = v.x_ratio; applied_y = v.y_ratio;
+      pending = false;
+    }
     if (!pending && (v.x_ratio != applied_x || v.y_ratio != applied_y) && last_size.x > 0) {
       ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * v.x_ratio - last_size.x * 0.5f,
                                      io.DisplaySize.y * v.y_ratio - last_size.y * 0.5f), ImGuiCond_Always);
