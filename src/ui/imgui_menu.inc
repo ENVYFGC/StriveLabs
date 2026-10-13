@@ -33,6 +33,9 @@ namespace menu_ui {
   ImFont* f_bold = nullptr;
   ImFont* f_title = nullptr;
   ImFont* f_small = nullptr;
+  ImFont* f_overlay_bold = nullptr;
+  ImFont* f_meters = nullptr;
+  ImFont* f_meters_bold = nullptr;
   float S = 1.0f;  // UI scale, 1.0 at 1080p
 
   // Sizes at 1080p, multiplied by S
@@ -58,11 +61,23 @@ namespace menu_ui {
     f_bold = add("Barlow-SemiBold.ttf", 17.0f);
     f_title = add("BarlowCondensed-Bold.ttf", 24.0f);
     f_small = add("Barlow-Medium.ttf", 14.0f);
+    f_overlay_bold = add("Barlow-SemiBold.ttf", 20.0f);
+    f_meters = add("Barlow-Medium.ttf", 32.0f);
+    f_meters_bold = add("Barlow-SemiBold.ttf", 32.0f);
     if (!f_body) {  // fonts missing: fall back to ImGui's own font, scaled
       ImFontConfig cfg; cfg.SizePixels = 14.0f * S;
       f_body = f_bold = f_title = f_small = io.Fonts->AddFontDefault(&cfg);
       COMBO_LOG("imgui: StriveLabs_fonts not found, using the default font");
     }
+    if (!f_overlay_bold) {
+      ImFontConfig cfg; cfg.SizePixels = 20.0f * S;
+      f_overlay_bold = io.Fonts->AddFontDefault(&cfg);
+    }
+    if (!f_meters) {
+      ImFontConfig cfg; cfg.SizePixels = 32.0f * S;
+      f_meters = io.Fonts->AddFontDefault(&cfg);
+    }
+    if (!f_meters_bold) f_meters_bold = f_meters;
   }
 
   void style() {
@@ -285,7 +300,8 @@ namespace menu_ui {
   // Starts a window with our square chrome. Always pair with end_window().
   // pos_anchor: (0,0) top-left, (0.5,0.5) centered on pos.
   Frame begin_window(const std::string& id, const std::string& title, ImVec2 def_pos, ImVec2 def_size,
-                     ImVec2 min_size, bool interactive, ImU32 bg = PANEL, bool hide_decorations = false) {
+                     ImVec2 min_size, bool interactive, ImU32 bg = PANEL, bool hide_decorations = false,
+                     ImFont* title_font = nullptr) {
     WinState& ws = g_win[id];
     const bool hide_chrome = !interactive && hide_decorations;
     Frame f;
@@ -332,10 +348,11 @@ namespace menu_ui {
     // Buttons, right to left: close, minimize
     const float bs = f.head - 12 * S;
     if (!title.empty()) {
+      if (!title_font) title_font = f_bold;
       const float title_end = interactive ? o.x + f.w - 8 * S - 2 * (bs + 4 * S) - 6 * S
                                           : o.x + f.w - PAD * S;
       dl->PushClipRect(ImVec2(o.x, o.y), ImVec2(std::max(o.x, title_end), o.y + f.head), true);
-      text(dl, f_bold, ImVec2(o.x + PAD * S, o.y + (f.head - f_bold->FontSize) * 0.5f + 1 * S), RED_TEXT, upper(title));
+      text(dl, title_font, ImVec2(o.x + PAD * S, o.y + (f.head - title_font->FontSize) * 0.5f + 1 * S), RED_TEXT, upper(title));
       dl->PopClipRect();
     }
     float bx = o.x + f.w - 8 * S - bs;
@@ -493,7 +510,7 @@ namespace menu_ui {
     }
     if (lines.empty()) return;
     ImGuiIO& io = ImGui::GetIO();
-    const float lh = 22 * S, pad = 12 * S;
+    const float lh = std::max(f_meters->FontSize, f_meters_bold->FontSize) + 4 * S, pad = 12 * S;
     const float def_h = HEAD * S + lh * static_cast<float>(lines.size()) + pad;
     // Snapped: sit right on top of the frame bar, on the Overlay Side edge. While the
     // mouse is held on the window (resizing or dragging it), the snap waits, so it
@@ -522,7 +539,7 @@ namespace menu_ui {
     }
     last_side = side;
     Frame f = begin_window("Meters##sl_tension", "Meters", ImVec2(40 * S, io.DisplaySize.y * 0.40f),
-                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations);
+                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations, f_overlay_bold);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, 0, 0});
     if (!f.collapsed) {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
@@ -541,10 +558,10 @@ namespace menu_ui {
         const std::string label = cut == std::string::npos ? line : line.substr(0, cut);
         const std::string value = cut == std::string::npos ? std::string() : line.substr(cut + 2);
         const bool hot = value.rfind("STICK", 0) == 0;
-        const float vx = rx - text_w(f_bold, value);
-        text_outlined(f.dl, f_bold, ImVec2(vx, y + (lh - f_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
+        const float vx = rx - text_w(f_meters_bold, value);
+        text_outlined(f.dl, f_meters_bold, ImVec2(vx, y + (lh - f_meters_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
         f.dl->PushClipRect(ImVec2(f.o.x, y), ImVec2(std::max(f.o.x, vx - 8 * S), y + lh), true);
-        text_outlined(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, label);
+        text_outlined(f.dl, f_meters, ImVec2(f.o.x + pad, y + (lh - f_meters->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, label);
         f.dl->PopClipRect();
         y += lh;
       }
