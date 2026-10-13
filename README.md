@@ -4,6 +4,8 @@ StriveLabs is a UE4SS mod for Guilty Gear Strive. It adds frame data, hitboxes, 
 
 It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://github.com/WistfulHopes/UE4SSMods/releases/tag/replay-0.2.4) and grew from there.
 
+> StriveLabs is developed with AI assistance (Claude). Everything is tested in game before release.
+
 ## What it does
 
 - A frame bar that shows startup, active and recovery frames as you play.
