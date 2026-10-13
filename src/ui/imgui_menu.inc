@@ -134,6 +134,17 @@ namespace menu_ui {
 
   struct ScrollState { float scroll = 0; int last_cursor = -1; std::string key; };
 
+  void draw_scrollbar(ImDrawList* dl, float x1, float top, float bottom, float content_h, float scroll) {
+    const float view_h = std::max(bottom - top, 0.0f);
+    const float max_scroll = content_h - view_h;
+    if (max_scroll <= 0 || view_h <= 0) return;
+    const float tx = x1 - 5 * S;
+    const float thumb_h = std::min(view_h, std::max(view_h * view_h / content_h, 20 * S));
+    const float thumb_y = top + (view_h - thumb_h) * (scroll / max_scroll);
+    dl->AddRectFilled(ImVec2(tx, top), ImVec2(tx + 3 * S, bottom), CHIP);
+    dl->AddRectFilled(ImVec2(tx, thumb_y), ImVec2(tx + 3 * S, thumb_y + thumb_h), RED);
+  }
+
   // Rows of one page between top and bottom, scrolled with the wheel and kept on
   // the selected row. cursor = -1 when nothing is selected.
   void draw_rows(ImDrawList* dl, const std::vector<MenuRowView>& rows, int cursor, const std::string& key,
@@ -254,13 +265,7 @@ namespace menu_ui {
     ImGui::PopClipRect();
 
     // Square scrollbar, only when the page is longer than the pane
-    if (max_scroll > 0) {
-      const float tx = x1 - 5 * S;
-      const float thumb_h = std::max(view_h * view_h / rows_h, 20 * S);
-      const float thumb_y = top + (view_h - thumb_h) * (scroll / max_scroll);
-      dl->AddRectFilled(ImVec2(tx, top), ImVec2(tx + 3 * S, bottom), CHIP);
-      dl->AddRectFilled(ImVec2(tx, thumb_y), ImVec2(tx + 3 * S, thumb_y + thumb_h), RED);
-    }
+    draw_scrollbar(dl, x1, top, bottom, rows_h, scroll);
   }
 
   // ---- Window chrome: title strip, minimize, close, resize --------------------
@@ -523,8 +528,12 @@ namespace menu_ui {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
       static float scroll = 0;
       const float content = lh * static_cast<float>(lines.size());
+      const float view_h = std::max(bottom - top, 0.0f);
+      const float max_scroll = std::max(0.0f, content - view_h);
       if (interactive && ImGui::IsMouseHoveringRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), false)) scroll -= io.MouseWheel * lh;
-      scroll = std::clamp(scroll, 0.0f, std::max(0.0f, content - (bottom - top)));
+      scroll = std::clamp(scroll, 0.0f, max_scroll);
+      // Reserve the same space even when the menu is closed, so text stays put.
+      const float rx = f.o.x + f.w - pad - (max_scroll > 0 ? 6 * S : 0);
       ImGui::PushClipRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), true);
       float y = top - scroll;
       for (const auto& line : lines) {
@@ -532,7 +541,7 @@ namespace menu_ui {
         const std::string label = cut == std::string::npos ? line : line.substr(0, cut);
         const std::string value = cut == std::string::npos ? std::string() : line.substr(cut + 2);
         const bool hot = value.rfind("STICK", 0) == 0;
-        const float vx = f.o.x + f.w - pad - text_w(f_bold, value);
+        const float vx = rx - text_w(f_bold, value);
         text_outlined(f.dl, f_bold, ImVec2(vx, y + (lh - f_bold->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, value);
         f.dl->PushClipRect(ImVec2(f.o.x, y), ImVec2(std::max(f.o.x, vx - 8 * S), y + lh), true);
         text_outlined(f.dl, f_small, ImVec2(f.o.x + pad, y + (lh - f_small->FontSize) * 0.5f), hot ? RED_TEXT : TEXT, label);
@@ -540,6 +549,7 @@ namespace menu_ui {
         y += lh;
       }
       ImGui::PopClipRect();
+      if (interactive) draw_scrollbar(f.dl, f.o.x + f.w, top, bottom, content, scroll);
     }
     end_window();
   }
