@@ -121,6 +121,7 @@ struct PlayerData {
 
 struct FrameBar::Data {
   DrawContext tool;
+  int last_game_frame = -1;
   bool combo_active = false;
   int current_segment_idx = 0;
   bool tracking_advantage = false;
