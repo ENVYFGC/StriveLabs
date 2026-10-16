@@ -17,6 +17,9 @@
 #include <map>
 #include <wincodec.h>
 #include <mutex>
+#include <cstring>
+#include <fstream>
+#include <string>
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -152,8 +155,11 @@ namespace {
       }
     }
     if (g_running && g_rtv) {
-      // UI size changed: rebuild the fonts at the new size, so text stays sharp
-      if (std::fabs(ModMenu::uiScale() - menu_ui::loaded_scale) > 0.001f) {
+      // A window size or the overlay font changed: rebuild the fonts, so text stays sharp
+      bool rebuild = ModMenu::overlayFont() != menu_ui::loaded_font;
+      for (int e = 0; e < menu_ui::E_COUNT; e++)
+        rebuild |= std::fabs(ModMenu::uiScale(e) - menu_ui::loaded_scales[e]) > 0.001f;
+      if (rebuild) {
         ImGui_ImplDX11_InvalidateDeviceObjects();
         ImGui::GetIO().Fonts->Clear();
         DXGI_SWAP_CHAIN_DESC desc{};

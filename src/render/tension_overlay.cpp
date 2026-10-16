@@ -62,9 +62,11 @@ namespace {
 
   FLinearColor overlay_background{0.05f, 0.05f, 0.05f, 0.75f};
 
+  int decimals = 2;  // Decimal Places setting, refreshed from the options each frame
+
   std::wstring format_number(const double value) {
     wchar_t buffer[32]{};
-    swprintf_s(buffer, L"%.2f", value);
+    swprintf_s(buffer, L"%.*f", decimals, value);
     return buffer;
   }
 
@@ -295,6 +297,7 @@ struct TensionOverlay::Data {
     const auto* base = reinterpret_cast<const uint8_t*>(engine);
 
     const auto options = ModMenu::instance().getTensionOptions();
+    decimals = options.decimals;
     if (!options.enabled) return;
 
     const auto layout = ModMenu::instance().getLayoutPositions();
@@ -346,6 +349,7 @@ struct TensionOverlay::Data {
 
   void draw() {
     const auto options = ModMenu::instance().getTensionOptions();
+    decimals = options.decimals;
     if (!options.enabled) {
       return;
     }

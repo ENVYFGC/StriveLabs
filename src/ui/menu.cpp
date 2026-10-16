@@ -157,6 +157,9 @@ namespace Settings {
   SettingsEntry TENSION_SIDE = SettingsEntry{
       OptionData{L"Overlay Side:", 2, {L"<    Left    >", L"<   Right    >"}},
       "tension_side", 0};
+  SettingsEntry METERS_DECIMALS = SettingsEntry{
+      OptionData{L"Decimal Places:", 4, {L"<     0      >", L"<     1      >", L"<     2      >", L"<     3      >"}},
+      "meters_decimals", 2};
   SettingsEntry TENSION_CURRENT = SettingsEntry{
       OptionData{L"Tension Now:", 4,
                  {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
@@ -173,11 +176,11 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 23> settings = {
+  std::array<SettingsEntry *, 24> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
-      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
+      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
       &UI_HIDE_WINDOW_DECORATIONS,
   };
 
@@ -218,8 +221,12 @@ namespace Settings {
   FloatSetting UI_CUSTOM_R = {"ui_custom_r", 1.00, 1.00, 0.00, 1.00, 0.01};
   FloatSetting UI_CUSTOM_G = {"ui_custom_g", 0.00, 0.00, 0.00, 1.00, 0.01};
   FloatSetting UI_CUSTOM_B = {"ui_custom_b", 0.00, 0.00, 0.00, 1.00, 0.01};
+  // Per window sizes. UI_SCALE above is the menu's.
+  FloatSetting UI_SCALE_METERS   = {"ui_scale_meters",   1.00, 1.00, 0.50, 2.00, 0.05};
+  FloatSetting UI_SCALE_BAR      = {"ui_scale_bar",      1.00, 1.00, 0.50, 2.00, 0.05};
+  FloatSetting UI_SCALE_TIMELINE = {"ui_scale_timeline", 1.00, 1.00, 0.50, 2.00, 0.05};
 
-  std::array<FloatSetting *, 15> float_settings = {
+  std::array<FloatSetting *, 18> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -235,10 +242,26 @@ namespace Settings {
       &UI_CUSTOM_R,           // 12
       &UI_CUSTOM_G,           // 13
       &UI_CUSTOM_B,           // 14
+      &UI_SCALE_METERS,       // 15
+      &UI_SCALE_BAR,          // 16
+      &UI_SCALE_TIMELINE,     // 17
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
   const auto CONFIG_PATH = WORKING_DIRECTORY / "StriveLabs.txt";
+
+  // Font for the meters and frame bar: a file the player picked, kept in
+  // ue4ss/StriveLabs_fonts. Empty means Barlow. Read by the render thread.
+  std::mutex overlay_font_mutex;
+  std::string overlay_font;  // UTF-8 file name
+  void setOverlayFont(const std::string& name) {
+    std::lock_guard<std::mutex> lock(overlay_font_mutex);
+    overlay_font = name;
+  }
+  std::string overlayFont() {
+    std::lock_guard<std::mutex> lock(overlay_font_mutex);
+    return overlay_font;
+  }
 
   // Recording folder, created on first use so it is discoverable.
   std::filesystem::path recordingsDir() {
@@ -276,6 +299,8 @@ namespace Settings {
 
       std::string key = line.substr(0, pos);
       std::string val_str = line.substr(pos + 1);
+
+      if (key == "overlay_font") { setOverlayFont(val_str); continue; }
 
       {
         int index = indexById(key);
@@ -322,6 +347,7 @@ namespace Settings {
       configFile << entry->id_ << "=" << formatConfigFloat(entry->value) << "\n";
     }
     binds::save(configFile);
+    configFile << "overlay_font=" << overlayFont() << "\n";
     configFile.close();
     RC::Output::send<LogLevel::Verbose>(STR("Saved config file\n"));
   }
@@ -369,7 +395,7 @@ namespace {
   constexpr SectionDef SECTIONS[] = {
     {L"-- OVERLAYS --",       0,  7},
     {L"-- TRAINING --",       7,  9},
-    {L"-- METERS --",         9, 19},   // settings has 19 entries; end is exclusive
+    {L"-- METERS --",         9, 20},   // end is exclusive
   };
   constexpr size_t SECTION_COUNT = sizeof(SECTIONS) / sizeof(SECTIONS[0]);
 
@@ -417,21 +443,26 @@ namespace {
   std::mutex g_browse_mutex;
   std::filesystem::path g_browse_pick;
   std::atomic<bool> g_browse_open{false};
+  std::atomic<bool> g_browse_font{false};  // picking the overlay font, not a recording
 
-  void startBrowse() {
+  std::filesystem::path fontsDir() { return Settings::WORKING_DIRECTORY / "StriveLabs_fonts"; }
+
+  void startBrowse(bool font = false) {
     if (g_browse_open.exchange(true)) return;  // already open
-    const std::wstring dir = Settings::recordingsDir().wstring();
+    g_browse_font = font;
+    const std::wstring dir = (font ? fontsDir() : Settings::recordingsDir()).wstring();
     HWND owner = GetForegroundWindow();
-    std::thread([dir, owner] {
+    std::thread([dir, owner, font] {
       wchar_t file[MAX_PATH] = L"";
       OPENFILENAMEW ofn{};
       ofn.lStructSize = sizeof(ofn);
       ofn.hwndOwner = owner;
-      ofn.lpstrFilter = L"Recordings (*.txt)\0*.txt\0All files\0*.*\0";
+      ofn.lpstrFilter = font ? L"Fonts (*.ttf;*.otf)\0*.ttf;*.otf\0All files\0*.*\0"
+                             : L"Recordings (*.txt)\0*.txt\0All files\0*.*\0";
       ofn.lpstrFile = file;
       ofn.nMaxFile = MAX_PATH;
       ofn.lpstrInitialDir = dir.c_str();
-      ofn.lpstrTitle = L"Pick a recording";
+      ofn.lpstrTitle = font ? L"Pick a font for the meters and frame bar" : L"Pick a recording";
       ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
       if (GetOpenFileNameW(&ofn)) {
         std::lock_guard<std::mutex> lock(g_browse_mutex);
@@ -439,6 +470,23 @@ namespace {
       }
       g_browse_open = false;
     }).detach();
+  }
+
+  std::string utf8(const std::wstring& w);
+
+  // Game thread: use the picked font for the meters and frame bar. A font from
+  // elsewhere is copied into StriveLabs_fonts, so the setting keeps working.
+  void applyFontPick(const std::filesystem::path& pick) {
+    std::error_code ec;
+    std::filesystem::create_directories(fontsDir(), ec);
+    if (!std::filesystem::equivalent(pick.parent_path(), fontsDir(), ec)) {
+      ec.clear();
+      std::filesystem::copy_file(pick, fontsDir() / pick.filename(),
+                                 std::filesystem::copy_options::overwrite_existing, ec);
+      if (ec) { COMBO_LOG("overlay font: could not copy the picked file"); return; }
+    }
+    Settings::setOverlayFont(utf8(pick.filename().wstring()));
+    Settings::saveConfig();
   }
 
   // Game thread: select the picked file. Files from elsewhere are copied into the
@@ -450,6 +498,7 @@ namespace {
       pick.swap(g_browse_pick);
     }
     if (pick.empty()) return;
+    if (g_browse_font) { applyFontPick(pick); return; }
     const auto dir = Settings::recordingsDir();
     std::error_code ec;
     auto target = pick;
@@ -787,7 +836,7 @@ namespace {
       case MenuPage::Tension:
         return settingsCountForPage(page) + 1;
       // Layout root: Back + 4 subs + Reset = 6
-      case MenuPage::Layout:        return imgui_overlay::running() ? 8 : LAYOUT_SUB_COUNT + 2;
+      case MenuPage::Layout:        return imgui_overlay::running() ? 13 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
       case MenuPage::LayoutTension: return LAYOUT_TENSION_ROW_COUNT + 1;
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
@@ -1033,7 +1082,12 @@ void ModMenu::updateInner(PressedKeys data) {
     else if (local_idx == 3) { Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; }
     else if (local_idx == 4) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_opacity")), data.rotate_right);
     else if (local_idx == 5) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale")), data.rotate_right);
-    else if (local_idx == 6) changeSetting(static_cast<size_t>(Settings::indexById("ui_hide_window_decorations")), data.rotate_right);
+    else if (local_idx == 6) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_meters")), data.rotate_right);
+    else if (local_idx == 7) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_bar")), data.rotate_right);
+    else if (local_idx == 8) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_timeline")), data.rotate_right);
+    else if (local_idx == 9) changeSetting(static_cast<size_t>(Settings::indexById("ui_hide_window_decorations")), data.rotate_right);
+    else if (local_idx == 10) startBrowse(true);
+    else if (local_idx == 11) { Settings::setOverlayFont(""); Settings::saveConfig(); }
     return;
   }
 
@@ -1429,7 +1483,13 @@ namespace {
 }
 
 std::filesystem::path ModMenu::dataDir() { return Settings::WORKING_DIRECTORY; }
-float ModMenu::uiScale() { return static_cast<float>(std::clamp(Settings::UI_SCALE.value, 0.75, 1.5)); }
+std::string ModMenu::overlayFont() { return Settings::overlayFont(); }
+float ModMenu::uiScale(int which) {
+  const FloatSetting* sizes[] = {&Settings::UI_SCALE, &Settings::UI_SCALE_METERS,
+                                           &Settings::UI_SCALE_BAR, &Settings::UI_SCALE_TIMELINE};
+  const auto* f = sizes[(which >= 0 && which < 4) ? which : 0];
+  return static_cast<float>(std::clamp(f->value, f->min_value, f->max_value));
+}
 
 void ModMenu::hide() {
   if (!is_showing) return;
@@ -1536,7 +1596,7 @@ void ModMenu::applyClick(const MenuClick& c) {
     Settings::saveConfig();
     return;
   }
-  if (page == MenuPage::Layout && c.a == 7 && imgui_overlay::running()) {
+  if (page == MenuPage::Layout && c.a == 10 && imgui_overlay::running()) {
     Settings::UI_HIDE_WINDOW_DECORATIONS.value = c.b ? 1 : 0;
     Settings::saveConfig();
     return;
@@ -1646,10 +1706,21 @@ void ModMenu::buildView() {
     row(MenuRowView::Kind::Action, "Custom color", "Pick");
     { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_OPACITY.value * 100)));
       row(MenuRowView::Kind::Number, "Panel opacity", utf8(b)); }
-    { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_SCALE.value * 100)));
-      row(MenuRowView::Kind::Number, "UI size", utf8(b)); }
+    auto size_row = [&](const char* label, const FloatSetting& f) {
+      wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(f.value * 100)));
+      row(MenuRowView::Kind::Number, label, utf8(b));
+    };
+    size_row("Menu size", Settings::UI_SCALE);
+    size_row("Meters size", Settings::UI_SCALE_METERS);
+    size_row("Frame bar size", Settings::UI_SCALE_BAR);
+    size_row("Timeline size", Settings::UI_SCALE_TIMELINE);
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Hide decorations when menu is closed";
       r.choices = {"Disabled", "Enabled"}; r.choice = Settings::UI_HIDE_WINDOW_DECORATIONS.value ? 1 : 0; out.push_back(r); }
+    { std::string f = Settings::overlayFont();
+      f = f.empty() ? "Barlow" : f.substr(0, f.find_last_of('.'));
+      if (f.size() > 22) f = f.substr(0, 21) + "...";
+      row(MenuRowView::Kind::Action, "Meters and frame bar font", f); }
+    row(MenuRowView::Kind::Action, "Back to Barlow", "Reset");
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
     row(MenuRowView::Kind::Action, "Reset all to defaults", "Reset");
@@ -1728,6 +1799,7 @@ TensionOptions ModMenu::getTensionOptions() const {
       static_cast<PlayerDisplayMode>(Settings::TENSION_CURRENT.value),
       static_cast<PlayerDisplayMode>(Settings::WALL_DAMAGE.value),
       Settings::TENSION_SIDE.value == 1,
+      static_cast<int>(Settings::METERS_DECIMALS.value),
   };
 }
 

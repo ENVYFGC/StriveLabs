@@ -35,7 +35,6 @@ namespace menu_ui {
   ImFont* f_small = nullptr;
   ImFont* f_framebar = nullptr;
   ImFont* f_framebar_stats = nullptr;
-  ImFont* f_overlay_bold = nullptr;
   ImFont* f_meters = nullptr;
   ImFont* f_meters_bold = nullptr;
   float S = 1.0f;  // UI scale, 1.0 at 1080p
@@ -46,47 +45,91 @@ namespace menu_ui {
   ImTextureID logo = 0;      // StriveLabs_logo.png, set by imgui_overlay.cpp
   float logo_aspect = 1.0f;  // height / width
 
-  float loaded_scale = 1.0f;  // UI size the fonts were built at
+  std::string loaded_font;    // overlay font the fonts were built with ("" = Barlow)
+
+  // Each window has its own size setting. S and the shared fonts follow the
+  // window being drawn: call use() before drawing it.
+  enum Elem { E_MENU, E_METERS, E_BAR, E_TIMELINE, E_COUNT };
+  float SE[E_COUNT] = {1, 1, 1, 1};             // screen scale * that window's size
+  float loaded_scales[E_COUNT] = {1, 1, 1, 1};  // sizes the fonts were built at
+  struct FontSet { ImFont *body = nullptr, *bold = nullptr, *title = nullptr, *small_ = nullptr; };
+  FontSet fs_menu, fs_timeline;
+  ImFont* f_bar_title = nullptr;
+  ImFont* f_meters_title = nullptr;
+
+  void use(Elem e) {
+    S = SE[e];
+    const FontSet& fs = e == E_TIMELINE ? fs_timeline : fs_menu;
+    f_body = fs.body; f_bold = fs.bold; f_title = fs.title; f_small = fs.small_;
+  }
 
   void load_fonts(float screen_h) {
-    loaded_scale = ModMenu::uiScale();
-    S = (screen_h > 0 ? screen_h / 1080.0f : 1.0f) * loaded_scale;
+    const float base = screen_h > 0 ? screen_h / 1080.0f : 1.0f;
+    for (int e = 0; e < E_COUNT; e++) {
+      loaded_scales[e] = ModMenu::uiScale(e);
+      SE[e] = base * loaded_scales[e];
+    }
     ImGuiIO& io = ImGui::GetIO();
     const auto dir = ModMenu::dataDir() / "StriveLabs_fonts";
-    auto add = [&](const char* file, float px) -> ImFont* {
+    auto add = [&](const char* file, float px, float s) -> ImFont* {
       const auto path = (dir / file).string();
       if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) return nullptr;
       ImFontConfig cfg; cfg.OversampleH = 2;
-      return io.Fonts->AddFontFromFileTTF(path.c_str(), px * S, &cfg);
+      return io.Fonts->AddFontFromFileTTF(path.c_str(), px * s, &cfg);
     };
-    f_body = add("Barlow-Medium.ttf", 17.0f);
-    f_bold = add("Barlow-SemiBold.ttf", 17.0f);
-    f_title = add("BarlowCondensed-Bold.ttf", 24.0f);
-    f_small = add("Barlow-Medium.ttf", 14.0f);
-    f_framebar = add("Barlow-Medium.ttf", 20.0f);
-    f_framebar_stats = add("Barlow-Medium.ttf", 24.0f);
-    f_overlay_bold = add("Barlow-SemiBold.ttf", 20.0f);
-    f_meters = add("Barlow-Medium.ttf", 32.0f);
-    f_meters_bold = add("Barlow-SemiBold.ttf", 32.0f);
-    if (!f_body) {  // fonts missing: fall back to ImGui's own font, scaled
-      ImFontConfig cfg; cfg.SizePixels = 14.0f * S;
-      f_body = f_bold = f_title = f_small = io.Fonts->AddFontDefault(&cfg);
-      COMBO_LOG("imgui: StriveLabs_fonts not found, using the default font");
+    auto fallback = [&](float px, float s) -> ImFont* {  // fonts missing: ImGui's own font
+      ImFontConfig cfg; cfg.SizePixels = px * s;
+      return io.Fonts->AddFontDefault(&cfg);
+    };
+    // Meters and frame bar: the font the player picked, if it is there and looks
+    // like a .ttf/.otf. Otherwise Barlow. ImGui opens UTF-8 paths.
+    loaded_font = ModMenu::overlayFont();
+    std::string ov_path;
+    if (!loaded_font.empty()) {
+      const int n = MultiByteToWideChar(CP_UTF8, 0, loaded_font.c_str(), -1, nullptr, 0);
+      std::wstring wname(static_cast<size_t>(n > 0 ? n - 1 : 0), L'\0');
+      if (n > 0) MultiByteToWideChar(CP_UTF8, 0, loaded_font.c_str(), -1, wname.data(), n);
+      const std::wstring wpath = (dir / wname).wstring();
+      char magic[4] = {};
+      std::ifstream in(wpath, std::ios::binary);
+      if (in.read(magic, 4) && (!memcmp(magic, "OTTO", 4) || !memcmp(magic, "\0\1\0\0", 4) || !memcmp(magic, "true", 4))) {
+        const int m = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        ov_path.assign(static_cast<size_t>(m > 0 ? m - 1 : 0), '\0');
+        if (m > 0) WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, ov_path.data(), m, nullptr, nullptr);
+      } else {
+        COMBO_LOG("imgui: overlay font missing or not a .ttf/.otf, using Barlow");
+      }
     }
-    if (!f_framebar) {
-      ImFontConfig cfg; cfg.SizePixels = 20.0f * S;
-      f_framebar = io.Fonts->AddFontDefault(&cfg);
-    }
-    if (!f_framebar_stats) {
-      ImFontConfig cfg; cfg.SizePixels = 24.0f * S;
-      f_framebar_stats = io.Fonts->AddFontDefault(&cfg);
-    }
-    if (!f_overlay_bold) f_overlay_bold = f_framebar;
-    if (!f_meters) {
-      ImFontConfig cfg; cfg.SizePixels = 32.0f * S;
-      f_meters = io.Fonts->AddFontDefault(&cfg);
-    }
-    if (!f_meters_bold) f_meters_bold = f_meters;
+    auto add_ov = [&](const char* file, float px, float s) -> ImFont* {
+      ImFont* f = nullptr;
+      if (!ov_path.empty()) {
+        ImFontConfig cfg; cfg.OversampleH = 2;
+        f = io.Fonts->AddFontFromFileTTF(ov_path.c_str(), px * s, &cfg);
+      }
+      if (!f) f = add(file, px, s);
+      return f ? f : fallback(px, s);
+    };
+    auto menu_set = [&](float s) {
+      FontSet fs;
+      fs.body = add("Barlow-Medium.ttf", 17.0f, s);
+      fs.bold = add("Barlow-SemiBold.ttf", 17.0f, s);
+      fs.title = add("BarlowCondensed-Bold.ttf", 24.0f, s);
+      fs.small_ = add("Barlow-Medium.ttf", 14.0f, s);
+      if (!fs.body || !fs.bold || !fs.title || !fs.small_) {
+        fs.body = fs.bold = fs.title = fs.small_ = fallback(14.0f, s);
+        COMBO_LOG("imgui: StriveLabs_fonts not found, using the default font");
+      }
+      return fs;
+    };
+    fs_menu = menu_set(SE[E_MENU]);
+    fs_timeline = std::fabs(SE[E_TIMELINE] - SE[E_MENU]) < 0.001f ? fs_menu : menu_set(SE[E_TIMELINE]);
+    f_framebar = add_ov("Barlow-Medium.ttf", 20.0f, SE[E_BAR]);
+    f_framebar_stats = add_ov("Barlow-Medium.ttf", 24.0f, SE[E_BAR]);
+    f_bar_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_BAR]);
+    f_meters = add_ov("Barlow-Medium.ttf", 32.0f, SE[E_METERS]);
+    f_meters_bold = add_ov("Barlow-SemiBold.ttf", 32.0f, SE[E_METERS]);
+    f_meters_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_METERS]);
+    use(E_MENU);
   }
 
   void style() {
@@ -445,6 +488,7 @@ namespace menu_ui {
   int bar_frame = -1;            // ImGui frame the bar was drawn on
 
   void draw_framebar(bool interactive, bool hide_decorations) {
+    use(E_BAR);
     imgui_overlay::FrameBarView fb;
     std::string info[2];
     {
@@ -458,7 +502,7 @@ namespace menu_ui {
     const float lh = f_framebar_stats->FontSize + 4 * S;
     Frame f = begin_window("Frame bar##sl_bar", "Frame bar",
                            ImVec2(io.DisplaySize.x * 0.5f - def_size.x * 0.5f, io.DisplaySize.y * 0.8f - def_size.y * 0.5f),
-                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + 60 * S), interactive, BAR_BG, hide_decorations, f_overlay_bold);
+                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + 60 * S), interactive, BAR_BG, hide_decorations, f_bar_title);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::BarWindow, 0, 0});
     bar_rect = ImVec4(f.o.x, f.o.y, f.w, f.h);
     bar_frame = ImGui::GetFrameCount();
@@ -514,6 +558,7 @@ namespace menu_ui {
   // The meters overlay as its own window. Always on screen while enabled; it can
   // be moved, resized or minimized only while the F5 menu is open.
   void draw_meters(bool interactive, bool right_side, bool snap, bool hide_decorations) {
+    use(E_METERS);
     std::vector<std::string> lines;
     {
       std::lock_guard<std::mutex> lock(t_mutex);
@@ -522,7 +567,8 @@ namespace menu_ui {
     }
     if (lines.empty()) return;
     ImGuiIO& io = ImGui::GetIO();
-    const float lh = std::max(f_meters->FontSize, f_meters_bold->FontSize) + 4 * S, pad = 12 * S;
+    // Line pitch 1.4x the font size, like the game's own training text (Damage, Combo Damage)
+    const float lh = std::max(f_meters->FontSize, f_meters_bold->FontSize) * 1.4f, pad = 12 * S;
     const float def_h = HEAD * S + lh * static_cast<float>(lines.size()) + pad;
     // Snapped: sit right on top of the frame bar, on the Overlay Side edge. While the
     // mouse is held on the window (resizing or dragging it), the snap waits, so it
@@ -551,7 +597,7 @@ namespace menu_ui {
     }
     last_side = side;
     Frame f = begin_window("Meters##sl_tension", "Meters", ImVec2(40 * S, io.DisplaySize.y * 0.40f),
-                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations, f_overlay_bold);
+                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations, f_meters_title);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, 0, 0});
     if (!f.collapsed) {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
@@ -598,6 +644,7 @@ namespace menu_ui {
   }
 
   void draw_timeline(const MenuView& v) {
+    use(E_TIMELINE);
     if (!v.timeline_on || v.mode == 0) { g_timeline_visible = false; return; }
     g_timeline_visible = true;
     ImGuiIO& io = ImGui::GetIO();
@@ -773,6 +820,7 @@ namespace menu_ui {
     draw_framebar(v.showing, v.hide_window_decorations);
     draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
     draw_timeline(v);
+    use(E_MENU);
     if (!v.showing) return;
     ImGuiIO& io = ImGui::GetIO();
     const float pad = PAD * S;

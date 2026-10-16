@@ -38,6 +38,7 @@ struct TensionOptions {
   PlayerDisplayMode current_tension;
   PlayerDisplayMode wall_damage;
   bool right_side;  // mirror the box to the other side of the frame bar anchor
+  int decimals;     // digits after the decimal point for gain, burst, tension...
 };
 
 // Positions for the two repositionable overlays.
@@ -167,7 +168,8 @@ public:
   void click(const MenuClick& click);    // render thread: queue a mouse action
   void setPopped(unsigned mask);         // render thread: bit per MenuPage shown in its own window
   static std::filesystem::path dataDir(); // ue4ss folder (fonts, logo, config)
-  static float uiScale();                 // UI size setting, 0.75 to 1.5 (any thread)
+  static float uiScale(int which = 0);    // size setting: 0 menu, 1 meters, 2 frame bar, 3 timeline (any thread)
+  static std::string overlayFont();       // meters and frame bar font file in StriveLabs_fonts, "" = Barlow (any thread)
   bool barEnabled() const;
   bool hitboxEnabled() const;
   bool fadeEnabled() const;
