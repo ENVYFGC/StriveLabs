@@ -853,15 +853,15 @@ namespace {
     }
     if (page == MenuPage::Layout && imgui_overlay::running())
       return {
-        {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
-        {L"", L"Accent color", &UI_ACCENT},
+        {L"Style", L"Accent color", &UI_ACCENT},
         {L"", L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
         {L"", L"Panel opacity", nullptr, &UI_OPACITY},
-        {L"", L"Menu size", nullptr, &UI_SCALE},
+        {L"Font", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
+        {L"", L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
+        {L"Windows", L"Menu size", nullptr, &UI_SCALE},
         {L"", L"Timeline size", nullptr, &UI_SCALE_TIMELINE},
         {L"", L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
-        {L"", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
-        {L"", L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
+        {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
       };
     return {};
   }
@@ -1778,7 +1778,7 @@ void ModMenu::buildView() {
   buildRows(shown, v.rows, v.status);
   v.page = static_cast<int>(shown);
   v.tension_page = shown == MenuPage::Tension;
-  v.poppable = (isSettingsPage(shown) && shown != MenuPage::Layout) || shown == MenuPage::Recordings ||
+  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings ||
                shown == MenuPage::Keybinds || shown == MenuPage::TakeoverBinds;
   v.tension_on = Settings::TENSION_ENABLED.value != 0;
   v.meters_right = Settings::TENSION_SIDE.value == 1;
