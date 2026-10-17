@@ -360,8 +360,6 @@ namespace Settings {
 }
 
 namespace {
-  size_t OPTION_COUNT = Settings::settings.size();
-
   // Menu position defaults (overridden by MENU_CENTER_X/Y_RATIO float settings)
   constexpr double CENTER_X_RATIO = 0.58;
   constexpr double CENTER_Y_RATIO = 0.5;
@@ -391,17 +389,9 @@ namespace {
   constexpr double ACCENT_W = 3.0;
   constexpr double STRIPE_H = 2.0;
 
-  struct SectionDef { const wchar_t* label; size_t start; size_t end; };
-  constexpr SectionDef SECTIONS[] = {
-    {L"-- OVERLAYS --",       0,  7},
-    {L"-- TRAINING --",       7,  9},
-    {L"-- METERS --",         9, 20},   // end is exclusive
-  };
-  constexpr size_t SECTION_COUNT = sizeof(SECTIONS) / sizeof(SECTIONS[0]);
-
   enum class MenuPage : size_t {
     Root = 0,
-    Display,
+    FrameBar,
     TimingInput,
     Tension,
     Layout,
@@ -412,6 +402,7 @@ namespace {
     Recordings,
     Keybinds,
     TakeoverBinds,
+    Display,
   };
 
   // ---- Recordings page state ----------------------------------------------
@@ -644,6 +635,7 @@ namespace {
   };
 
   constexpr RootPageDef ROOT_PAGES[] = {
+    {MenuPage::FrameBar, L"Frame Bar"},
     {MenuPage::Display, L"Overlays"},
     {MenuPage::TimingInput, L"Training"},
     {MenuPage::Tension, L"Meters"},
@@ -684,12 +676,11 @@ namespace {
 
   struct LayoutSubDef { MenuPage page; const wchar_t* label; };
   constexpr LayoutSubDef LAYOUT_SUBS[] = {
-    {MenuPage::LayoutBar,      L"Frame Bar"},
     {MenuPage::LayoutTension,  L"Tension Box"},
     {MenuPage::LayoutDetail,   L"Detail Panel"},
     {MenuPage::LayoutMenu,     L"Mod Menu"},
   };
-  constexpr size_t LAYOUT_SUB_COUNT = 4;
+  constexpr size_t LAYOUT_SUB_COUNT = sizeof(LAYOUT_SUBS) / sizeof(LAYOUT_SUBS[0]);
 
   bool isLayoutSubPage(MenuPage page) {
     return page == MenuPage::LayoutBar || page == MenuPage::LayoutTension ||
@@ -790,7 +781,8 @@ namespace {
   const wchar_t* pageLabel(MenuPage page) {
     switch (page) {
       case MenuPage::Root:          return L"-- MENU --";
-      case MenuPage::Display:       return L"-- OVERLAYS --";
+      case MenuPage::FrameBar:      return L"-- FRAME BAR --";
+      case MenuPage::Display:      return L"-- OVERLAYS --";
       case MenuPage::TimingInput:   return L"-- TRAINING --";
       case MenuPage::Tension:       return L"-- METERS --";
       case MenuPage::Layout:        return L"-- APPEARANCE --";
@@ -805,38 +797,86 @@ namespace {
     return L"-- MENU --";
   }
 
-  size_t settingsStartForPage(MenuPage page) {
-    switch (page) {
-      case MenuPage::Display: return SECTIONS[0].start;
-      case MenuPage::TimingInput: return SECTIONS[1].start;
-      case MenuPage::Tension: return SECTIONS[2].start;
-      default: return 0;
-    }
-  }
+  // Row order and actions share one definition for mouse,
+  // keyboard/controller navigation and both menu renderers. Config IDs stay put.
+  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont };
+  struct SettingsRowDef {
+    const wchar_t* label = L"";
+    SettingsEntry* setting = nullptr;
+    FloatSetting* number = nullptr;
+    SettingsAction action = SettingsAction::None;
+  };
 
-  size_t settingsCountForPage(MenuPage page) {
-    switch (page) {
-      case MenuPage::Display: return SECTIONS[0].end - SECTIONS[0].start;
-      case MenuPage::TimingInput: return SECTIONS[1].end - SECTIONS[1].start;
-      case MenuPage::Tension: return SECTIONS[2].end - SECTIONS[2].start;
-      default: return 0;
+  std::vector<SettingsRowDef> settingsRowsForPage(MenuPage page) {
+    using namespace Settings;
+    if (page == MenuPage::FrameBar) {
+      std::vector<SettingsRowDef> rows = {
+        {L"Frame Bar", &FRAMEBAR},
+        {L"Show Dash", &SHOW_DASH_FRAMES},
+        {L"Show Crossup", &CROSSUP_ENABLED},
+        {L"Color scheme", &COLOR_SCHEME},
+        {L"Fade effect", &FADE},
+        {L"Delimit segments", &DELIM},
+      };
+      if (imgui_overlay::running())
+        rows.push_back({L"Frame bar size", nullptr, &UI_SCALE_BAR});
+      else {
+        rows.push_back({L"X position (screen ratio)", nullptr, &BAR_CENTER_X_RATIO});
+        rows.push_back({L"Y position (screen ratio)", nullptr, &BAR_CENTER_Y_RATIO});
+      }
+      return rows;
     }
+    if (page == MenuPage::Display)
+      return {{HITBOXES.display.title, &HITBOXES}};
+    if (page == MenuPage::TimingInput)
+      return {{PAUSE_TYPE.display.title, &PAUSE_TYPE},
+              {DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
+    if (page == MenuPage::Tension)
+      return {
+        {TENSION_ENABLED.display.title, &TENSION_ENABLED},
+        {TENSION_GAIN.display.title, &TENSION_GAIN},
+        {TENSION_ADVANTAGE.display.title, &TENSION_ADVANTAGE},
+        {TENSION_ADV_CHANGE.display.title, &TENSION_ADV_CHANGE},
+        {TENSION_BURST.display.title, &TENSION_BURST},
+        {TENSION_PULSE.display.title, &TENSION_PULSE},
+        {TENSION_PENALTY.display.title, &TENSION_PENALTY},
+        {TENSION_CURRENT.display.title, &TENSION_CURRENT},
+        {WALL_DAMAGE.display.title, &WALL_DAMAGE},
+        {TENSION_SIDE.display.title, &TENSION_SIDE},
+        {METERS_DECIMALS.display.title, &METERS_DECIMALS},
+      };
+    if (page == MenuPage::Layout && imgui_overlay::running())
+      return {
+        {L"Snap meters to frame bar", &METERS_SNAP},
+        {L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
+        {L"Accent color", &UI_ACCENT},
+        {L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
+        {L"Panel opacity", nullptr, &UI_OPACITY},
+        {L"Menu size", nullptr, &UI_SCALE},
+        {L"Meters size", nullptr, &UI_SCALE_METERS},
+        {L"Timeline size", nullptr, &UI_SCALE_TIMELINE},
+        {L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
+        {L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
+        {L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
+      };
+    return {};
   }
 
   bool isSettingsPage(MenuPage page) {
-    return page == MenuPage::Display || page == MenuPage::TimingInput ||
-           page == MenuPage::Tension;
+    return page == MenuPage::FrameBar || page == MenuPage::Display ||
+           page == MenuPage::TimingInput || page == MenuPage::Tension ||
+           (page == MenuPage::Layout && imgui_overlay::running());
   }
 
   size_t rowCountForPage(MenuPage page) {
     switch (page) {
       case MenuPage::Root: return ROOT_PAGE_COUNT;
+      case MenuPage::FrameBar:
       case MenuPage::Display:
       case MenuPage::TimingInput:
       case MenuPage::Tension:
-        return settingsCountForPage(page) + 1;
-      // Layout root: Back + 4 subs + Reset = 6
-      case MenuPage::Layout:        return imgui_overlay::running() ? 13 : LAYOUT_SUB_COUNT + 2;
+        return settingsRowsForPage(page).size() + 1;
+      case MenuPage::Layout:        return imgui_overlay::running() ? settingsRowsForPage(page).size() + 1 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
       case MenuPage::LayoutTension: return LAYOUT_TENSION_ROW_COUNT + 1;
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
@@ -1009,9 +1049,21 @@ void ModMenu::updateInner(PressedKeys data) {
 
   const size_t local_idx = cp - 1;
   if (isSettingsPage(page)) {
-    const size_t settings_idx = settingsStartForPage(page) + local_idx;
-    if (data.rotate_left)  changeSetting(settings_idx, false);
-    if (data.rotate_right) changeSetting(settings_idx, true);
+    if (!(data.rotate_left || data.rotate_right)) return;
+    const auto rows = settingsRowsForPage(page);
+    if (local_idx >= rows.size()) return;
+    const auto& row = rows[local_idx];
+    if (row.setting)
+      changeSetting(static_cast<size_t>(Settings::indexById(row.setting->id_)), data.rotate_right);
+    else if (row.number)
+      changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById(row.number->id_)), data.rotate_right);
+    else switch (row.action) {
+      case SettingsAction::ResetWindows: Settings::resetLayout(); imgui_overlay::resetWindows(); break;
+      case SettingsAction::PickColor: Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; break;
+      case SettingsAction::PickFont: startBrowse(true); break;
+      case SettingsAction::ResetFont: Settings::setOverlayFont(""); Settings::saveConfig(); break;
+      default: break;
+    }
     return;
   }
 
@@ -1071,23 +1123,6 @@ void ModMenu::updateInner(PressedKeys data) {
     if (!(data.rotate_left || data.rotate_right)) return;
     if (local_idx == 0) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
     else if (local_idx - 1 < binds::G_COUNT) binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - 1));
-    return;
-  }
-
-  if (page == MenuPage::Layout && imgui_overlay::running()) {
-    if (!(data.rotate_left || data.rotate_right)) return;
-    if (local_idx == 0) changeSetting(static_cast<size_t>(Settings::indexById("meters_snap")), data.rotate_right);
-    else if (local_idx == 1) { Settings::resetLayout(); Settings::saveConfig(); imgui_overlay::resetWindows(); }
-    else if (local_idx == 2) changeSetting(static_cast<size_t>(Settings::indexById("ui_accent")), data.rotate_right);
-    else if (local_idx == 3) { Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; }
-    else if (local_idx == 4) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_opacity")), data.rotate_right);
-    else if (local_idx == 5) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale")), data.rotate_right);
-    else if (local_idx == 6) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_meters")), data.rotate_right);
-    else if (local_idx == 7) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_bar")), data.rotate_right);
-    else if (local_idx == 8) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_timeline")), data.rotate_right);
-    else if (local_idx == 9) changeSetting(static_cast<size_t>(Settings::indexById("ui_hide_window_decorations")), data.rotate_right);
-    else if (local_idx == 10) startBrowse(true);
-    else if (local_idx == 11) { Settings::setOverlayFont(""); Settings::saveConfig(); }
     return;
   }
 
@@ -1270,22 +1305,23 @@ void ModMenu::draw() {
   }
 
   if (isSettingsPage(page)) {
-    const size_t start = settingsStartForPage(page);
-    const size_t count = settingsCountForPage(page);
-    for (size_t i = 0; i < count; i++) {
-      const size_t settings_idx = start + i;
+    const auto rows = settingsRowsForPage(page);
+    for (size_t i = 0; i < rows.size(); i++) {
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
         tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
         tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
       }
-      auto &relevant = Settings::settings[settings_idx]->display;
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(relevant.title), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0,
-                            FString(relevant.values[Settings::settings[settings_idx]->value]), VALUE_SCALE);
+      const auto& row = rows[i];
+      std::wstring value;
+      if (row.setting) value = row.setting->display.values[row.setting->value];
+      else if (row.number) value = formatMenuFloat(row.number->value);
+      tool.drawOutlinedText(label_left, cy + 8.0, FString(row.label), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0, FString(value.c_str()), VALUE_SCALE);
       cy += OPTION_HEIGHT + OPTION_SPACING;
     }
+    if (page == MenuPage::FrameBar) drawLayoutGhost(static_cast<int>(MenuPage::LayoutBar));
     return;
   }
 
@@ -1364,7 +1400,7 @@ void ModMenu::draw() {
   }
 
   if (page == MenuPage::Layout) {
-    // List the 4 submenus
+    // Layout submenus for the HUD renderer.
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) {
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
@@ -1586,30 +1622,16 @@ void ModMenu::applyClick(const MenuClick& c) {
     if (c.a == 5) g_rec_side = c.b == 0 ? recordings::kDirRight : recordings::kDirLeft;
     return;
   }
-  if (page == MenuPage::Layout && c.a == 3 && imgui_overlay::running()) {
-    Settings::UI_ACCENT.value = static_cast<size_t>(std::clamp(c.b, 0, 6));
-    Settings::saveConfig();
-    return;
-  }
-  if (page == MenuPage::Layout && c.a == 1 && imgui_overlay::running()) {
-    Settings::METERS_SNAP.value = c.b ? 1 : 0;
-    Settings::saveConfig();
-    return;
-  }
-  if (page == MenuPage::Layout && c.a == 10 && imgui_overlay::running()) {
-    Settings::UI_HIDE_WINDOW_DECORATIONS.value = c.b ? 1 : 0;
-    Settings::saveConfig();
-    return;
-  }
   if (page == MenuPage::Keybinds && c.a == static_cast<int>(binds::COUNT) + 1) {
     binds::use_mod_binds = c.b ? 1 : 0;
     Settings::saveConfig();
     return;
   }
   if (isSettingsPage(page) && c.a >= 1) {
-    const size_t idx = settingsStartForPage(page) + static_cast<size_t>(c.a - 1);
-    auto* setting = Settings::settings[idx];
-    if (c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
+    const auto rows = settingsRowsForPage(page);
+    const auto& row = rows[static_cast<size_t>(c.a - 1)];
+    auto* setting = row.setting;
+    if (setting && c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
       setting->value = static_cast<size_t>(c.b);
       Settings::saveConfig();
     }
@@ -1643,13 +1665,27 @@ void ModMenu::buildView() {
   };
 
   if (isSettingsPage(shown)) {
-    const size_t start = settingsStartForPage(shown), count = settingsCountForPage(shown);
-    for (size_t i = 0; i < count; i++) {
-      const auto* s = Settings::settings[start + i];
-      MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = clean(s->display.title);
-      for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
-      r.choice = static_cast<int>(s->value);
-      out.push_back(r);
+    for (const auto& def : settingsRowsForPage(shown)) {
+      MenuRowView r; r.label = clean(def.label);
+      if (const auto* s = def.setting) {
+        r.kind = MenuRowView::Kind::Choice;
+        for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
+        r.choice = static_cast<int>(s->value);
+      } else if (const auto* f = def.number) {
+        r.kind = MenuRowView::Kind::Number;
+        if (f->id_.rfind("ui_", 0) == 0) {
+          r.value = std::to_string(static_cast<int>(std::lround(f->value * 100))) + "%";
+        } else r.value = utf8(formatMenuFloat(f->value));
+      } else {
+        r.kind = MenuRowView::Kind::Action;
+        r.value = def.action == SettingsAction::PickColor ? "Pick" : "Reset";
+        if (def.action == SettingsAction::PickFont) {
+          std::string f = Settings::overlayFont();
+          f = f.empty() ? "Barlow" : f.substr(0, f.find_last_of('.'));
+          r.value = f.size() > 22 ? f.substr(0, 21) + "..." : f;
+        }
+      }
+      out.push_back(std::move(r));
     }
   } else if (shown == MenuPage::Recordings) {
     const std::wstring slot_no = std::to_wstring(g_rec_slot + 1);
@@ -1696,31 +1732,6 @@ void ModMenu::buildView() {
       r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
       out.push_back(r);
     }
-  } else if (shown == MenuPage::Layout && imgui_overlay::running()) {
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Snap meters to frame bar";
-      r.choices = {"Disabled", "Enabled"}; r.choice = Settings::METERS_SNAP.value ? 1 : 0; out.push_back(r); }
-    row(MenuRowView::Kind::Action, "Reset all window positions", "Reset");
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Accent color";
-      for (size_t c = 0; c < Settings::UI_ACCENT.display.count; c++) r.choices.push_back(clean(Settings::UI_ACCENT.display.values[c]));
-      r.choice = static_cast<int>(Settings::UI_ACCENT.value); out.push_back(r); }
-    row(MenuRowView::Kind::Action, "Custom color", "Pick");
-    { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_OPACITY.value * 100)));
-      row(MenuRowView::Kind::Number, "Panel opacity", utf8(b)); }
-    auto size_row = [&](const char* label, const FloatSetting& f) {
-      wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(f.value * 100)));
-      row(MenuRowView::Kind::Number, label, utf8(b));
-    };
-    size_row("Menu size", Settings::UI_SCALE);
-    size_row("Meters size", Settings::UI_SCALE_METERS);
-    size_row("Frame bar size", Settings::UI_SCALE_BAR);
-    size_row("Timeline size", Settings::UI_SCALE_TIMELINE);
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Hide decorations when menu is closed";
-      r.choices = {"Disabled", "Enabled"}; r.choice = Settings::UI_HIDE_WINDOW_DECORATIONS.value ? 1 : 0; out.push_back(r); }
-    { std::string f = Settings::overlayFont();
-      f = f.empty() ? "Barlow" : f.substr(0, f.find_last_of('.'));
-      if (f.size() > 22) f = f.substr(0, 21) + "...";
-      row(MenuRowView::Kind::Action, "Meters and frame bar font", f); }
-    row(MenuRowView::Kind::Action, "Back to Barlow", "Reset");
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
     row(MenuRowView::Kind::Action, "Reset all to defaults", "Reset");
@@ -1735,7 +1746,7 @@ void ModMenu::buildView() {
   buildRows(shown, v.rows, v.status);
   v.page = static_cast<int>(shown);
   v.tension_page = shown == MenuPage::Tension;
-  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings ||
+  v.poppable = (isSettingsPage(shown) && shown != MenuPage::Layout) || shown == MenuPage::Recordings ||
                shown == MenuPage::Keybinds || shown == MenuPage::TakeoverBinds;
   v.tension_on = Settings::TENSION_ENABLED.value != 0;
   v.meters_right = Settings::TENSION_SIDE.value == 1;

@@ -843,7 +843,7 @@ namespace menu_ui {
     const ImVec2 def_size((NAV_W + 540) * S + v.extra_width * 0.5f * S, 500 * S);
     Frame f = begin_window("StriveLabs##sl_menu", "",
                            ImVec2(io.DisplaySize.x * v.x_ratio - def_size.x * 0.5f, io.DisplaySize.y * v.y_ratio - def_size.y * 0.5f),
-                           def_size, ImVec2((NAV_W + 320) * S, (HEAD + 6 * NAV_ROW) * S), true);
+                           def_size, ImVec2((NAV_W + 320) * S, (HEAD + v.nav_items.size() * NAV_ROW + 40) * S), true);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::CloseMenu, 0, 0});
     ImDrawList* dl = f.dl;
     const ImVec2 o = f.o;
