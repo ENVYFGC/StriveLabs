@@ -403,11 +403,12 @@ namespace {
     Keybinds,
     TakeoverBinds,
     Hitboxes,
+    Timeline,
   };
 
   // ---- Recordings page state ----------------------------------------------
-  // Slot, save, file, browse, side, load, stream, capture side, capture, timeline.
-  constexpr size_t RECORDINGS_ROW_COUNT = 10;
+  // Slot, save, file, browse, side, load, stream, capture side, capture.
+  constexpr size_t RECORDINGS_ROW_COUNT = 9;
 
   std::vector<std::filesystem::path> g_rec_files;
   size_t       g_rec_file_idx = 0;
@@ -639,6 +640,7 @@ namespace {
     {MenuPage::TimingInput, L"Training"},
     {MenuPage::Tension, L"Meters"},
     {MenuPage::Recordings, L"Recordings"},
+    {MenuPage::Timeline, L"Timeline"},
     {MenuPage::Keybinds, L"Controls"},
     {MenuPage::Layout, L"Appearance"},
   };
@@ -792,6 +794,7 @@ namespace {
       case MenuPage::Recordings:    return L"-- RECORDINGS --";
       case MenuPage::Keybinds:      return L"-- CONTROLS --";
       case MenuPage::TakeoverBinds: return L"-- TAKEOVER BINDS --";
+      case MenuPage::Timeline:      return L"-- TIMELINE --";
     }
     return L"-- MENU --";
   }
@@ -850,6 +853,12 @@ namespace {
         rows.push_back({L"", L"Meters size", nullptr, &UI_SCALE_METERS});
       return rows;
     }
+    if (page == MenuPage::Timeline) {
+      std::vector<SettingsRowDef> rows = {{L"Settings", L"Timeline window", &TIMELINE_ON}};
+      if (imgui_overlay::running())
+        rows.push_back({L"Appearance", L"Timeline size", nullptr, &UI_SCALE_TIMELINE});
+      return rows;
+    }
     if (page == MenuPage::Layout && imgui_overlay::running())
       return {
         {L"Style", L"Accent color", &UI_ACCENT},
@@ -858,7 +867,6 @@ namespace {
         {L"Font", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
         {L"", L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
         {L"Windows", L"Menu size", nullptr, &UI_SCALE},
-        {L"", L"Timeline size", nullptr, &UI_SCALE_TIMELINE},
         {L"", L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
         {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
       };
@@ -868,6 +876,7 @@ namespace {
   bool isSettingsPage(MenuPage page) {
     return page == MenuPage::FrameBar || page == MenuPage::Hitboxes ||
            page == MenuPage::TimingInput || page == MenuPage::Tension ||
+           page == MenuPage::Timeline ||
            (page == MenuPage::Layout && imgui_overlay::running());
   }
 
@@ -878,6 +887,7 @@ namespace {
       case MenuPage::Hitboxes:
       case MenuPage::TimingInput:
       case MenuPage::Tension:
+      case MenuPage::Timeline:
         return settingsRowsForPage(page).size() + 1;
       case MenuPage::Layout:        return imgui_overlay::running() ? settingsRowsForPage(page).size() + 1 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
@@ -903,10 +913,6 @@ namespace {
     if (isSettingsPage(page)) {
       const auto rows = settingsRowsForPage(page);
       return row < rows.size() ? rows[row].section : L"";
-    }
-    if (page == MenuPage::Recordings) {
-      if (row == 0) return L"Recording and playback";
-      if (row == 9) return L"Appearance";
     }
     if (page == MenuPage::Keybinds) {
       if (row == 0) return L"Hotkeys";
@@ -1125,9 +1131,7 @@ void ModMenu::updateInner(PressedKeys data) {
       case 8:                                   // Capture from replay: start / stop
         toggleCapture();
         break;
-      case 9:                                   // Timeline window
-        setTimelineOn(!timelineOn());
-        break;
+
       default: break;
     }
     return;
@@ -1314,7 +1318,6 @@ void ModMenu::draw() {
       {L"Capture from Replay",         replayCaptureActive()
                                            ? (L">>  stop  (" + secondsText(replayCaptureFrames()) + L" / 40 s)")
                                            : std::wstring(L">>  start  (40 s max)")},
-      {L"Timeline Window",             timelineOn() ? L"<  Enabled   >" : L"<  Disabled  >"},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
       drawSection(i);
@@ -1655,7 +1658,6 @@ void ModMenu::applyClick(const MenuClick& c) {
   if (page == MenuPage::Recordings) {
     if (c.a == 1) g_rec_slot = std::clamp(c.b, 0, recordings::kSlotCount - 1);
     if (c.a == 8) g_cap_side = c.b ? 1 : 0;
-    if (c.a == 10) setTimelineOn(c.b != 0);
     if (c.a == 5) g_rec_side = c.b == 0 ? recordings::kDirRight : recordings::kDirLeft;
     return;
   }
@@ -1742,8 +1744,6 @@ void ModMenu::buildView() {
       r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
     row(MenuRowView::Kind::Action, "Capture from replay",
         replayCaptureActive() ? utf8(L"Stop (" + secondsText(replayCaptureFrames()) + L" / 40 s)") : std::string("Start"));
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Timeline window";
-      r.choices = {"Disabled", "Enabled"}; r.choice = timelineOn() ? 1 : 0; out.push_back(r); }
     status = utf8(g_rec_status);
   } else if (shown == MenuPage::Keybinds) {
     for (size_t i = 0; i < binds::COUNT; i++) {
