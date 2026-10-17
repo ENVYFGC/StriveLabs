@@ -832,29 +832,32 @@ namespace {
     if (page == MenuPage::TimingInput)
       return {{L"", PAUSE_TYPE.display.title, &PAUSE_TYPE},
               {L"", DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
-    if (page == MenuPage::Tension)
-      return {
-        {L"", TENSION_ENABLED.display.title, &TENSION_ENABLED},
-        {L"", TENSION_GAIN.display.title, &TENSION_GAIN},
-        {L"", TENSION_ADVANTAGE.display.title, &TENSION_ADVANTAGE},
-        {L"", TENSION_ADV_CHANGE.display.title, &TENSION_ADV_CHANGE},
-        {L"", TENSION_BURST.display.title, &TENSION_BURST},
-        {L"", TENSION_PULSE.display.title, &TENSION_PULSE},
-        {L"", TENSION_PENALTY.display.title, &TENSION_PENALTY},
-        {L"", TENSION_CURRENT.display.title, &TENSION_CURRENT},
-        {L"", WALL_DAMAGE.display.title, &WALL_DAMAGE},
-        {L"", TENSION_SIDE.display.title, &TENSION_SIDE},
-        {L"", METERS_DECIMALS.display.title, &METERS_DECIMALS},
+    if (page == MenuPage::Tension) {
+      std::vector<SettingsRowDef> rows = {
+        {L"Settings", L"Meters overlay", &TENSION_ENABLED},
+        {L"", L"Tension now", &TENSION_CURRENT},
+        {L"", L"Tension gain", &TENSION_GAIN},
+        {L"", L"Tension advantage", &TENSION_ADVANTAGE},
+        {L"", L"Tension advantage change", &TENSION_ADV_CHANGE},
+        {L"", L"Tension pulse", &TENSION_PULSE},
+        {L"", L"Tension penalty", &TENSION_PENALTY},
+        {L"", L"Burst", &TENSION_BURST},
+        {L"", L"Wall damage", &WALL_DAMAGE},
+        {L"Appearance", L"Overlay side", &TENSION_SIDE},
+        {L"", L"Snap meters to frame bar", &METERS_SNAP},
+        {L"", L"Decimal places", &METERS_DECIMALS},
       };
+      if (imgui_overlay::running())
+        rows.push_back({L"", L"Meters size", nullptr, &UI_SCALE_METERS});
+      return rows;
+    }
     if (page == MenuPage::Layout && imgui_overlay::running())
       return {
-        {L"", L"Snap meters to frame bar", &METERS_SNAP},
         {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
         {L"", L"Accent color", &UI_ACCENT},
         {L"", L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
         {L"", L"Panel opacity", nullptr, &UI_OPACITY},
         {L"", L"Menu size", nullptr, &UI_SCALE},
-        {L"", L"Meters size", nullptr, &UI_SCALE_METERS},
         {L"", L"Timeline size", nullptr, &UI_SCALE_TIMELINE},
         {L"", L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
         {L"", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
