@@ -908,6 +908,10 @@ namespace {
       if (row == 0) return L"Recording and playback";
       if (row == 9) return L"Appearance";
     }
+    if (page == MenuPage::Keybinds) {
+      if (row == 0) return L"Hotkeys";
+      if (row == binds::COUNT) return L"Replay takeover";
+    }
     return L"";
   }
 
