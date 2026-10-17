@@ -402,7 +402,7 @@ namespace {
     Recordings,
     Keybinds,
     TakeoverBinds,
-    Display,
+    Hitboxes,
   };
 
   // ---- Recordings page state ----------------------------------------------
@@ -636,7 +636,7 @@ namespace {
 
   constexpr RootPageDef ROOT_PAGES[] = {
     {MenuPage::FrameBar, L"Frame Bar"},
-    {MenuPage::Display, L"Overlays"},
+    {MenuPage::Hitboxes, L"Hitboxes"},
     {MenuPage::TimingInput, L"Training"},
     {MenuPage::Tension, L"Meters"},
     {MenuPage::Recordings, L"Recordings"},
@@ -782,7 +782,7 @@ namespace {
     switch (page) {
       case MenuPage::Root:          return L"-- MENU --";
       case MenuPage::FrameBar:      return L"-- FRAME BAR --";
-      case MenuPage::Display:      return L"-- OVERLAYS --";
+      case MenuPage::Hitboxes:      return L"-- HITBOXES --";
       case MenuPage::TimingInput:   return L"-- TRAINING --";
       case MenuPage::Tension:       return L"-- METERS --";
       case MenuPage::Layout:        return L"-- APPEARANCE --";
@@ -826,8 +826,8 @@ namespace {
       }
       return rows;
     }
-    if (page == MenuPage::Display)
-      return {{HITBOXES.display.title, &HITBOXES}};
+    if (page == MenuPage::Hitboxes)
+      return {{L"Hitboxes", &HITBOXES}};
     if (page == MenuPage::TimingInput)
       return {{PAUSE_TYPE.display.title, &PAUSE_TYPE},
               {DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
@@ -863,7 +863,7 @@ namespace {
   }
 
   bool isSettingsPage(MenuPage page) {
-    return page == MenuPage::FrameBar || page == MenuPage::Display ||
+    return page == MenuPage::FrameBar || page == MenuPage::Hitboxes ||
            page == MenuPage::TimingInput || page == MenuPage::Tension ||
            (page == MenuPage::Layout && imgui_overlay::running());
   }
@@ -872,7 +872,7 @@ namespace {
     switch (page) {
       case MenuPage::Root: return ROOT_PAGE_COUNT;
       case MenuPage::FrameBar:
-      case MenuPage::Display:
+      case MenuPage::Hitboxes:
       case MenuPage::TimingInput:
       case MenuPage::Tension:
         return settingsRowsForPage(page).size() + 1;
