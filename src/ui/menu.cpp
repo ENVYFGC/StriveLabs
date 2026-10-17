@@ -406,9 +406,8 @@ namespace {
   };
 
   // ---- Recordings page state ----------------------------------------------
-  // Rows: 0 Back | 1 File | 2 Slot | 3 Side | 4 Load
+  // Slot, save, file, browse, side, load, stream, capture side, capture, timeline.
   constexpr size_t RECORDINGS_ROW_COUNT = 10;
-  // Rows: 0 Slot | 1 Save | 2 File | 3 Side | 4 Load
 
   std::vector<std::filesystem::path> g_rec_files;
   size_t       g_rec_file_idx = 0;
@@ -904,6 +903,10 @@ namespace {
     if (isSettingsPage(page)) {
       const auto rows = settingsRowsForPage(page);
       return row < rows.size() ? rows[row].section : L"";
+    }
+    if (page == MenuPage::Recordings) {
+      if (row == 0) return L"Recording and playback";
+      if (row == 9) return L"Appearance";
     }
     return L"";
   }
