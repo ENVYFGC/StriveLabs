@@ -797,10 +797,11 @@ namespace {
     return L"-- MENU --";
   }
 
-  // Row order and actions share one definition for mouse,
+  // Row order, section headings and actions share one definition for mouse,
   // keyboard/controller navigation and both menu renderers. Config IDs stay put.
   enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont };
   struct SettingsRowDef {
+    const wchar_t* section = L"";
     const wchar_t* label = L"";
     SettingsEntry* setting = nullptr;
     FloatSetting* number = nullptr;
@@ -811,53 +812,53 @@ namespace {
     using namespace Settings;
     if (page == MenuPage::FrameBar) {
       std::vector<SettingsRowDef> rows = {
-        {L"Frame Bar", &FRAMEBAR},
-        {L"Show Dash", &SHOW_DASH_FRAMES},
-        {L"Show Crossup", &CROSSUP_ENABLED},
-        {L"Color scheme", &COLOR_SCHEME},
-        {L"Fade effect", &FADE},
-        {L"Delimit segments", &DELIM},
+        {L"Settings", L"Frame Bar", &FRAMEBAR},
+        {L"", L"Show Dash", &SHOW_DASH_FRAMES},
+        {L"", L"Show Crossup", &CROSSUP_ENABLED},
+        {L"Appearance", L"Color scheme", &COLOR_SCHEME},
+        {L"", L"Fade effect", &FADE},
+        {L"", L"Delimit segments", &DELIM},
       };
       if (imgui_overlay::running())
-        rows.push_back({L"Frame bar size", nullptr, &UI_SCALE_BAR});
+        rows.push_back({L"", L"Frame bar size", nullptr, &UI_SCALE_BAR});
       else {
-        rows.push_back({L"X position (screen ratio)", nullptr, &BAR_CENTER_X_RATIO});
-        rows.push_back({L"Y position (screen ratio)", nullptr, &BAR_CENTER_Y_RATIO});
+        rows.push_back({L"", L"X position (screen ratio)", nullptr, &BAR_CENTER_X_RATIO});
+        rows.push_back({L"", L"Y position (screen ratio)", nullptr, &BAR_CENTER_Y_RATIO});
       }
       return rows;
     }
     if (page == MenuPage::Hitboxes)
-      return {{L"Hitboxes", &HITBOXES}};
+      return {{L"", L"Hitboxes", &HITBOXES}};
     if (page == MenuPage::TimingInput)
-      return {{PAUSE_TYPE.display.title, &PAUSE_TYPE},
-              {DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
+      return {{L"", PAUSE_TYPE.display.title, &PAUSE_TYPE},
+              {L"", DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
     if (page == MenuPage::Tension)
       return {
-        {TENSION_ENABLED.display.title, &TENSION_ENABLED},
-        {TENSION_GAIN.display.title, &TENSION_GAIN},
-        {TENSION_ADVANTAGE.display.title, &TENSION_ADVANTAGE},
-        {TENSION_ADV_CHANGE.display.title, &TENSION_ADV_CHANGE},
-        {TENSION_BURST.display.title, &TENSION_BURST},
-        {TENSION_PULSE.display.title, &TENSION_PULSE},
-        {TENSION_PENALTY.display.title, &TENSION_PENALTY},
-        {TENSION_CURRENT.display.title, &TENSION_CURRENT},
-        {WALL_DAMAGE.display.title, &WALL_DAMAGE},
-        {TENSION_SIDE.display.title, &TENSION_SIDE},
-        {METERS_DECIMALS.display.title, &METERS_DECIMALS},
+        {L"", TENSION_ENABLED.display.title, &TENSION_ENABLED},
+        {L"", TENSION_GAIN.display.title, &TENSION_GAIN},
+        {L"", TENSION_ADVANTAGE.display.title, &TENSION_ADVANTAGE},
+        {L"", TENSION_ADV_CHANGE.display.title, &TENSION_ADV_CHANGE},
+        {L"", TENSION_BURST.display.title, &TENSION_BURST},
+        {L"", TENSION_PULSE.display.title, &TENSION_PULSE},
+        {L"", TENSION_PENALTY.display.title, &TENSION_PENALTY},
+        {L"", TENSION_CURRENT.display.title, &TENSION_CURRENT},
+        {L"", WALL_DAMAGE.display.title, &WALL_DAMAGE},
+        {L"", TENSION_SIDE.display.title, &TENSION_SIDE},
+        {L"", METERS_DECIMALS.display.title, &METERS_DECIMALS},
       };
     if (page == MenuPage::Layout && imgui_overlay::running())
       return {
-        {L"Snap meters to frame bar", &METERS_SNAP},
-        {L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
-        {L"Accent color", &UI_ACCENT},
-        {L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
-        {L"Panel opacity", nullptr, &UI_OPACITY},
-        {L"Menu size", nullptr, &UI_SCALE},
-        {L"Meters size", nullptr, &UI_SCALE_METERS},
-        {L"Timeline size", nullptr, &UI_SCALE_TIMELINE},
-        {L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
-        {L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
-        {L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
+        {L"", L"Snap meters to frame bar", &METERS_SNAP},
+        {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
+        {L"", L"Accent color", &UI_ACCENT},
+        {L"", L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
+        {L"", L"Panel opacity", nullptr, &UI_OPACITY},
+        {L"", L"Menu size", nullptr, &UI_SCALE},
+        {L"", L"Meters size", nullptr, &UI_SCALE_METERS},
+        {L"", L"Timeline size", nullptr, &UI_SCALE_TIMELINE},
+        {L"", L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
+        {L"", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
+        {L"", L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
       };
     return {};
   }
@@ -893,6 +894,15 @@ namespace {
       if (ROOT_PAGES[i].page == page) return i;
     }
     return 0;
+  }
+
+  // Headings belong to the following control and do not consume a cursor index.
+  const wchar_t* sectionForRow(MenuPage page, size_t row) {
+    if (isSettingsPage(page)) {
+      const auto rows = settingsRowsForPage(page);
+      return row < rows.size() ? rows[row].section : L"";
+    }
+    return L"";
   }
 
   constexpr double DESC_LINE_H  = 26.0;
@@ -940,7 +950,10 @@ namespace {
       return base + ROOT_PAGE_COUNT * (OPTION_HEIGHT + OPTION_SPACING) - OPTION_SPACING + CREDIT_LINE_H;
     }
     const size_t row_count = rowCountForPage(page);
-    return base + row_count * (OPTION_HEIGHT + OPTION_SPACING) - OPTION_SPACING;
+    double headings = 0;
+    for (size_t i = 1; i < row_count; i++)
+      if (*sectionForRow(page, i - 1)) headings += HEADER_HEIGHT + OPTION_SPACING;
+    return base + row_count * (OPTION_HEIGHT + OPTION_SPACING) - OPTION_SPACING + headings;
   }
 }
 
@@ -1260,6 +1273,14 @@ void ModMenu::draw() {
   tool.drawOutlinedText(value_left, cy + 8.0, FString(L"<< back >>"), VALUE_SCALE);
   cy += OPTION_HEIGHT + OPTION_SPACING;
 
+  auto drawSection = [&](size_t row) {
+    const auto* title = sectionForRow(page, row);
+    if (!*title) return;
+    tool.drawRect(menu_left, cy, MENU_WIDTH, HEADER_HEIGHT, SECTION_BG);
+    tool.drawOutlinedText(label_left, cy + 4.0, FString(title), HEADER_SCALE);
+    cy += HEADER_HEIGHT + OPTION_SPACING;
+  };
+
   if (page == MenuPage::Recordings) {
     const std::wstring file_val =
         g_rec_files.empty()
@@ -1286,6 +1307,7 @@ void ModMenu::draw() {
       {L"Timeline Window",             timelineOn() ? L"<  Enabled   >" : L"<  Disabled  >"},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1307,6 +1329,7 @@ void ModMenu::draw() {
   if (isSettingsPage(page)) {
     const auto rows = settingsRowsForPage(page);
     for (size_t i = 0; i < rows.size(); i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1327,6 +1350,7 @@ void ModMenu::draw() {
 
   if (page == MenuPage::Keybinds) {
     for (size_t i = 0; i < binds::COUNT; i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1341,6 +1365,7 @@ void ModMenu::draw() {
       cy += OPTION_HEIGHT + OPTION_SPACING;
     }
     {
+      drawSection(binds::COUNT);
       const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1402,6 +1427,7 @@ void ModMenu::draw() {
   if (page == MenuPage::Layout) {
     // Layout submenus for the HUD renderer.
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1429,6 +1455,7 @@ void ModMenu::draw() {
     const LayoutRowDef* rows = layoutRowsForPage(page, count);
     if (rows) {
       for (size_t i = 0; i < count; i++) {
+        drawSection(i);
         const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
         if (sel) {
           tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1666,7 +1693,7 @@ void ModMenu::buildView() {
 
   if (isSettingsPage(shown)) {
     for (const auto& def : settingsRowsForPage(shown)) {
-      MenuRowView r; r.label = clean(def.label);
+      MenuRowView r; r.label = clean(def.label); r.section = utf8(def.section);
       if (const auto* s = def.setting) {
         r.kind = MenuRowView::Kind::Choice;
         for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
@@ -1742,6 +1769,8 @@ void ModMenu::buildView() {
       row(MenuRowView::Kind::Number, utf8(rows[i].label), utf8(formatMenuFloat(Settings::float_settings[rows[i].float_idx]->value)));
   }
 
+  if (!isSettingsPage(shown))
+    for (size_t i = 0; i < out.size(); i++) out[i].section = utf8(sectionForRow(shown, i));
   };
   buildRows(shown, v.rows, v.status);
   v.page = static_cast<int>(shown);

@@ -219,15 +219,23 @@ namespace menu_ui {
                  const std::function<void(MenuClick)>& sendf) {
     ImGuiIO& io = ImGui::GetIO();
     const float row_h = ROW_H * S, pad = PAD * S, ch = CHIP_H * S * 0.5f;
-    const float rows_h = row_h * static_cast<float>(rows.size());
+    const float section_h = 28 * S;
+    std::vector<float> offsets;
+    offsets.reserve(rows.size());
+    float rows_h = 0;
+    for (const auto& r : rows) {
+      offsets.push_back(rows_h);
+      rows_h += row_h + (r.section.empty() ? 0 : section_h);
+    }
     const float view_h = std::max(bottom - top, 0.0f);
-    if (key != st.key) { st.scroll = 0; st.key = key; }
+    if (key != st.key) { st.scroll = 0; st.last_cursor = -1; st.key = key; }
     float& scroll = st.scroll;
     if (ImGui::IsMouseHoveringRect(ImVec2(px, top), ImVec2(x1, bottom), false)) scroll -= io.MouseWheel * row_h;
-    if (cursor != st.last_cursor && cursor >= 0) {  // keyboard or pad: keep the selected row in view
-      const float rt = row_h * static_cast<float>(cursor);
+    if (cursor != st.last_cursor && cursor >= 0 && cursor < static_cast<int>(rows.size())) {  // keep the selected control and heading in view
+      const float rt = offsets[cursor];
+      const float rb = rt + row_h + (rows[cursor].section.empty() ? 0 : section_h);
       if (rt < scroll) scroll = rt;
-      if (rt + row_h > scroll + view_h) scroll = rt + row_h - view_h;
+      if (rb > scroll + view_h) scroll = rb - view_h;
     }
     st.last_cursor = cursor;
     const float max_scroll = std::max(0.0f, rows_h - view_h);
@@ -238,6 +246,14 @@ namespace menu_ui {
     const float lx = px + pad, rx = x1 - pad - (max_scroll > 0 ? 6 * S : 0);
     for (int i = 0; i < static_cast<int>(rows.size()); i++) {
       const MenuRowView& r = rows[i];
+      if (!r.section.empty()) {
+        dl->AddRectFilled(ImVec2(px, y), ImVec2(x1, y + section_h), SECTION);
+        dl->AddRectFilled(ImVec2(px, y), ImVec2(px + 3 * S, y + section_h), RED_LINE);
+        dl->PushClipRect(ImVec2(lx, y), ImVec2(std::max(lx, rx), y + section_h), true);
+        text(dl, f_small, ImVec2(lx, y + (section_h - f_small->FontSize) * 0.5f), MUTED, upper(r.section));
+        dl->PopClipRect();
+        y += section_h;
+      }
       const ImVec2 a(px, y), b(x1, y + row_h);
       if (b.y <= top || a.y >= bottom) { y += row_h; continue; }  // off screen: no drawing, no clicks
       const bool sel = i == cursor;
@@ -464,7 +480,9 @@ namespace menu_ui {
   void draw_panel(const MenuPanelView& pv) {
     const std::string id = pv.title + "##sl_panel" + std::to_string(pv.page);
     const float status_h = pv.status.empty() ? 0.0f : 26 * S;
-    const float def_h = HEAD * S + ROW_H * S * std::min(static_cast<float>(pv.rows.size()), 8.0f) + status_h + 6 * S;
+    float def_h = HEAD * S + status_h + 6 * S;
+    for (size_t i = 0; i < std::min(pv.rows.size(), size_t{8}); i++)
+      def_h += (ROW_H + (pv.rows[i].section.empty() ? 0 : 28)) * S;
     Frame f = begin_window(id, pv.title, ImVec2(60 * S + 36 * S * pv.page, 100 * S + 36 * S * pv.page),
                            ImVec2(470 * S, def_h), ImVec2(300 * S, HEAD * S + ROW_H * S * 2), true);
     if (f.closed) toggle_popped(pv.page);
