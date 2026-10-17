@@ -401,7 +401,7 @@ namespace {
     LayoutMenu,
     Recordings,
     Keybinds,
-    TakeoverBinds,
+    Takeover,
     Hitboxes,
     Timeline,
   };
@@ -641,6 +641,7 @@ namespace {
     {MenuPage::Tension, L"Meters"},
     {MenuPage::Recordings, L"Recordings"},
     {MenuPage::Timeline, L"Timeline"},
+    {MenuPage::Takeover, L"Takeover"},
     {MenuPage::Keybinds, L"Controls"},
     {MenuPage::Layout, L"Appearance"},
   };
@@ -793,7 +794,7 @@ namespace {
       case MenuPage::LayoutMenu:    return L"-- MOD MENU --";
       case MenuPage::Recordings:    return L"-- RECORDINGS --";
       case MenuPage::Keybinds:      return L"-- CONTROLS --";
-      case MenuPage::TakeoverBinds: return L"-- TAKEOVER BINDS --";
+      case MenuPage::Takeover:      return L"-- TAKEOVER --";
       case MenuPage::Timeline:      return L"-- TIMELINE --";
     }
     return L"-- MENU --";
@@ -801,14 +802,21 @@ namespace {
 
   // Row order, section headings and actions share one definition for mouse,
   // keyboard/controller navigation and both menu renderers. Config IDs stay put.
-  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont };
+  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont, TakeoverToggle };
   struct SettingsRowDef {
     const wchar_t* section = L"";
     const wchar_t* label = L"";
     SettingsEntry* setting = nullptr;
     FloatSetting* number = nullptr;
     SettingsAction action = SettingsAction::None;
+    int capture = -1;  // stable binds::Action or GAME_BASE + GameAction ID
   };
+
+  constexpr binds::Action TAKEOVER_HOTKEYS[] = {binds::SAVE, binds::TAKEOVER_P1, binds::TAKEOVER_P2, binds::LOAD};
+
+  bool isTakeoverHotkey(int action) {
+    return std::find(std::begin(TAKEOVER_HOTKEYS), std::end(TAKEOVER_HOTKEYS), action) != std::end(TAKEOVER_HOTKEYS);
+  }
 
   std::vector<SettingsRowDef> settingsRowsForPage(MenuPage page) {
     using namespace Settings;
@@ -859,6 +867,26 @@ namespace {
         rows.push_back({L"Appearance", L"Timeline size", nullptr, &UI_SCALE_TIMELINE});
       return rows;
     }
+    if (page == MenuPage::Keybinds || page == MenuPage::Takeover) {
+      std::vector<SettingsRowDef> rows;
+      auto hotkey = [&](int action) {
+        SettingsRowDef row; row.label = binds::LABELS[action]; row.capture = action;
+        rows.push_back(row);
+      };
+      if (page == MenuPage::Keybinds) {
+        for (int action = 0; action < binds::COUNT; action++)
+          if (!isTakeoverHotkey(action)) hotkey(action);
+      } else {
+        for (int action : TAKEOVER_HOTKEYS) hotkey(action);
+        rows.front().section = L"Hotkeys";
+        rows.push_back({L"Replay takeover", L"Use these buttons in takeover", nullptr, nullptr, SettingsAction::TakeoverToggle});
+        for (int action = 0; action < binds::G_COUNT; action++) {
+          SettingsRowDef row; row.label = binds::G_LABELS[action]; row.capture = binds::GAME_BASE + action;
+          rows.push_back(row);
+        }
+      }
+      return rows;
+    }
     if (page == MenuPage::Layout && imgui_overlay::running())
       return {
         {L"Style", L"Accent color", &UI_ACCENT},
@@ -876,7 +904,7 @@ namespace {
   bool isSettingsPage(MenuPage page) {
     return page == MenuPage::FrameBar || page == MenuPage::Hitboxes ||
            page == MenuPage::TimingInput || page == MenuPage::Tension ||
-           page == MenuPage::Timeline ||
+           page == MenuPage::Timeline || page == MenuPage::Keybinds || page == MenuPage::Takeover ||
            (page == MenuPage::Layout && imgui_overlay::running());
   }
 
@@ -888,6 +916,8 @@ namespace {
       case MenuPage::TimingInput:
       case MenuPage::Tension:
       case MenuPage::Timeline:
+      case MenuPage::Keybinds:
+      case MenuPage::Takeover:
         return settingsRowsForPage(page).size() + 1;
       case MenuPage::Layout:        return imgui_overlay::running() ? settingsRowsForPage(page).size() + 1 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
@@ -895,8 +925,6 @@ namespace {
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
       case MenuPage::LayoutMenu:    return LAYOUT_MENU_ROW_COUNT + 1;
       case MenuPage::Recordings:    return RECORDINGS_ROW_COUNT + 1;
-      case MenuPage::Keybinds:      return binds::COUNT + binds::G_COUNT + 2;  // hotkeys, takeover switch, takeover buttons
-      case MenuPage::TakeoverBinds: return binds::G_COUNT + 2;
     }
     return ROOT_PAGE_COUNT;
   }
@@ -913,10 +941,6 @@ namespace {
     if (isSettingsPage(page)) {
       const auto rows = settingsRowsForPage(page);
       return row < rows.size() ? rows[row].section : L"";
-    }
-    if (page == MenuPage::Keybinds) {
-      if (row == 0) return L"Hotkeys";
-      if (row == binds::COUNT) return L"Replay takeover";
     }
     return L"";
   }
@@ -1082,7 +1106,9 @@ void ModMenu::updateInner(PressedKeys data) {
     const auto rows = settingsRowsForPage(page);
     if (local_idx >= rows.size()) return;
     const auto& row = rows[local_idx];
-    if (row.setting)
+    if (row.capture >= 0)
+      binds::beginCapture(row.capture);
+    else if (row.setting)
       changeSetting(static_cast<size_t>(Settings::indexById(row.setting->id_)), data.rotate_right);
     else if (row.number)
       changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById(row.number->id_)), data.rotate_right);
@@ -1091,6 +1117,7 @@ void ModMenu::updateInner(PressedKeys data) {
       case SettingsAction::PickColor: Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; break;
       case SettingsAction::PickFont: startBrowse(true); break;
       case SettingsAction::ResetFont: Settings::setOverlayFont(""); Settings::saveConfig(); break;
+      case SettingsAction::TakeoverToggle: binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); break;
       default: break;
     }
     return;
@@ -1134,22 +1161,6 @@ void ModMenu::updateInner(PressedKeys data) {
 
       default: break;
     }
-    return;
-  }
-
-  if (page == MenuPage::Keybinds) {  // Controls: hotkeys, takeover switch, takeover buttons
-    if (!(data.rotate_left || data.rotate_right)) return;
-    if (local_idx < binds::COUNT) binds::beginCapture(static_cast<int>(local_idx));
-    else if (local_idx == binds::COUNT) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
-    else if (local_idx - binds::COUNT - 1 < binds::G_COUNT)
-      binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - binds::COUNT - 1));
-    return;
-  }
-
-  if (page == MenuPage::TakeoverBinds) {
-    if (!(data.rotate_left || data.rotate_right)) return;
-    if (local_idx == 0) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
-    else if (local_idx - 1 < binds::G_COUNT) binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - 1));
     return;
   }
 
@@ -1351,89 +1362,21 @@ void ModMenu::draw() {
       }
       const auto& row = rows[i];
       std::wstring value;
-      if (row.setting) value = row.setting->display.values[row.setting->value];
+      if (row.capture >= 0) {
+        const bool game = row.capture >= binds::GAME_BASE;
+        const int id = game ? row.capture - binds::GAME_BASE : row.capture;
+        value = binds::capturing == row.capture ? L"< press input | Esc: cancel | Bksp: clear >"
+          : binds::keyName(game ? binds::gkey[id] : binds::key[id]) + L"  |  " +
+            binds::padName(game ? binds::gpad[id] : binds::pad[id]);
+      } else if (row.setting) value = row.setting->display.values[row.setting->value];
       else if (row.number) value = formatMenuFloat(row.number->value);
+      else if (row.action == SettingsAction::TakeoverToggle)
+        value = binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >";
       tool.drawOutlinedText(label_left, cy + 8.0, FString(row.label), LABEL_SCALE);
       tool.drawOutlinedText(value_left, cy + 8.0, FString(value.c_str()), VALUE_SCALE);
       cy += OPTION_HEIGHT + OPTION_SPACING;
     }
     if (page == MenuPage::FrameBar) drawLayoutGhost(static_cast<int>(MenuPage::LayoutBar));
-    return;
-  }
-
-  if (page == MenuPage::Keybinds) {
-    for (size_t i = 0; i < binds::COUNT; i++) {
-      drawSection(i);
-      const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      const std::wstring val = (binds::capturing == static_cast<int>(i))
-          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
-          : binds::keyName(binds::key[i]) + L"  |  " + binds::padName(binds::pad[i]);
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::LABELS[i]), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    {
-      drawSection(binds::COUNT);
-      const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 1);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(L"Use these buttons in takeover"), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0,
-                            FString(binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >"), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 2 + i);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      const std::wstring val = (binds::capturing == binds::GAME_BASE + static_cast<int>(i))
-          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
-          : binds::keyName(binds::gkey[i]) + L"  |  " + binds::padName(binds::gpad[i]);
-      tool.drawOutlinedText(label_left, cy + 8.0, FString((std::wstring(L"Takeover ") + binds::G_LABELS[i]).c_str()), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    return;
-  }
-
-  if (page == MenuPage::TakeoverBinds) {
-    {
-      const bool sel = (cursor_position == 1);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(L"Use these binds in takeover"), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0,
-                            FString(binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >"), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      const bool sel = (static_cast<size_t>(cursor_position) == i + 2);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      const std::wstring val = (binds::capturing == binds::GAME_BASE + static_cast<int>(i))
-          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
-          : binds::keyName(binds::gkey[i]) + L"  |  " + binds::padName(binds::gpad[i]);
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::G_LABELS[i]), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
     return;
   }
 
@@ -1661,14 +1604,14 @@ void ModMenu::applyClick(const MenuClick& c) {
     if (c.a == 5) g_rec_side = c.b == 0 ? recordings::kDirRight : recordings::kDirLeft;
     return;
   }
-  if (page == MenuPage::Keybinds && c.a == static_cast<int>(binds::COUNT) + 1) {
-    binds::use_mod_binds = c.b ? 1 : 0;
-    Settings::saveConfig();
-    return;
-  }
   if (isSettingsPage(page) && c.a >= 1) {
     const auto rows = settingsRowsForPage(page);
     const auto& row = rows[static_cast<size_t>(c.a - 1)];
+    if (row.action == SettingsAction::TakeoverToggle) {
+      binds::use_mod_binds = c.b ? 1 : 0;
+      Settings::saveConfig();
+      return;
+    }
     auto* setting = row.setting;
     if (setting && c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
       setting->value = static_cast<size_t>(c.b);
@@ -1706,7 +1649,17 @@ void ModMenu::buildView() {
   if (isSettingsPage(shown)) {
     for (const auto& def : settingsRowsForPage(shown)) {
       MenuRowView r; r.label = clean(def.label); r.section = utf8(def.section);
-      if (const auto* s = def.setting) {
+      if (def.capture >= 0) {
+        const bool game = def.capture >= binds::GAME_BASE;
+        const int id = game ? def.capture - binds::GAME_BASE : def.capture;
+        r.kind = MenuRowView::Kind::Bind;
+        r.capturing = binds::capturing == def.capture;
+        r.value = utf8(binds::keyName(game ? binds::gkey[id] : binds::key[id]));
+        r.choices = {utf8(binds::padName(game ? binds::gpad[id] : binds::pad[id]))};
+      } else if (def.action == SettingsAction::TakeoverToggle) {
+        r.kind = MenuRowView::Kind::Choice;
+        r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0;
+      } else if (const auto* s = def.setting) {
         r.kind = MenuRowView::Kind::Choice;
         for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
         r.choice = static_cast<int>(s->value);
@@ -1745,30 +1698,6 @@ void ModMenu::buildView() {
     row(MenuRowView::Kind::Action, "Capture from replay",
         replayCaptureActive() ? utf8(L"Stop (" + secondsText(replayCaptureFrames()) + L" / 40 s)") : std::string("Start"));
     status = utf8(g_rec_status);
-  } else if (shown == MenuPage::Keybinds) {
-    for (size_t i = 0; i < binds::COUNT; i++) {
-      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = utf8(binds::LABELS[i]);
-      r.capturing = binds::capturing == static_cast<int>(i);
-      r.value = utf8(binds::keyName(binds::key[i])); r.choices = {utf8(binds::padName(binds::pad[i]))};
-      out.push_back(r);
-    }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Use these buttons in takeover";
-      r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0; out.push_back(r); }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = "Takeover " + utf8(binds::G_LABELS[i]);
-      r.capturing = binds::capturing == binds::GAME_BASE + static_cast<int>(i);
-      r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
-      out.push_back(r);
-    }
-  } else if (shown == MenuPage::TakeoverBinds) {
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Use these binds in takeover";
-      r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0; out.push_back(r); }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = utf8(binds::G_LABELS[i]);
-      r.capturing = binds::capturing == binds::GAME_BASE + static_cast<int>(i);
-      r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
-      out.push_back(r);
-    }
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
     row(MenuRowView::Kind::Action, "Reset all to defaults", "Reset");
@@ -1785,8 +1714,7 @@ void ModMenu::buildView() {
   buildRows(shown, v.rows, v.status);
   v.page = static_cast<int>(shown);
   v.tension_page = shown == MenuPage::Tension;
-  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings ||
-               shown == MenuPage::Keybinds || shown == MenuPage::TakeoverBinds;
+  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings;
   v.tension_on = Settings::TENSION_ENABLED.value != 0;
   v.meters_right = Settings::TENSION_SIDE.value == 1;
   v.meters_snap = Settings::METERS_SNAP.value != 0;
