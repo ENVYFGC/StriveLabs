@@ -635,15 +635,15 @@ namespace {
   };
 
   constexpr RootPageDef ROOT_PAGES[] = {
+    {MenuPage::Layout, L"Appearance"},
+    {MenuPage::Keybinds, L"Controls"},
     {MenuPage::FrameBar, L"Frame Bar"},
     {MenuPage::Hitboxes, L"Hitboxes"},
-    {MenuPage::TimingInput, L"Training"},
     {MenuPage::Tension, L"Meters"},
     {MenuPage::Recordings, L"Recordings"},
-    {MenuPage::Timeline, L"Timeline"},
     {MenuPage::Takeover, L"Takeover"},
-    {MenuPage::Keybinds, L"Controls"},
-    {MenuPage::Layout, L"Appearance"},
+    {MenuPage::Timeline, L"Timeline"},
+    {MenuPage::TimingInput, L"Training"},
   };
 
   constexpr size_t ROOT_PAGE_COUNT = sizeof(ROOT_PAGES) / sizeof(ROOT_PAGES[0]);
