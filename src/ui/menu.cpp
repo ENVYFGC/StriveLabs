@@ -360,8 +360,6 @@ namespace Settings {
 }
 
 namespace {
-  size_t OPTION_COUNT = Settings::settings.size();
-
   // Menu position defaults (overridden by MENU_CENTER_X/Y_RATIO float settings)
   constexpr double CENTER_X_RATIO = 0.58;
   constexpr double CENTER_Y_RATIO = 0.5;
@@ -391,17 +389,9 @@ namespace {
   constexpr double ACCENT_W = 3.0;
   constexpr double STRIPE_H = 2.0;
 
-  struct SectionDef { const wchar_t* label; size_t start; size_t end; };
-  constexpr SectionDef SECTIONS[] = {
-    {L"-- OVERLAYS --",       0,  7},
-    {L"-- TRAINING --",       7,  9},
-    {L"-- METERS --",         9, 20},   // end is exclusive
-  };
-  constexpr size_t SECTION_COUNT = sizeof(SECTIONS) / sizeof(SECTIONS[0]);
-
   enum class MenuPage : size_t {
     Root = 0,
-    Display,
+    FrameBar,
     TimingInput,
     Tension,
     Layout,
@@ -411,13 +401,14 @@ namespace {
     LayoutMenu,
     Recordings,
     Keybinds,
-    TakeoverBinds,
+    Takeover,
+    Hitboxes,
+    Timeline,
   };
 
   // ---- Recordings page state ----------------------------------------------
-  // Rows: 0 Back | 1 File | 2 Slot | 3 Side | 4 Load
-  constexpr size_t RECORDINGS_ROW_COUNT = 10;
-  // Rows: 0 Slot | 1 Save | 2 File | 3 Side | 4 Load
+  // Slot, save, file, browse, side, load, stream, capture side, capture.
+  constexpr size_t RECORDINGS_ROW_COUNT = 9;
 
   std::vector<std::filesystem::path> g_rec_files;
   size_t       g_rec_file_idx = 0;
@@ -644,12 +635,15 @@ namespace {
   };
 
   constexpr RootPageDef ROOT_PAGES[] = {
-    {MenuPage::Display, L"Overlays"},
-    {MenuPage::TimingInput, L"Training"},
+    {MenuPage::Layout, L"Appearance"},
+    {MenuPage::Keybinds, L"Controls"},
+    {MenuPage::FrameBar, L"Frame Bar"},
+    {MenuPage::Hitboxes, L"Hitboxes"},
     {MenuPage::Tension, L"Meters"},
     {MenuPage::Recordings, L"Recordings"},
-    {MenuPage::Keybinds, L"Controls"},
-    {MenuPage::Layout, L"Appearance"},
+    {MenuPage::Takeover, L"Takeover"},
+    {MenuPage::Timeline, L"Timeline"},
+    {MenuPage::TimingInput, L"Training"},
   };
 
   constexpr size_t ROOT_PAGE_COUNT = sizeof(ROOT_PAGES) / sizeof(ROOT_PAGES[0]);
@@ -684,12 +678,11 @@ namespace {
 
   struct LayoutSubDef { MenuPage page; const wchar_t* label; };
   constexpr LayoutSubDef LAYOUT_SUBS[] = {
-    {MenuPage::LayoutBar,      L"Frame Bar"},
     {MenuPage::LayoutTension,  L"Tension Box"},
     {MenuPage::LayoutDetail,   L"Detail Panel"},
     {MenuPage::LayoutMenu,     L"Mod Menu"},
   };
-  constexpr size_t LAYOUT_SUB_COUNT = 4;
+  constexpr size_t LAYOUT_SUB_COUNT = sizeof(LAYOUT_SUBS) / sizeof(LAYOUT_SUBS[0]);
 
   bool isLayoutSubPage(MenuPage page) {
     return page == MenuPage::LayoutBar || page == MenuPage::LayoutTension ||
@@ -790,7 +783,8 @@ namespace {
   const wchar_t* pageLabel(MenuPage page) {
     switch (page) {
       case MenuPage::Root:          return L"-- MENU --";
-      case MenuPage::Display:       return L"-- OVERLAYS --";
+      case MenuPage::FrameBar:      return L"-- FRAME BAR --";
+      case MenuPage::Hitboxes:      return L"-- HITBOXES --";
       case MenuPage::TimingInput:   return L"-- TRAINING --";
       case MenuPage::Tension:       return L"-- METERS --";
       case MenuPage::Layout:        return L"-- APPEARANCE --";
@@ -800,50 +794,137 @@ namespace {
       case MenuPage::LayoutMenu:    return L"-- MOD MENU --";
       case MenuPage::Recordings:    return L"-- RECORDINGS --";
       case MenuPage::Keybinds:      return L"-- CONTROLS --";
-      case MenuPage::TakeoverBinds: return L"-- TAKEOVER BINDS --";
+      case MenuPage::Takeover:      return L"-- TAKEOVER --";
+      case MenuPage::Timeline:      return L"-- TIMELINE --";
     }
     return L"-- MENU --";
   }
 
-  size_t settingsStartForPage(MenuPage page) {
-    switch (page) {
-      case MenuPage::Display: return SECTIONS[0].start;
-      case MenuPage::TimingInput: return SECTIONS[1].start;
-      case MenuPage::Tension: return SECTIONS[2].start;
-      default: return 0;
-    }
+  // Row order, section headings and actions share one definition for mouse,
+  // keyboard/controller navigation and both menu renderers. Config IDs stay put.
+  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont, TakeoverToggle };
+  struct SettingsRowDef {
+    const wchar_t* section = L"";
+    const wchar_t* label = L"";
+    SettingsEntry* setting = nullptr;
+    FloatSetting* number = nullptr;
+    SettingsAction action = SettingsAction::None;
+    int capture = -1;  // stable binds::Action or GAME_BASE + GameAction ID
+  };
+
+  constexpr binds::Action TAKEOVER_HOTKEYS[] = {binds::SAVE, binds::TAKEOVER_P1, binds::TAKEOVER_P2, binds::LOAD};
+
+  bool isTakeoverHotkey(int action) {
+    return std::find(std::begin(TAKEOVER_HOTKEYS), std::end(TAKEOVER_HOTKEYS), action) != std::end(TAKEOVER_HOTKEYS);
   }
 
-  size_t settingsCountForPage(MenuPage page) {
-    switch (page) {
-      case MenuPage::Display: return SECTIONS[0].end - SECTIONS[0].start;
-      case MenuPage::TimingInput: return SECTIONS[1].end - SECTIONS[1].start;
-      case MenuPage::Tension: return SECTIONS[2].end - SECTIONS[2].start;
-      default: return 0;
+  std::vector<SettingsRowDef> settingsRowsForPage(MenuPage page) {
+    using namespace Settings;
+    if (page == MenuPage::FrameBar) {
+      std::vector<SettingsRowDef> rows = {
+        {L"Settings", L"Frame Bar", &FRAMEBAR},
+        {L"", L"Show Dash", &SHOW_DASH_FRAMES},
+        {L"", L"Show Crossup", &CROSSUP_ENABLED},
+        {L"Appearance", L"Color scheme", &COLOR_SCHEME},
+        {L"", L"Fade effect", &FADE},
+        {L"", L"Delimit segments", &DELIM},
+      };
+      if (imgui_overlay::running())
+        rows.push_back({L"", L"Frame bar size", nullptr, &UI_SCALE_BAR});
+      else {
+        rows.push_back({L"", L"X position (screen ratio)", nullptr, &BAR_CENTER_X_RATIO});
+        rows.push_back({L"", L"Y position (screen ratio)", nullptr, &BAR_CENTER_Y_RATIO});
+      }
+      return rows;
     }
+    if (page == MenuPage::Hitboxes)
+      return {{L"", L"Hitboxes", &HITBOXES}};
+    if (page == MenuPage::TimingInput)
+      return {{L"", PAUSE_TYPE.display.title, &PAUSE_TYPE},
+              {L"", DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
+    if (page == MenuPage::Tension) {
+      std::vector<SettingsRowDef> rows = {
+        {L"Settings", L"Meters overlay", &TENSION_ENABLED},
+        {L"", L"Tension now", &TENSION_CURRENT},
+        {L"", L"Tension gain", &TENSION_GAIN},
+        {L"", L"Tension advantage", &TENSION_ADVANTAGE},
+        {L"", L"Tension advantage change", &TENSION_ADV_CHANGE},
+        {L"", L"Tension pulse", &TENSION_PULSE},
+        {L"", L"Tension penalty", &TENSION_PENALTY},
+        {L"", L"Burst", &TENSION_BURST},
+        {L"", L"Wall damage", &WALL_DAMAGE},
+        {L"Appearance", L"Overlay side", &TENSION_SIDE},
+        {L"", L"Snap meters to frame bar", &METERS_SNAP},
+        {L"", L"Decimal places", &METERS_DECIMALS},
+      };
+      if (imgui_overlay::running())
+        rows.push_back({L"", L"Meters size", nullptr, &UI_SCALE_METERS});
+      return rows;
+    }
+    if (page == MenuPage::Timeline) {
+      std::vector<SettingsRowDef> rows = {{L"Settings", L"Timeline window", &TIMELINE_ON}};
+      if (imgui_overlay::running())
+        rows.push_back({L"Appearance", L"Timeline size", nullptr, &UI_SCALE_TIMELINE});
+      return rows;
+    }
+    if (page == MenuPage::Keybinds || page == MenuPage::Takeover) {
+      std::vector<SettingsRowDef> rows;
+      auto hotkey = [&](int action) {
+        SettingsRowDef row; row.label = binds::LABELS[action]; row.capture = action;
+        rows.push_back(row);
+      };
+      if (page == MenuPage::Keybinds) {
+        for (int action = 0; action < binds::COUNT; action++)
+          if (!isTakeoverHotkey(action)) hotkey(action);
+      } else {
+        for (int action : TAKEOVER_HOTKEYS) hotkey(action);
+        rows.front().section = L"Hotkeys";
+        rows.push_back({L"Replay takeover", L"Use these buttons in takeover", nullptr, nullptr, SettingsAction::TakeoverToggle});
+        for (int action = 0; action < binds::G_COUNT; action++) {
+          SettingsRowDef row; row.label = binds::G_LABELS[action]; row.capture = binds::GAME_BASE + action;
+          rows.push_back(row);
+        }
+      }
+      return rows;
+    }
+    if (page == MenuPage::Layout && imgui_overlay::running())
+      return {
+        {L"Style", L"Accent color", &UI_ACCENT},
+        {L"", L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
+        {L"", L"Panel opacity", nullptr, &UI_OPACITY},
+        {L"Font", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
+        {L"", L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
+        {L"Windows", L"Menu size", nullptr, &UI_SCALE},
+        {L"", L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
+        {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
+      };
+    return {};
   }
 
   bool isSettingsPage(MenuPage page) {
-    return page == MenuPage::Display || page == MenuPage::TimingInput ||
-           page == MenuPage::Tension;
+    return page == MenuPage::FrameBar || page == MenuPage::Hitboxes ||
+           page == MenuPage::TimingInput || page == MenuPage::Tension ||
+           page == MenuPage::Timeline || page == MenuPage::Keybinds || page == MenuPage::Takeover ||
+           (page == MenuPage::Layout && imgui_overlay::running());
   }
 
   size_t rowCountForPage(MenuPage page) {
     switch (page) {
       case MenuPage::Root: return ROOT_PAGE_COUNT;
-      case MenuPage::Display:
+      case MenuPage::FrameBar:
+      case MenuPage::Hitboxes:
       case MenuPage::TimingInput:
       case MenuPage::Tension:
-        return settingsCountForPage(page) + 1;
-      // Layout root: Back + 4 subs + Reset = 6
-      case MenuPage::Layout:        return imgui_overlay::running() ? 13 : LAYOUT_SUB_COUNT + 2;
+      case MenuPage::Timeline:
+      case MenuPage::Keybinds:
+      case MenuPage::Takeover:
+        return settingsRowsForPage(page).size() + 1;
+      case MenuPage::Layout:        return imgui_overlay::running() ? settingsRowsForPage(page).size() + 1 : LAYOUT_SUB_COUNT + 2;
       case MenuPage::LayoutBar:     return LAYOUT_BAR_ROW_COUNT + 1;
       case MenuPage::LayoutTension: return LAYOUT_TENSION_ROW_COUNT + 1;
       case MenuPage::LayoutDetail:  return LAYOUT_DETAIL_ROW_COUNT + 1;
       case MenuPage::LayoutMenu:    return LAYOUT_MENU_ROW_COUNT + 1;
       case MenuPage::Recordings:    return RECORDINGS_ROW_COUNT + 1;
-      case MenuPage::Keybinds:      return binds::COUNT + binds::G_COUNT + 2;  // hotkeys, takeover switch, takeover buttons
-      case MenuPage::TakeoverBinds: return binds::G_COUNT + 2;
     }
     return ROOT_PAGE_COUNT;
   }
@@ -853,6 +934,15 @@ namespace {
       if (ROOT_PAGES[i].page == page) return i;
     }
     return 0;
+  }
+
+  // Headings belong to the following control and do not consume a cursor index.
+  const wchar_t* sectionForRow(MenuPage page, size_t row) {
+    if (isSettingsPage(page)) {
+      const auto rows = settingsRowsForPage(page);
+      return row < rows.size() ? rows[row].section : L"";
+    }
+    return L"";
   }
 
   constexpr double DESC_LINE_H  = 26.0;
@@ -900,7 +990,10 @@ namespace {
       return base + ROOT_PAGE_COUNT * (OPTION_HEIGHT + OPTION_SPACING) - OPTION_SPACING + CREDIT_LINE_H;
     }
     const size_t row_count = rowCountForPage(page);
-    return base + row_count * (OPTION_HEIGHT + OPTION_SPACING) - OPTION_SPACING;
+    double headings = 0;
+    for (size_t i = 1; i < row_count; i++)
+      if (*sectionForRow(page, i - 1)) headings += HEADER_HEIGHT + OPTION_SPACING;
+    return base + row_count * (OPTION_HEIGHT + OPTION_SPACING) - OPTION_SPACING + headings;
   }
 }
 
@@ -1009,9 +1102,24 @@ void ModMenu::updateInner(PressedKeys data) {
 
   const size_t local_idx = cp - 1;
   if (isSettingsPage(page)) {
-    const size_t settings_idx = settingsStartForPage(page) + local_idx;
-    if (data.rotate_left)  changeSetting(settings_idx, false);
-    if (data.rotate_right) changeSetting(settings_idx, true);
+    if (!(data.rotate_left || data.rotate_right)) return;
+    const auto rows = settingsRowsForPage(page);
+    if (local_idx >= rows.size()) return;
+    const auto& row = rows[local_idx];
+    if (row.capture >= 0)
+      binds::beginCapture(row.capture);
+    else if (row.setting)
+      changeSetting(static_cast<size_t>(Settings::indexById(row.setting->id_)), data.rotate_right);
+    else if (row.number)
+      changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById(row.number->id_)), data.rotate_right);
+    else switch (row.action) {
+      case SettingsAction::ResetWindows: Settings::resetLayout(); imgui_overlay::resetWindows(); break;
+      case SettingsAction::PickColor: Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; break;
+      case SettingsAction::PickFont: startBrowse(true); break;
+      case SettingsAction::ResetFont: Settings::setOverlayFont(""); Settings::saveConfig(); break;
+      case SettingsAction::TakeoverToggle: binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); break;
+      default: break;
+    }
     return;
   }
 
@@ -1050,44 +1158,9 @@ void ModMenu::updateInner(PressedKeys data) {
       case 8:                                   // Capture from replay: start / stop
         toggleCapture();
         break;
-      case 9:                                   // Timeline window
-        setTimelineOn(!timelineOn());
-        break;
+
       default: break;
     }
-    return;
-  }
-
-  if (page == MenuPage::Keybinds) {  // Controls: hotkeys, takeover switch, takeover buttons
-    if (!(data.rotate_left || data.rotate_right)) return;
-    if (local_idx < binds::COUNT) binds::beginCapture(static_cast<int>(local_idx));
-    else if (local_idx == binds::COUNT) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
-    else if (local_idx - binds::COUNT - 1 < binds::G_COUNT)
-      binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - binds::COUNT - 1));
-    return;
-  }
-
-  if (page == MenuPage::TakeoverBinds) {
-    if (!(data.rotate_left || data.rotate_right)) return;
-    if (local_idx == 0) { binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); }
-    else if (local_idx - 1 < binds::G_COUNT) binds::beginCapture(binds::GAME_BASE + static_cast<int>(local_idx - 1));
-    return;
-  }
-
-  if (page == MenuPage::Layout && imgui_overlay::running()) {
-    if (!(data.rotate_left || data.rotate_right)) return;
-    if (local_idx == 0) changeSetting(static_cast<size_t>(Settings::indexById("meters_snap")), data.rotate_right);
-    else if (local_idx == 1) { Settings::resetLayout(); Settings::saveConfig(); imgui_overlay::resetWindows(); }
-    else if (local_idx == 2) changeSetting(static_cast<size_t>(Settings::indexById("ui_accent")), data.rotate_right);
-    else if (local_idx == 3) { Settings::UI_ACCENT.value = 6; Settings::saveConfig(); g_picker_seq++; }
-    else if (local_idx == 4) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_opacity")), data.rotate_right);
-    else if (local_idx == 5) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale")), data.rotate_right);
-    else if (local_idx == 6) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_meters")), data.rotate_right);
-    else if (local_idx == 7) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_bar")), data.rotate_right);
-    else if (local_idx == 8) changeLayoutFloat(static_cast<size_t>(Settings::floatIndexById("ui_scale_timeline")), data.rotate_right);
-    else if (local_idx == 9) changeSetting(static_cast<size_t>(Settings::indexById("ui_hide_window_decorations")), data.rotate_right);
-    else if (local_idx == 10) startBrowse(true);
-    else if (local_idx == 11) { Settings::setOverlayFont(""); Settings::saveConfig(); }
     return;
   }
 
@@ -1225,6 +1298,14 @@ void ModMenu::draw() {
   tool.drawOutlinedText(value_left, cy + 8.0, FString(L"<< back >>"), VALUE_SCALE);
   cy += OPTION_HEIGHT + OPTION_SPACING;
 
+  auto drawSection = [&](size_t row) {
+    const auto* title = sectionForRow(page, row);
+    if (!*title) return;
+    tool.drawRect(menu_left, cy, MENU_WIDTH, HEADER_HEIGHT, SECTION_BG);
+    tool.drawOutlinedText(label_left, cy + 4.0, FString(title), HEADER_SCALE);
+    cy += HEADER_HEIGHT + OPTION_SPACING;
+  };
+
   if (page == MenuPage::Recordings) {
     const std::wstring file_val =
         g_rec_files.empty()
@@ -1248,9 +1329,9 @@ void ModMenu::draw() {
       {L"Capture from Replay",         replayCaptureActive()
                                            ? (L">>  stop  (" + secondsText(replayCaptureFrames()) + L" / 40 s)")
                                            : std::wstring(L">>  start  (40 s max)")},
-      {L"Timeline Window",             timelineOn() ? L"<  Enabled   >" : L"<  Disabled  >"},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1270,102 +1351,39 @@ void ModMenu::draw() {
   }
 
   if (isSettingsPage(page)) {
-    const size_t start = settingsStartForPage(page);
-    const size_t count = settingsCountForPage(page);
-    for (size_t i = 0; i < count; i++) {
-      const size_t settings_idx = start + i;
+    const auto rows = settingsRowsForPage(page);
+    for (size_t i = 0; i < rows.size(); i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
         tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
         tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
       }
-      auto &relevant = Settings::settings[settings_idx]->display;
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(relevant.title), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0,
-                            FString(relevant.values[Settings::settings[settings_idx]->value]), VALUE_SCALE);
+      const auto& row = rows[i];
+      std::wstring value;
+      if (row.capture >= 0) {
+        const bool game = row.capture >= binds::GAME_BASE;
+        const int id = game ? row.capture - binds::GAME_BASE : row.capture;
+        value = binds::capturing == row.capture ? L"< press input | Esc: cancel | Bksp: clear >"
+          : binds::keyName(game ? binds::gkey[id] : binds::key[id]) + L"  |  " +
+            binds::padName(game ? binds::gpad[id] : binds::pad[id]);
+      } else if (row.setting) value = row.setting->display.values[row.setting->value];
+      else if (row.number) value = formatMenuFloat(row.number->value);
+      else if (row.action == SettingsAction::TakeoverToggle)
+        value = binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >";
+      tool.drawOutlinedText(label_left, cy + 8.0, FString(row.label), LABEL_SCALE);
+      tool.drawOutlinedText(value_left, cy + 8.0, FString(value.c_str()), VALUE_SCALE);
       cy += OPTION_HEIGHT + OPTION_SPACING;
     }
-    return;
-  }
-
-  if (page == MenuPage::Keybinds) {
-    for (size_t i = 0; i < binds::COUNT; i++) {
-      const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      const std::wstring val = (binds::capturing == static_cast<int>(i))
-          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
-          : binds::keyName(binds::key[i]) + L"  |  " + binds::padName(binds::pad[i]);
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::LABELS[i]), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    {
-      const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 1);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(L"Use these buttons in takeover"), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0,
-                            FString(binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >"), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      const bool sel = (static_cast<size_t>(cursor_position) == binds::COUNT + 2 + i);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      const std::wstring val = (binds::capturing == binds::GAME_BASE + static_cast<int>(i))
-          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
-          : binds::keyName(binds::gkey[i]) + L"  |  " + binds::padName(binds::gpad[i]);
-      tool.drawOutlinedText(label_left, cy + 8.0, FString((std::wstring(L"Takeover ") + binds::G_LABELS[i]).c_str()), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    return;
-  }
-
-  if (page == MenuPage::TakeoverBinds) {
-    {
-      const bool sel = (cursor_position == 1);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(L"Use these binds in takeover"), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0,
-                            FString(binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >"), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      const bool sel = (static_cast<size_t>(cursor_position) == i + 2);
-      if (sel) {
-        tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
-        tool.drawRect(menu_left, cy, MENU_WIDTH, STRIPE_H, CURSOR_STRIPE);
-        tool.drawRect(menu_left, cy, ACCENT_W, OPTION_HEIGHT, ACCENT_COLOR);
-      }
-      const std::wstring val = (binds::capturing == binds::GAME_BASE + static_cast<int>(i))
-          ? std::wstring(L"< press input | Esc: cancel | Bksp: clear >")
-          : binds::keyName(binds::gkey[i]) + L"  |  " + binds::padName(binds::gpad[i]);
-      tool.drawOutlinedText(label_left, cy + 8.0, FString(binds::G_LABELS[i]), LABEL_SCALE);
-      tool.drawOutlinedText(value_left, cy + 8.0, FString(val.c_str()), VALUE_SCALE);
-      cy += OPTION_HEIGHT + OPTION_SPACING;
-    }
+    if (page == MenuPage::FrameBar) drawLayoutGhost(static_cast<int>(MenuPage::LayoutBar));
     return;
   }
 
   if (page == MenuPage::Layout) {
-    // List the 4 submenus
+    // Layout submenus for the HUD renderer.
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) {
+      drawSection(i);
       const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
       if (sel) {
         tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1393,6 +1411,7 @@ void ModMenu::draw() {
     const LayoutRowDef* rows = layoutRowsForPage(page, count);
     if (rows) {
       for (size_t i = 0; i < count; i++) {
+        drawSection(i);
         const bool sel = (static_cast<size_t>(cursor_position) == i + 1);
         if (sel) {
           tool.drawRect(menu_left, cy, MENU_WIDTH, OPTION_HEIGHT, CURSOR_BG);
@@ -1582,34 +1601,19 @@ void ModMenu::applyClick(const MenuClick& c) {
   if (page == MenuPage::Recordings) {
     if (c.a == 1) g_rec_slot = std::clamp(c.b, 0, recordings::kSlotCount - 1);
     if (c.a == 8) g_cap_side = c.b ? 1 : 0;
-    if (c.a == 10) setTimelineOn(c.b != 0);
     if (c.a == 5) g_rec_side = c.b == 0 ? recordings::kDirRight : recordings::kDirLeft;
     return;
   }
-  if (page == MenuPage::Layout && c.a == 3 && imgui_overlay::running()) {
-    Settings::UI_ACCENT.value = static_cast<size_t>(std::clamp(c.b, 0, 6));
-    Settings::saveConfig();
-    return;
-  }
-  if (page == MenuPage::Layout && c.a == 1 && imgui_overlay::running()) {
-    Settings::METERS_SNAP.value = c.b ? 1 : 0;
-    Settings::saveConfig();
-    return;
-  }
-  if (page == MenuPage::Layout && c.a == 10 && imgui_overlay::running()) {
-    Settings::UI_HIDE_WINDOW_DECORATIONS.value = c.b ? 1 : 0;
-    Settings::saveConfig();
-    return;
-  }
-  if (page == MenuPage::Keybinds && c.a == static_cast<int>(binds::COUNT) + 1) {
-    binds::use_mod_binds = c.b ? 1 : 0;
-    Settings::saveConfig();
-    return;
-  }
   if (isSettingsPage(page) && c.a >= 1) {
-    const size_t idx = settingsStartForPage(page) + static_cast<size_t>(c.a - 1);
-    auto* setting = Settings::settings[idx];
-    if (c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
+    const auto rows = settingsRowsForPage(page);
+    const auto& row = rows[static_cast<size_t>(c.a - 1)];
+    if (row.action == SettingsAction::TakeoverToggle) {
+      binds::use_mod_binds = c.b ? 1 : 0;
+      Settings::saveConfig();
+      return;
+    }
+    auto* setting = row.setting;
+    if (setting && c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
       setting->value = static_cast<size_t>(c.b);
       Settings::saveConfig();
     }
@@ -1643,13 +1647,37 @@ void ModMenu::buildView() {
   };
 
   if (isSettingsPage(shown)) {
-    const size_t start = settingsStartForPage(shown), count = settingsCountForPage(shown);
-    for (size_t i = 0; i < count; i++) {
-      const auto* s = Settings::settings[start + i];
-      MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = clean(s->display.title);
-      for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
-      r.choice = static_cast<int>(s->value);
-      out.push_back(r);
+    for (const auto& def : settingsRowsForPage(shown)) {
+      MenuRowView r; r.label = clean(def.label); r.section = utf8(def.section);
+      if (def.capture >= 0) {
+        const bool game = def.capture >= binds::GAME_BASE;
+        const int id = game ? def.capture - binds::GAME_BASE : def.capture;
+        r.kind = MenuRowView::Kind::Bind;
+        r.capturing = binds::capturing == def.capture;
+        r.value = utf8(binds::keyName(game ? binds::gkey[id] : binds::key[id]));
+        r.choices = {utf8(binds::padName(game ? binds::gpad[id] : binds::pad[id]))};
+      } else if (def.action == SettingsAction::TakeoverToggle) {
+        r.kind = MenuRowView::Kind::Choice;
+        r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0;
+      } else if (const auto* s = def.setting) {
+        r.kind = MenuRowView::Kind::Choice;
+        for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
+        r.choice = static_cast<int>(s->value);
+      } else if (const auto* f = def.number) {
+        r.kind = MenuRowView::Kind::Number;
+        if (f->id_.rfind("ui_", 0) == 0) {
+          r.value = std::to_string(static_cast<int>(std::lround(f->value * 100))) + "%";
+        } else r.value = utf8(formatMenuFloat(f->value));
+      } else {
+        r.kind = MenuRowView::Kind::Action;
+        r.value = def.action == SettingsAction::PickColor ? "Pick" : "Reset";
+        if (def.action == SettingsAction::PickFont) {
+          std::string f = Settings::overlayFont();
+          f = f.empty() ? "Barlow" : f.substr(0, f.find_last_of('.'));
+          r.value = f.size() > 22 ? f.substr(0, 21) + "..." : f;
+        }
+      }
+      out.push_back(std::move(r));
     }
   } else if (shown == MenuPage::Recordings) {
     const std::wstring slot_no = std::to_wstring(g_rec_slot + 1);
@@ -1669,58 +1697,7 @@ void ModMenu::buildView() {
       r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
     row(MenuRowView::Kind::Action, "Capture from replay",
         replayCaptureActive() ? utf8(L"Stop (" + secondsText(replayCaptureFrames()) + L" / 40 s)") : std::string("Start"));
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Timeline window";
-      r.choices = {"Disabled", "Enabled"}; r.choice = timelineOn() ? 1 : 0; out.push_back(r); }
     status = utf8(g_rec_status);
-  } else if (shown == MenuPage::Keybinds) {
-    for (size_t i = 0; i < binds::COUNT; i++) {
-      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = utf8(binds::LABELS[i]);
-      r.capturing = binds::capturing == static_cast<int>(i);
-      r.value = utf8(binds::keyName(binds::key[i])); r.choices = {utf8(binds::padName(binds::pad[i]))};
-      out.push_back(r);
-    }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Use these buttons in takeover";
-      r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0; out.push_back(r); }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = "Takeover " + utf8(binds::G_LABELS[i]);
-      r.capturing = binds::capturing == binds::GAME_BASE + static_cast<int>(i);
-      r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
-      out.push_back(r);
-    }
-  } else if (shown == MenuPage::TakeoverBinds) {
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Use these binds in takeover";
-      r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0; out.push_back(r); }
-    for (size_t i = 0; i < binds::G_COUNT; i++) {
-      MenuRowView r; r.kind = MenuRowView::Kind::Bind; r.label = utf8(binds::G_LABELS[i]);
-      r.capturing = binds::capturing == binds::GAME_BASE + static_cast<int>(i);
-      r.value = utf8(binds::keyName(binds::gkey[i])); r.choices = {utf8(binds::padName(binds::gpad[i]))};
-      out.push_back(r);
-    }
-  } else if (shown == MenuPage::Layout && imgui_overlay::running()) {
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Snap meters to frame bar";
-      r.choices = {"Disabled", "Enabled"}; r.choice = Settings::METERS_SNAP.value ? 1 : 0; out.push_back(r); }
-    row(MenuRowView::Kind::Action, "Reset all window positions", "Reset");
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Accent color";
-      for (size_t c = 0; c < Settings::UI_ACCENT.display.count; c++) r.choices.push_back(clean(Settings::UI_ACCENT.display.values[c]));
-      r.choice = static_cast<int>(Settings::UI_ACCENT.value); out.push_back(r); }
-    row(MenuRowView::Kind::Action, "Custom color", "Pick");
-    { wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(Settings::UI_OPACITY.value * 100)));
-      row(MenuRowView::Kind::Number, "Panel opacity", utf8(b)); }
-    auto size_row = [&](const char* label, const FloatSetting& f) {
-      wchar_t b[16]; swprintf_s(b, L"%d%%", static_cast<int>(std::lround(f.value * 100)));
-      row(MenuRowView::Kind::Number, label, utf8(b));
-    };
-    size_row("Menu size", Settings::UI_SCALE);
-    size_row("Meters size", Settings::UI_SCALE_METERS);
-    size_row("Frame bar size", Settings::UI_SCALE_BAR);
-    size_row("Timeline size", Settings::UI_SCALE_TIMELINE);
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Hide decorations when menu is closed";
-      r.choices = {"Disabled", "Enabled"}; r.choice = Settings::UI_HIDE_WINDOW_DECORATIONS.value ? 1 : 0; out.push_back(r); }
-    { std::string f = Settings::overlayFont();
-      f = f.empty() ? "Barlow" : f.substr(0, f.find_last_of('.'));
-      if (f.size() > 22) f = f.substr(0, 21) + "...";
-      row(MenuRowView::Kind::Action, "Meters and frame bar font", f); }
-    row(MenuRowView::Kind::Action, "Back to Barlow", "Reset");
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
     row(MenuRowView::Kind::Action, "Reset all to defaults", "Reset");
@@ -1731,12 +1708,13 @@ void ModMenu::buildView() {
       row(MenuRowView::Kind::Number, utf8(rows[i].label), utf8(formatMenuFloat(Settings::float_settings[rows[i].float_idx]->value)));
   }
 
+  if (!isSettingsPage(shown))
+    for (size_t i = 0; i < out.size(); i++) out[i].section = utf8(sectionForRow(shown, i));
   };
   buildRows(shown, v.rows, v.status);
   v.page = static_cast<int>(shown);
   v.tension_page = shown == MenuPage::Tension;
-  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings ||
-               shown == MenuPage::Keybinds || shown == MenuPage::TakeoverBinds;
+  v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings;
   v.tension_on = Settings::TENSION_ENABLED.value != 0;
   v.meters_right = Settings::TENSION_SIDE.value == 1;
   v.meters_snap = Settings::METERS_SNAP.value != 0;

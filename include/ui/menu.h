@@ -83,6 +83,7 @@ struct PressedKeys {
 struct MenuRowView {
   enum class Kind { Back, Open, Choice, Action, Number, Bind } kind = Kind::Open;
   std::string label;
+  std::string section;               // heading before this row; not a selectable row
   std::string value;                 // Action/Number/Bind/Open text
   std::vector<std::string> choices;  // Choice options, cleaned of the old "<  >" padding
   int choice = -1;                   // selected index for Choice
