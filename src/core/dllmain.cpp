@@ -257,7 +257,7 @@ using funcEffectCleanup_t = void (*)(asw_rollback*);
 funcEffectCleanup_t orig_EffectCleanupA = nullptr;
 funcEffectCleanup_t orig_EffectCleanupB = nullptr;
 funcGetReplayManager_t orig_GetReplayManager;
-uintptr_t orig_GetNowKeyMappingBattle;
+uintptr_t orig_BattleKeyCheck;
 funcUpdateOnPreTick_t orig_UpdateOnPreTick;
 
 // Pre-resolved pointer to the game's is_battle flag byte.  Resolved at init
@@ -524,7 +524,7 @@ public:
         return analyzer == in_analyzer;
     }
 
-    // Raw input stream for a peer. Entries are ReplayKeyData (uint32); the low
+    // Raw input stream for a peer. Entries are uint32 words; the low
     // 16 bits are believed to match RECFLG but that is unverified, hence the
     // raw dump at capture time.
     const uint32_t* peerBuffer(int idx) const
@@ -1578,13 +1578,13 @@ public:
                     "\xE8\x00\x00\x00\x00\x84\xC0\x75\x00\xE8\x00\x00\x00\x00\x84\xC0\x75\x00\x48\x8B\xCF\x48\x8D\x14\x5B\x48\x03\x0D\x00\x00\x00\x00\x0F\xB6\x8C\xD1",
                     "x????xxx?x????xxx?xxxxxxxxxx????xxxx");
                 const uintptr_t fn = *reinterpret_cast<uint32_t*>(hit + 0x1) + hit + 0x5;
-                orig_GetNowKeyMappingBattle = fn;
+                orig_BattleKeyCheck = fn;
                 // Decode the first instruction's RIP-relative disp32 to reach is_battle.
                 auto p = reinterpret_cast<uint8_t*>(
                     *reinterpret_cast<int32_t*>(fn + 0x3) + fn + 0x7);
                 candidates.push_back({"sigscan(nov)", p});
             } catch (...) {
-                orig_GetNowKeyMappingBattle = 0;
+                orig_BattleKeyCheck = 0;
             }
 
             // Candidate 2: Sep-2025 upstream hardcoded offset.

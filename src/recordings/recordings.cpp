@@ -171,10 +171,10 @@ std::string slotToNotation(const MemorySlot& slot) {
 
 // The slot array is found by resolving the game's own accessor, not by
 // scanning memory for the struct shape -- scanning cannot tell the live array
-// apart from the ~11 identical spare SSaveData copies the game keeps.
+// apart from the ~11 identical spare copies of the save data the game keeps.
 // Tail of GGST's slot getter:
-//   48 8B 05 ?? ?? ?? ??   mov rax,[rip+disp]   ; SSaveData
-//   48 05 D4 84 02 00      add rax,0x284D4      ; m_TrainingMemorySlot
+//   48 8B 05 ?? ?? ?? ??   mov rax,[rip+disp]   ; save data
+//   48 05 D4 84 02 00      add rax,0x284D4      ; training slots
 // The "add rax,284D4" half is what makes the pattern unique.
 
 MemorySlot* findSlots() {
@@ -193,7 +193,7 @@ MemorySlot* findSlots() {
   }
   if (!s_static) return nullptr;
 
-  // Re-read each call; SSaveData moves between sessions.
+  // Re-read each call; the save data moves between sessions.
   const uintptr_t save_data = *s_static;
   if (!save_data) return nullptr;
   return reinterpret_cast<MemorySlot*>(save_data + kTrainingSlotOffset);
@@ -346,7 +346,7 @@ bool writeSlot(int slot_index, const std::vector<uint16_t>& frames,
   if (chara_id != kKeepCharaId) slot.chara_id = chara_id;
   slot._pad[0] = slot._pad[1] = slot._pad[2] = 0;
   slot.direction  = direction;
-  slot.start_time = 0;                       // TR_REC_START_TIME_QUICK
+  slot.start_time = 0;                       // start right away
   std::memset(slot.flags, 0, sizeof(slot.flags));
   std::memcpy(slot.flags, frames.data(), frames.size() * sizeof(uint16_t));
   // Written last: the game may read this slot from another thread, and a

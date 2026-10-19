@@ -25,7 +25,7 @@ namespace binds {
                                   XINPUT_GAMEPAD_RIGHT_SHOULDER, 0, XINPUT_GAMEPAD_LEFT_SHOULDER, 0, 0};
   int use_mod_binds = 0;
 
-  // RECFLG bits (see dllmain RECFLG_ENUM; FD from the game's obj_ScriptInc.h)
+  // RECFLG bits (see dllmain RECFLG_ENUM; FD is 0x8000)
   static const unsigned int G_RECFLG[G_COUNT] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x400, 0x800, 0x8000, 0x200};
 
   int capturing = -1;
