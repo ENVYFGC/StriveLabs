@@ -10,6 +10,7 @@ target(projectName)
     add_headerfiles("include/**.h")
 
     add_files("src/core/dllmain.cpp")
+    add_files("src/core/replay_manager.cpp")
     add_files("src/core/game_state.cpp")
     add_files("src/core/keybindings.cpp")
     add_files("src/game/arcsys.cpp")

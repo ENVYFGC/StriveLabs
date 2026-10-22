@@ -5,6 +5,7 @@
 #endif
 #include <Windows.h>
 #include "recordings.h"
+#include "replay_manager.h"
 #include "combo_log.h"
 #include "imgui_overlay.h"
 #include <mutex>
@@ -12,14 +13,6 @@
 #include <thread>
 #include <commdlg.h>
 
-// Defined in dllmain.cpp: pulls this round's inputs for a side out of the
-// replay buffer. Replay peers are one per seat: 0 = P1, 1 = P2.
-std::vector<uint16_t> captureCurrentRound(int peer);
-bool replayCaptureStart(int peer, std::wstring& err);
-std::vector<uint16_t> replayCaptureStop(std::wstring& err);
-bool replayCaptureActive();
-bool replayCaptureFull();
-uint32_t replayCaptureFrames();
 void timelinePressHotkey(int action);
 void timelineSetPaused(bool paused);
 bool timelinePaused();
@@ -551,7 +544,7 @@ namespace {
 
   void finishCapture() {
     std::wstring err;
-    auto frames = replayCaptureStop(err);
+    auto frames = ReplayManager::instance().stopCapture(err);
     if (frames.empty()) { g_rec_status = err.empty() ? L"Nothing was captured" : err; return; }
     char stamp[32] = "";
     { const std::time_t t = std::time(nullptr); std::tm tm{};
@@ -572,9 +565,9 @@ namespace {
   }
 
   void toggleCapture() {
-    if (replayCaptureActive()) { finishCapture(); return; }
+    if (ReplayManager::instance().captureActive()) { finishCapture(); return; }
     std::wstring err;
-    if (!replayCaptureStart(g_cap_side, err)) { g_rec_status = err; return; }
+    if (!ReplayManager::instance().startCapture(g_cap_side, err)) { g_rec_status = err; return; }
     g_rec_status = std::wstring(L"Capturing ") + (g_cap_side == 0 ? L"P1" : L"P2") +
                    L". Press again to stop, or it stops at 40 s.";
   }
@@ -1049,7 +1042,7 @@ void ModMenu::update(PressedKeys data) {
     if (c.type == MenuClick::Type::Move || c.type >= MenuClick::Type::TlRewind ||
         (binds::capturing < 0 && (is_showing || c.page >= 0))) applyClick(c);
   applyBrowsePick();
-  if (replayCaptureFull()) finishCapture();
+  if (ReplayManager::instance().captureFull()) finishCapture();
   updateInner(data);
   buildView();
 }
@@ -1326,8 +1319,8 @@ void ModMenu::draw() {
                                               + L"/" + std::to_wstring(recordings::streamLen()) + L")")
                                            : std::wstring(L">>  start  (no length limit)")},
       {L"Capture Side",                g_cap_side == 0 ? L"<     1P     >" : L"<     2P     >"},
-      {L"Capture from Replay",         replayCaptureActive()
-                                           ? (L">>  stop  (" + secondsText(replayCaptureFrames()) + L" / 40 s)")
+      {L"Capture from Replay",         ReplayManager::instance().captureActive()
+                                           ? (L">>  stop  (" + secondsText(ReplayManager::instance().captureFrames()) + L" / 40 s)")
                                            : std::wstring(L">>  start  (40 s max)")},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
@@ -1696,7 +1689,7 @@ void ModMenu::buildView() {
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Capture side";
       r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
     row(MenuRowView::Kind::Action, "Capture from replay",
-        replayCaptureActive() ? utf8(L"Stop (" + secondsText(replayCaptureFrames()) + L" / 40 s)") : std::string("Start"));
+        ReplayManager::instance().captureActive() ? utf8(L"Stop (" + secondsText(ReplayManager::instance().captureFrames()) + L" / 40 s)") : std::string("Start"));
     status = utf8(g_rec_status);
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
@@ -1730,8 +1723,8 @@ void ModMenu::buildView() {
   v.mode = timelineMode();
   v.timeline_on = timelineOn();
   v.paused = timelinePaused();
-  v.recording = replayCaptureActive();
-  v.rec_frames = replayCaptureFrames();
+  v.recording = ReplayManager::instance().captureActive();
+  v.rec_frames = ReplayManager::instance().captureFrames();
   v.rec_status = utf8(g_rec_status);
   if (v.mode != 0) {
     static bool scanned = false;  // the timeline lists files before the Recordings page is ever opened
