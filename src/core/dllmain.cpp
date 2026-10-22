@@ -2,7 +2,7 @@
 #include <polyhook2/Detour/x64Detour.hpp>
 
 #include "arcsys.h"
-#include "bind_watcher.h"
+#include "keybindings.h"
 #include "draw_utils.h"
 #include "framebar.h"
 #include "hitboxes.h"
@@ -226,84 +226,7 @@ UE4SSProgram* Program;
 // Trackers
 GameState game_state;
 
-class Keybinds
-{
-public:
-    static const int BUTTON_COUNT = binds::COUNT;
-
-    // Aliases into the rebindable table (see keybinds.h); rebinding updates these too.
-    int& TOGGLE_FRAMEBAR_BUTTON = binds::key[binds::FRAMEBAR];
-    int& TOGGLE_HITBOX_BUTTON   = binds::key[binds::HITBOXES];
-    int& PAUSE_BUTTON           = binds::key[binds::PAUSE];
-    int& ADVANCE_BUTTON         = binds::key[binds::ADVANCE];
-    int& TOGGLE_MENU_BUTTON     = binds::key[binds::MENU];
-    int& TOGGLE_SAVE_BUTTON     = binds::key[binds::SAVE];
-    int& TAKEOVER_P1_BUTTON     = binds::key[binds::TAKEOVER_P1];
-    int& TAKEOVER_P2_BUTTON     = binds::key[binds::TAKEOVER_P2];
-    int& TOGGLE_LOAD_BUTTON     = binds::key[binds::LOAD];
-    int& MENU_UP_BUTTON         = binds::key[binds::UP];
-    int& MENU_DOWN_BUTTON       = binds::key[binds::DOWN];
-    int& MENU_LEFT_BUTTON       = binds::key[binds::LEFT];
-    int& MENU_RIGHT_BUTTON      = binds::key[binds::RIGHT];
-
-    int getButtonIndex(int input)
-    {
-        if (input == 0) return -1;
-        for (int i = 0; i < BUTTON_COUNT; i++)
-        {
-            if (binds::key[i] == input) return i;
-        }
-        return -1;
-    }
-
-    void setButtonIndex(int index, bool val)
-    {
-        if (index >= 0 && index < BUTTON_COUNT) buttonStates[index] = val;
-    }
-
-    bool setButtonState(int input, bool val)
-    {
-        int index = getButtonIndex(input);
-        if (index == -1) return false;
-        buttonStates[index] = val;
-        return true;
-    }
-
-    bool getButtonState(int input)
-    {
-        int index = getButtonIndex(input);
-        return index != -1 && buttonStates[index];
-    }
-
-    void resetButton(int input)
-    {
-        int index = getButtonIndex(input);
-        if (index != -1) buttonStates[index] = false;
-    }
-
-    void resetButtons()
-    {
-        for (int i = 0; i < BUTTON_COUNT; i++) buttonStates[i] = false;
-    }
-
-    void loadButtons()
-    {
-        for (int i = 0; i < BUTTON_COUNT; i++) BindWatcherI::addToFilter(binds::key[i]);
-    }
-
-    void checkBinds(bool await = false)
-    {
-        auto inputs = BindWatcherI::getInputs(await);
-        for (const auto& input : inputs)
-        {
-            if (binds::capturing >= 0) binds::offerKey(input);
-            else setButtonState(input, true);
-        }
-    }
-
-private:
-    bool buttonStates[BUTTON_COUNT] = {};
-} keybindings;
+Keybinds keybindings;
 
 static void pollGamepad();
 static void trackEffectClasses();

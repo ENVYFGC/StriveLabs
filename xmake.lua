@@ -11,6 +11,7 @@ target(projectName)
 
     add_files("src/core/dllmain.cpp")
     add_files("src/core/game_state.cpp")
+    add_files("src/core/keybindings.cpp")
     add_files("src/game/arcsys.cpp")
     add_files("src/game/bbscript.cpp")
     add_files("src/ui/bind_watcher.cpp")
