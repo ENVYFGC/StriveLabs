@@ -13,6 +13,7 @@ namespace select_memory { void init(const std::filesystem::path& dir); void save
 #include "menu.h"
 #include "recordings.h"
 #include "sigscan.h"
+#include "game_state.h"
 #include <set>
 #include "tension_overlay.h"
 #include "combo_log.h"
@@ -112,27 +113,7 @@ enum RECFLG_ENUM : Unreal::uint16
     RECFLG_SP_NET = 0x8000,
 };
 
-enum PAD_ID : Unreal::uint8
-{
-    PAD_ID_BEGIN = 0x0,
-    PAD_ID_1CON = 0x0,
-    PAD_ID_2CON = 0x1,
-    PAD_ID_3CON = 0x2,
-    PAD_ID_4CON = 0x3,
-    PAD_ID_MAX = 0x4,
-    PAD_ID_CPU = 0x4,
-    PAD_ID_MAX_WITH_CPU = 0x5,
-    PAD_ID_ANY = 0x6,
-    PAD_ID_INVALID = 0x7,
-};
-
 // Classes
-class UREDGameCommon : public Unreal::UObject
-{
-public:
-    FIELD(0x2F3, PAD_ID, m_MainQuadrant);
-};
-
 class BattleReplayManager
 {
 public:
@@ -168,7 +149,6 @@ public:
 using funcAHUDPostRender_t = void (*)(void*);
 using funcACamUpdateCamera_t = void (*)(void*, float);
 using funcMatchStart_t = void (*)(AREDGameState_Battle*);
-using funcGetGameMode_t = int (*)(UREDGameCommon*);
 using funcUpdateBattle_t = void (*)(AREDGameState_Battle*, float);
 using funcUpdateBattleInput_t = void (*)(asw_inputs*, RECFLG_ENUM);
 using funcGameKeyToRecFlag_t = RECFLG_ENUM (*)(PAD_ID, GAMEKEY_FLAG, bool);
@@ -188,39 +168,6 @@ void timelineSetPaused(bool paused);
 static bool g_skip_frame;
 void hook_UpdateBattle(AREDGameState_Battle*, float);
 
-// Enums
-enum GAME_MODE : int32_t
-{
-    GAME_MODE_DEBUG_BATTLE = 0x0,
-    GAME_MODE_ADVERTISE = 0x1,
-    GAME_MODE_MAINTENANCEVS = 0x2,
-    GAME_MODE_ARCADE = 0x3,
-    GAME_MODE_MOM = 0x4,
-    GAME_MODE_SPARRING = 0x5,
-    GAME_MODE_VERSUS = 0x6,
-    GAME_MODE_VERSUS_PREINSTALL = 0x7,
-    GAME_MODE_TRAINING = 0x8,
-    GAME_MODE_TOURNAMENT = 0x9,
-    GAME_MODE_RANNYU_VERSUS = 0xA,
-    GAME_MODE_EVENT = 0xB,
-    GAME_MODE_SURVIVAL = 0xC,
-    GAME_MODE_STORY = 0xD,
-    GAME_MODE_MAINMENU = 0xE,
-    GAME_MODE_TUTORIAL = 0xF,
-    GAME_MODE_LOBBYTUTORIAL = 0x10,
-    GAME_MODE_CHALLENGE = 0x11,
-    GAME_MODE_KENTEI = 0x12,
-    GAME_MODE_MISSION = 0x13,
-    GAME_MODE_GALLERY = 0x14,
-    GAME_MODE_LIBRARY = 0x15,
-    GAME_MODE_NETWORK = 0x16,
-    GAME_MODE_REPLAY = 0x17,
-    GAME_MODE_LOBBYSUB = 0x18,
-    GAME_MODE_MAINMENU_QUICK_BATTLE = 0x19,
-    GAME_MODE_UNDECIDED = 0x1A,
-    GAME_MODE_INVALID = 0x1B,
-};
-
 /* Utilities */
 
 const void* vtable_hook(const void** vtable, const int index, const void* hook)
@@ -236,7 +183,6 @@ const void* vtable_hook(const void** vtable, const int index, const void* hook)
 /* Variables */
 
 // Functions
-funcGetGameMode_t orig_GetGameMode;
 funcAHUDPostRender_t orig_AHUDPostRender;
 funcACamUpdateCamera_t orig_ACamUpdateCamera;
 funcMatchStart_t orig_MatchStart;
@@ -278,90 +224,7 @@ static bool is_ptr_in_game_module(const void* p);
 UE4SSProgram* Program;
 
 // Trackers
-class StateMgr
-{
-    UREDGameCommon* GameCommon = nullptr;
-    int last_mode = GAME_MODE_DEBUG_BATTLE;
-public:
-    bool mode_battle_logged = false;  // logs which game modes run the mod, for user reports
-private:
-    bool in_allowed_mode = false;
-    std::vector<int> allowed_modes = {GAME_MODE_TRAINING, GAME_MODE_REPLAY, GAME_MODE_MISSION, GAME_MODE_UNDECIDED};
-
-public:
-    bool checkMode()
-    {
-        if (!GameCommon)
-        {
-            GameCommon = reinterpret_cast<UREDGameCommon*>(UObjectGlobals::FindFirstOf(FName(STR("REDGameCommon"))));
-        }
-        if (!GameCommon) return false;
-        if (int current_mode = orig_GetGameMode(GameCommon); current_mode != last_mode)
-        {
-            //       RC::Output::send<LogLevel::Warning>(STR("Mode Change: {}\n"), current_mode);
-            last_mode = current_mode;
-            mode_battle_logged = false;
-            { char b[64]; snprintf(b, sizeof(b), "mode: %d (%s)", current_mode,
-                (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.end()) ? "mod active" : "mod idle");
-              COMBO_LOG(b); }
-            in_allowed_mode = (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.
-                end());
-        }
-        return in_allowed_mode;
-    }
-
-    PAD_ID getMainQuadrant()
-    {
-        if (!GameCommon)
-        {
-            GameCommon = reinterpret_cast<UREDGameCommon*>(UObjectGlobals::FindFirstOf(FName(STR("REDGameCommon"))));
-        }
-        if (!GameCommon) return PAD_ID_INVALID;
-
-        return GameCommon->m_MainQuadrant;
-    }
-
-    bool checkModeReplay() const
-    {
-        return last_mode == GAME_MODE_REPLAY;
-    }
-
-    bool checkModeTraining() const
-    {
-        return last_mode == GAME_MODE_TRAINING;
-    }
-
-    void checkRound()
-    {
-        resetting = false;
-        auto* events = asw_events::get();
-        auto count = events->event_count;
-        count = std::min<unsigned long>(count, 10);
-        for (unsigned int idx = 0; idx < count; ++idx)
-        {
-            auto e_type = events->events[idx].type;
-            // if(e_type < 41) RC::Output::send<LogLevel::Warning>(STR("Event {}: {}\n"), idx, (int)e_type);
-            if (e_type == BOM_EVENT_RESET || e_type == BOM_EVENT_DECISION)
-            {
-                resetting = true;
-                roundActive = false;
-            }
-            if (e_type == BOM_EVENT_BATTLE_START)
-            {
-                resetting = true;
-                roundActive = true;
-
-                roundJustStarted = true;
-            }
-        }
-    }
-
-    bool resetting = false;
-    bool matchStarted = true;
-    bool roundActive = false;
-    // Set on BATTLE_START; consumed once by the caller to log the replay anchor.
-    bool roundJustStarted = false;
-} game_state;
+GameState game_state;
 
 class Keybinds
 {
@@ -1459,8 +1322,7 @@ public:
                                                  reinterpret_cast<uint64_t*>(&orig_UpdateOnPreTick));
         UpdateOnPreTick_Detour->hook();
 
-        const uintptr_t GetGameMode_Addr = sigscan::get().scan("\x0F\xB6\x81\xF0\x02\x00\x00\xC3", "xxxxxxxx");
-        orig_GetGameMode = reinterpret_cast<funcGetGameMode_t>(GetGameMode_Addr);
+        game_state.initialize();
 
         const uintptr_t GameKeyToRecFlag_Addr = sigscan::get().scan(
             "\x89\x54\x24\x00\x89\x4C\x24\x00\x53\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x83\xEC\x00\x8B\xFA",
