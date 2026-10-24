@@ -971,6 +971,18 @@ bool ReplayManager::isTakeoverInput(const asw_inputs* input) const
     return data->isAnalyzerSame(input);
 }
 
+std::optional<int> ReplayManager::takeoverPlayer() const
+{
+    if (!data->gameState || !data->gameState->checkModeReplay() || data->isAnalyzerSame(nullptr))
+        return std::nullopt;
+
+    auto* engine = asw_engine::get();
+    if (!engine) return std::nullopt;
+    if (data->isAnalyzerSame(&engine->inputs[0])) return 1;
+    if (data->isAnalyzerSame(&engine->inputs[3])) return 2;
+    return std::nullopt;
+}
+
 bool ReplayManager::playbackEnabled() const
 {
     return data->isAnalyzerSame(nullptr);

@@ -1205,6 +1205,8 @@ void ModMenu::draw() {
       status.drawRect(-180, y - 12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
       status.drawOutlinedText(-165, y, FString(label.c_str()), 1.4);
     };
+    if (const auto player = ReplayManager::instance().takeoverPlayer())
+      drawStatus(L"Takeover: P" + std::to_wstring(*player));
     const int seconds = ReplayManager::instance().rewindCountdownSeconds();
     if (seconds > 0) drawStatus(L"Playback in " + std::to_wstring(seconds) + L" s");
     if (isRewindPointNotificationVisible()) drawStatus(L"Rewind point created");
@@ -1756,6 +1758,7 @@ void ModMenu::buildView() {
   v.mode = Timeline::instance().mode();
   v.timeline_on = timelineOn();
   v.paused = Timeline::instance().isPaused();
+  v.takeover_player = ReplayManager::instance().takeoverPlayer();
   v.recording = ReplayManager::instance().captureActive();
   v.rec_frames = ReplayManager::instance().captureFrames();
   v.rec_status = utf8(g_rec_status);

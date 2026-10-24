@@ -843,8 +843,13 @@ namespace menu_ui {
     dl->AddText(font, size, pos, TEXT, label);
   }
 
-  void draw_replay_status() {
+  void draw_replay_status(const MenuView& v) {
     int row = 0;
+    if (v.takeover_player) {
+      char label[32];
+      snprintf(label, sizeof(label), "Takeover: P%d", *v.takeover_player);
+      draw_status_message(label, row++);
+    }
     const int seconds = ReplayManager::instance().rewindCountdownSeconds();
     if (seconds > 0) {
       char label[64];
@@ -864,7 +869,7 @@ namespace menu_ui {
     draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
     draw_timeline(v);
     use(E_MENU);
-    draw_replay_status();
+    draw_replay_status(v);
     if (!v.showing) return;
     ImGuiIO& io = ImGui::GetIO();
     const float pad = PAD * S;

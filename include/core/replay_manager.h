@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,8 @@ public:
     int rewindCountdownSeconds() const;
 
     bool isTakeoverInput(const asw_inputs* input) const;
+    // Selected replay player (1 or 2), or empty while watching playback.
+    std::optional<int> takeoverPlayer() const;
     bool playbackEnabled() const;
     RECFLG_ENUM takeoverInput(RECFLG_ENUM recordedInput, bool menuOpen) const;
     void setInputSystem(uintptr_t system);
