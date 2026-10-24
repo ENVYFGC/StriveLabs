@@ -2,6 +2,8 @@
 
 #include "draw_utils.h"
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -147,6 +149,7 @@ class ModMenu {
   bool is_showing = false;
   int cursor_position = 0;
   size_t current_page = 0;
+  std::atomic<uint64_t> rewind_point_notification_until{0};
 
   void changeSetting(size_t idx, bool right=true);
   void buildView();
@@ -162,6 +165,9 @@ public:
 
   void update(PressedKeys data);
   void draw();
+
+  void notifyRewindPointCreated();
+  bool isRewindPointNotificationVisible() const;
 
   bool isShowing() const { return is_showing; }
   void hide();                           // game thread: close the menu (left training / replay)

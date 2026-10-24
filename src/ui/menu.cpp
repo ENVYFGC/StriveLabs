@@ -1187,16 +1187,27 @@ void ModMenu::updateInner(PressedKeys data) {
   }
 }
 
+void ModMenu::notifyRewindPointCreated() {
+  rewind_point_notification_until = GetTickCount64() + 2000;
+}
+
+bool ModMenu::isRewindPointNotificationVisible() const {
+  return GetTickCount64() < rewind_point_notification_until.load();
+}
+
 void ModMenu::draw() {
   if (!imgui_overlay::running()) {
+    DrawContext status(0.5, 0.25);
+    status.update();
+    int row = 0;
+    auto drawStatus = [&](const std::wstring& label) {
+      const int y = row++ * 72;
+      status.drawRect(-180, y - 12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
+      status.drawOutlinedText(-165, y, FString(label.c_str()), 1.4);
+    };
     const int seconds = ReplayManager::instance().rewindCountdownSeconds();
-    if (seconds > 0) {
-      DrawContext countdown(0.5, 0.25);
-      countdown.update();
-      const std::wstring label = L"Playback in " + std::to_wstring(seconds) + L" s";
-      countdown.drawRect(-180, -12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
-      countdown.drawOutlinedText(-165, 0, FString(label.c_str()), 1.4);
-    }
+    if (seconds > 0) drawStatus(L"Playback in " + std::to_wstring(seconds) + L" s");
+    if (isRewindPointNotificationVisible()) drawStatus(L"Rewind point created");
   }
   if (!is_showing) return;
   hud_panel = !imgui_overlay::running();
@@ -1520,6 +1531,7 @@ float ModMenu::uiScale(int which) {
 }
 
 void ModMenu::hide() {
+  rewind_point_notification_until = 0;
   if (!is_showing) return;
   is_showing = false;
   buildView();

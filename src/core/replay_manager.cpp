@@ -447,6 +447,7 @@ public:
         rollback->CurrentBackupDataIndex = 18;
         orig_SaveBackup(rollback);
         if (gameState->checkModeReplay()) saveBackup();
+        ModMenu::instance().notifyRewindPointCreated();
     }
 
     void restoreRewindPoint()
@@ -534,6 +535,7 @@ public:
             {
                 replayHead[i] = manager->m_ReplayBuffer[i].m_ReadHead;
             }
+            ModMenu::instance().notifyRewindPointCreated();
         }
 
         if (keybindings->getButtonState(keybindings->TAKEOVER_P1_BUTTON))
