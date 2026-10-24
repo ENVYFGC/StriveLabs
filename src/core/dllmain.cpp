@@ -15,6 +15,7 @@ namespace select_memory { void init(const std::filesystem::path& dir); void save
 #include "replay_manager.h"
 #include "sigscan.h"
 #include "game_state.h"
+#include "timeline.h"
 #include "tension_overlay.h"
 #include "combo_log.h"
 #include <chrono>
@@ -56,8 +57,6 @@ using funcUpdateOnPreTick_t = void (*)(AREDGameState_Battle*, float);
 void hook_AHUDPostRender(void*);
 void hook_ACamUpdateCamera(void*, float);
 void hook_MatchStart(AREDGameState_Battle*);
-void timelineSetPaused(bool paused);
-static bool g_skip_frame;
 void hook_UpdateBattle(AREDGameState_Battle*, float);
 
 /* Utilities */
@@ -222,7 +221,7 @@ void hook_MatchStart(AREDGameState_Battle* GameState)
 {
     ReplayManager::instance().onMatchStart();
     select_memory::save();  // remember this character select's picks for the next restart
-    timelineSetPaused(false);
+    Timeline::instance().setPaused(false);
     g_overlays_visible = false;
     game_state.matchStarted = true;
     game_state.roundActive = false;
@@ -346,7 +345,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         tension_overlay.reset();
     }
 
-    if (g_skip_frame) return;  // timeline pause: no fight update this frame
+    if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
     orig_UpdateBattle(GameState, DeltaTime);
 
     if (game_state.matchStarted)
@@ -409,7 +408,7 @@ void hook_UpdateSystem(uintptr_t System)
 
 void hook_UpdateReplay(BattleReplayManager* Manager)
 {
-    if (g_skip_frame) return;  // timeline pause: the replay waits too
+    if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: the replay waits too
     if (ReplayManager::instance().playbackEnabled())
     {
         orig_UpdateReplay(Manager);
@@ -417,35 +416,10 @@ void hook_UpdateReplay(BattleReplayManager* Manager)
     }
 }
 
-// ---- Timeline window controls --------------------------------------------------
-// The timeline's pause skips the fight and replay updates frame by frame while the
-// game keeps drawing, so its Play button can still be clicked. (F3 instead holds
-// the whole update loop, which stops drawing too.) Its buttons queue hotkey
-// presses for the start of the next frame, where the mod reads F6 / F9.
-static std::atomic<bool> g_soft_pause{false};
-static std::atomic<int> g_soft_steps{0};
-static std::atomic<unsigned> g_pending_hotkeys{0};
-
-void timelinePressHotkey(int action) { g_pending_hotkeys |= 1u << action; }
-void timelineSetPaused(bool paused) { g_soft_pause = paused; if (!paused) g_soft_steps = 0; }
-bool timelinePaused() { return g_soft_pause; }
-void timelineStep() { g_soft_steps++; }
-int timelineMode() { return !game_state.checkMode() ? 0 : game_state.checkModeReplay() ? 2 : 1; }
-
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
 {
     keybindings.checkBinds(false);
-    for (unsigned m = g_pending_hotkeys.exchange(0), a = 0; m; m >>= 1, a++)
-        if (m & 1) keybindings.setButtonIndex(static_cast<int>(a), true);
-
-    // Timeline pause: skip this frame's fight and replay updates (one step lets one through).
-    g_skip_frame = false;
-    if (g_soft_pause && game_state.checkMode())
-    {
-        if (g_soft_steps > 0) g_soft_steps--;
-        else g_skip_frame = true;
-    }
-    else if (g_soft_pause) g_soft_pause = false;  // left training / replay
+    Timeline::instance().onPreTick();
 
     if (game_state.checkMode())
     {
@@ -536,6 +510,7 @@ public:
         UpdateOnPreTick_Detour->hook();
 
         game_state.initialize();
+        Timeline::instance().initialize(game_state, keybindings);
 
         ReplayManager::instance().initialize(game_state, keybindings);
 

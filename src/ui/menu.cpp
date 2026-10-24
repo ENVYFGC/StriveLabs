@@ -6,18 +6,13 @@
 #include <Windows.h>
 #include "recordings.h"
 #include "replay_manager.h"
+#include "timeline.h"
 #include "combo_log.h"
 #include "imgui_overlay.h"
 #include <mutex>
 #include <atomic>
 #include <thread>
 #include <commdlg.h>
-
-void timelinePressHotkey(int action);
-void timelineSetPaused(bool paused);
-bool timelinePaused();
-void timelineStep();
-int timelineMode();
 
 #include <vector>
 #include <string>
@@ -1538,12 +1533,12 @@ void ModMenu::applyClick(const MenuClick& c) {
   }
   switch (c.type) {  // timeline window
     case MenuClick::Type::TlRewind:
-      timelinePressHotkey(binds::LOAD);
-      if (timelinePaused()) timelineStep();  // show the restored moment
+      Timeline::instance().pressHotkey(binds::LOAD);
+      if (Timeline::instance().isPaused()) Timeline::instance().advanceFrame();  // show the restored moment
       return;
-    case MenuClick::Type::TlSetPoint: timelinePressHotkey(binds::SAVE); return;
-    case MenuClick::Type::TlPlay:     timelineSetPaused(!timelinePaused()); return;
-    case MenuClick::Type::TlStep:     if (timelinePaused()) timelineStep(); return;
+    case MenuClick::Type::TlSetPoint: Timeline::instance().pressHotkey(binds::SAVE); return;
+    case MenuClick::Type::TlPlay:     Timeline::instance().setPaused(!Timeline::instance().isPaused()); return;
+    case MenuClick::Type::TlStep:     if (Timeline::instance().isPaused()) Timeline::instance().advanceFrame(); return;
     case MenuClick::Type::TlRecord:   toggleCapture(); return;
     case MenuClick::Type::TlShow:     setTimelineOn(c.b != 0); return;
     default: break;
@@ -1720,9 +1715,9 @@ void ModMenu::buildView() {
     v.opacity = static_cast<float>(Settings::UI_OPACITY.value);
     v.picker_seq = g_picker_seq;
   }
-  v.mode = timelineMode();
+  v.mode = Timeline::instance().mode();
   v.timeline_on = timelineOn();
-  v.paused = timelinePaused();
+  v.paused = Timeline::instance().isPaused();
   v.recording = ReplayManager::instance().captureActive();
   v.rec_frames = ReplayManager::instance().captureFrames();
   v.rec_status = utf8(g_rec_status);
