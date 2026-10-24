@@ -7,10 +7,13 @@
 #include "recordings.h"
 #include "sigscan.h"
 #include "game_state.h"
+#include "timeline.h"
+#include "menu.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <set>
+#include <atomic>
 
 #include <Unreal/UObjectGlobals.hpp>
 #include <Unreal/CoreUObject/UObject/Class.hpp>
@@ -119,6 +122,55 @@ struct ReplayManager::Data
 {
     GameState* gameState = nullptr;
     Keybinds* keybindings = nullptr;
+    Timeline* timeline = nullptr;
+    static constexpr int kRewindFramesPerSecond = 60;
+    std::atomic<int> rewindFramesRemaining{0};
+    bool isWaitingForFrame = false;
+    int lastGameFrame = -1;
+
+    void resetRewindDelay()
+    {
+        if (rewindFramesRemaining > 0) timeline->setPaused(false);
+        rewindFramesRemaining = 0;
+        isWaitingForFrame = false;
+    }
+
+    void beginRewindDelay()
+    {
+        const bool wasPaused = timeline->isPaused();
+        resetRewindDelay();
+        rewindFramesRemaining = ModMenu::instance().rewindDelaySeconds() * kRewindFramesPerSecond;
+        if (rewindFramesRemaining <= 0 && !wasPaused) return;
+
+        // setPaused(false) clears queued manual steps, preventing extra frames after
+        // rewind. Pausing again below happens before any game update can run.
+        timeline->setPaused(false);
+        // Freezing immediately after rollback leaves visual artifacts. Let the
+        // restored fight process one frame before staying paused, even with no delay.
+        lastGameFrame = asw_engine::get()->GameFrame;
+        isWaitingForFrame = true;
+        timeline->setPaused(true);
+    }
+
+    void onBattleFrameProcessed()
+    {
+        if (!isWaitingForFrame) return;
+        const auto* engine = asw_engine::get();
+        if (!engine) return;
+
+        // Native replay pause can call UpdateBattle without advancing the fight.
+        const int gameFrame = engine->GameFrame;
+        if (gameFrame == lastGameFrame) return;
+        lastGameFrame = gameFrame;
+        isWaitingForFrame = false;
+    }
+
+    int rewindCountdownSeconds() const
+    {
+        const int remaining = rewindFramesRemaining.load();
+        return (remaining + kRewindFramesPerSecond - 1) / kRewindFramesPerSecond;
+    }
+
     using funcSaveBackup_t = void (*)(asw_rollback*);
     using funcRollback_t = void (*)(asw_rollback*);
     funcSaveBackup_t orig_SaveBackup{};
@@ -196,7 +248,7 @@ public:
     void restoreReplayHead() const
     {
         if (!gameState->checkModeReplay()) return;
-        
+
         for (int i = 0; i < 6; i++)
         {
             manager->m_ReplayBuffer[i].m_ReadHead = replayHead[i];
@@ -216,7 +268,7 @@ public:
             peer.m_ReadHead.m_SolidPosition--;
         }
     }
-    
+
     void saveBackup()
     {
         if (isTakeover)
@@ -420,6 +472,17 @@ public:
 
     void onPreTick()
     {
+        if (!gameState->checkMode())
+        {
+            resetRewindDelay();
+            return;
+        }
+
+        if (!isWaitingForFrame && rewindFramesRemaining > 0)
+        {
+            if (--rewindFramesRemaining == 0) timeline->setPaused(false);
+        }
+
         // No automatic rewind point. A timer that re-saved every N seconds
         // destroyed the user's manual F6 point before they could return to it
         // (F9 would only go back as far as the last automatic save), and in a
@@ -431,13 +494,21 @@ public:
             keybindings->resetButton(keybindings->TOGGLE_SAVE_BUTTON);
             placeRewindPoint();
         }
+
         if (loadState || (!gameState->checkModeReplay()
             && keybindings->getButtonState(keybindings->TOGGLE_LOAD_BUTTON)))
         {
             keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
+            const bool explicitRewind = rewindRequested || !gameState->checkModeReplay();
             loadState = false;
+            rewindRequested = false;
             restoreRewindPoint();
+            if (explicitRewind) beginRewindDelay();
         }
+
+        // A tick can consume Step without reaching UpdateBattle. Keep requesting
+        // it until the restored fight has actually processed its first frame.
+        if (isWaitingForFrame) timeline->advanceFrame();
     }
 
     void update()
@@ -483,6 +554,7 @@ public:
             if (isTakeover)
             {
                 loadState = true;
+                rewindRequested = true;
             }
         }
     }
@@ -491,6 +563,7 @@ public:
     {
         isTakeover = false;
         loadState = false;
+        rewindRequested = false;
         analyzer = nullptr;
     }
 
@@ -510,12 +583,14 @@ public:
 
     bool isTakeover = false;
     bool loadState = false;
+    bool rewindRequested = false;
     int roundCount = -1;
 
-    void initialize(GameState& state, Keybinds& input)
+    void initialize(GameState& state, Keybinds& input, Timeline& playback)
     {
         gameState = &state;
         keybindings = &input;
+        timeline = &playback;
         const uintptr_t SaveBackup = sigscan::get().scan(
             "\x48\x89\x74\x24\x00\x57\x48\x83\xEC\x00\x8B\x41\x00\x48\x8B\xF9\xFF\xC0",
             "xxxx?xxxx?xx?xxxxx");
@@ -859,13 +934,14 @@ ReplayManager& ReplayManager::instance()
     return manager;
 }
 
-void ReplayManager::initialize(GameState& gameState, Keybinds& keybindings)
+void ReplayManager::initialize(GameState& gameState, Keybinds& keybindings, Timeline& timeline)
 {
-    data->initialize(gameState, keybindings);
+    data->initialize(gameState, keybindings, timeline);
 }
 
 void ReplayManager::onMatchStart()
 {
+    data->resetRewindDelay();
     data->cancelCapture();  // a new match or replay: the old capture start means nothing
     // New match (or a freshly loaded replay) -- let the next round call
     // re-anchor the capture range.
@@ -947,6 +1023,21 @@ uint32_t ReplayManager::captureFrames() const
 void ReplayManager::onBattleUpdate()
 {
     data->trackEffectClasses();
+}
+
+void ReplayManager::onBattleFrameProcessed()
+{
+    data->onBattleFrameProcessed();
+}
+
+bool ReplayManager::isRewindDelayActive() const
+{
+    return data->rewindFramesRemaining.load() > 0;
+}
+
+int ReplayManager::rewindCountdownSeconds() const
+{
+    return data->rewindCountdownSeconds();
 }
 
 void ReplayManager::logStatus() const

@@ -214,7 +214,9 @@ namespace Settings {
   FloatSetting UI_SCALE_BAR      = {"ui_scale_bar",      1.00, 1.00, 0.50, 2.00, 0.05};
   FloatSetting UI_SCALE_TIMELINE = {"ui_scale_timeline", 1.00, 1.00, 0.50, 2.00, 0.05};
 
-  std::array<FloatSetting *, 18> float_settings = {
+  FloatSetting REWIND_DELAY_SECONDS = {"rewind_delay_seconds", 0.0, 0.0, 0.0, 60.0, 1.0};
+
+  std::array<FloatSetting *, 19> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -233,6 +235,7 @@ namespace Settings {
       &UI_SCALE_METERS,       // 15
       &UI_SCALE_BAR,          // 16
       &UI_SCALE_TIMELINE,     // 17
+      &REWIND_DELAY_SECONDS,  // 18
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
@@ -342,7 +345,7 @@ namespace Settings {
 
   void resetLayout() {
     for (auto *f : float_settings)
-      if (f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
+      if (f != &REWIND_DELAY_SECONDS && f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
     saveConfig();
   }
 }
@@ -740,6 +743,12 @@ namespace {
     return buf;
   }
 
+  std::wstring formatMenuNumber(const FloatSetting& setting) {
+    if (&setting == &Settings::REWIND_DELAY_SECONDS)
+      return std::to_wstring(static_cast<int>(setting.value));
+    return formatMenuFloat(setting.value);
+  }
+
   static const Palette color_palettes[] = {
       Palette{// SF6
               convSRGB(201, 128, 0, 255), convSRGB(0, 0, 0, 255),
@@ -865,8 +874,10 @@ namespace {
         for (int action = 0; action < binds::COUNT; action++)
           if (!isTakeoverHotkey(action)) hotkey(action);
       } else {
+        rows.push_back({L"Rewind", L"Playback delay (seconds)", nullptr, &REWIND_DELAY_SECONDS});
+        const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
-        rows.front().section = L"Hotkeys";
+        rows[hotkeysBegin].section = L"Hotkeys";
         rows.push_back({L"Replay takeover", L"Use these buttons in takeover", nullptr, nullptr, SettingsAction::TakeoverToggle});
         for (int action = 0; action < binds::G_COUNT; action++) {
           SettingsRowDef row; row.label = binds::G_LABELS[action]; row.capture = binds::GAME_BASE + action;
@@ -1177,6 +1188,16 @@ void ModMenu::updateInner(PressedKeys data) {
 }
 
 void ModMenu::draw() {
+  if (!imgui_overlay::running()) {
+    const int seconds = ReplayManager::instance().rewindCountdownSeconds();
+    if (seconds > 0) {
+      DrawContext countdown(0.5, 0.25);
+      countdown.update();
+      const std::wstring label = L"Playback in " + std::to_wstring(seconds) + L" s";
+      countdown.drawRect(-180, -12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
+      countdown.drawOutlinedText(-165, 0, FString(label.c_str()), 1.4);
+    }
+  }
   if (!is_showing) return;
   hud_panel = !imgui_overlay::running();
   if (!hud_panel) {
@@ -1357,7 +1378,7 @@ void ModMenu::draw() {
           : binds::keyName(game ? binds::gkey[id] : binds::key[id]) + L"  |  " +
             binds::padName(game ? binds::gpad[id] : binds::pad[id]);
       } else if (row.setting) value = row.setting->display.values[row.setting->value];
-      else if (row.number) value = formatMenuFloat(row.number->value);
+      else if (row.number) value = formatMenuNumber(*row.number);
       else if (row.action == SettingsAction::TakeoverToggle)
         value = binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >";
       tool.drawOutlinedText(label_left, cy + 8.0, FString(row.label), LABEL_SCALE);
@@ -1534,11 +1555,16 @@ void ModMenu::applyClick(const MenuClick& c) {
   switch (c.type) {  // timeline window
     case MenuClick::Type::TlRewind:
       Timeline::instance().pressHotkey(binds::LOAD);
-      if (Timeline::instance().isPaused()) Timeline::instance().advanceFrame();  // show the restored moment
       return;
     case MenuClick::Type::TlSetPoint: Timeline::instance().pressHotkey(binds::SAVE); return;
-    case MenuClick::Type::TlPlay:     Timeline::instance().setPaused(!Timeline::instance().isPaused()); return;
-    case MenuClick::Type::TlStep:     if (Timeline::instance().isPaused()) Timeline::instance().advanceFrame(); return;
+    case MenuClick::Type::TlPlay:
+      if (!ReplayManager::instance().isRewindDelayActive())
+        Timeline::instance().setPaused(!Timeline::instance().isPaused());
+      return;
+    case MenuClick::Type::TlStep:
+      if (!ReplayManager::instance().isRewindDelayActive() && Timeline::instance().isPaused())
+        Timeline::instance().advanceFrame();
+      return;
     case MenuClick::Type::TlRecord:   toggleCapture(); return;
     case MenuClick::Type::TlShow:     setTimelineOn(c.b != 0); return;
     default: break;
@@ -1655,7 +1681,7 @@ void ModMenu::buildView() {
         r.kind = MenuRowView::Kind::Number;
         if (f->id_.rfind("ui_", 0) == 0) {
           r.value = std::to_string(static_cast<int>(std::lround(f->value * 100))) + "%";
-        } else r.value = utf8(formatMenuFloat(f->value));
+        } else r.value = utf8(formatMenuNumber(*f));
       } else {
         r.kind = MenuRowView::Kind::Action;
         r.value = def.action == SettingsAction::PickColor ? "Pick" : "Reset";
@@ -1751,6 +1777,8 @@ bool ModMenu::delimEnabled() const { return Settings::DELIM.value; }
 bool ModMenu::cancelEnabled() const { return false; }
 bool ModMenu::dashEnabled() const { return Settings::SHOW_DASH_FRAMES.value; }
 bool ModMenu::crossupEnabled() const { return Settings::CROSSUP_ENABLED.value; }
+int ModMenu::rewindDelaySeconds() const { return static_cast<int>(Settings::REWIND_DELAY_SECONDS.value); }
+
 int ModMenu::pauseType() const { return Settings::PAUSE_TYPE.value; }
 
 TensionOptions ModMenu::getTensionOptions() const {

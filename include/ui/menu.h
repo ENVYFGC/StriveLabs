@@ -179,7 +179,7 @@ public:
   bool dashEnabled() const;
   int pauseType() const;
   int delayAmount() const;
-  // 0 = off, else frames between automatic rewind points.
+  int rewindDelaySeconds() const;
   bool crossupEnabled() const;
   TensionOptions getTensionOptions() const;
   LayoutPositions getLayoutPositions() const;

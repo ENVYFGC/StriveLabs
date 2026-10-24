@@ -1,5 +1,6 @@
 #include "imgui_overlay.h"
 #include "menu.h"
+#include "replay_manager.h"
 #include "combo_log.h"
 
 #ifndef NOMINMAX

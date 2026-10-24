@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 
 class GameState;
 class Keybinds;
@@ -11,7 +12,11 @@ public:
     static Timeline& instance();
     void initialize(GameState& gameState, Keybinds& keybindings);
 
-    void onPreTick();
+    // The callback lets playback logic (e.g. ReplayManager) react to queued hotkeys
+    // and request Pause/Step before Timeline decides whether this tick may advance.
+    // It runs once synchronously after hotkey delivery, keeping Timeline independent
+    // of that logic. Rewind uses this to allow one restored frame before pausing.
+    void onPreTick(const std::function<void()>& callback);
 
     void setPaused(bool paused);
     bool isPaused() const;

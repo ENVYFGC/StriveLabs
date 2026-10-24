@@ -19,18 +19,29 @@ void Timeline::initialize(GameState& gameState, Keybinds& keybindings)
 // game keeps drawing, so its Play button can still be clicked. (F3 instead holds
 // the whole update loop, which stops drawing too.) Its buttons queue hotkey
 // presses for the start of the next frame, where the mod reads F6 / F9.
-void Timeline::onPreTick()
+void Timeline::onPreTick(const std::function<void()>& callback)
 {
+    // Rollback may call the hooked updates before this tick's final decision.
+    isFrameAllowed = true;
     for (unsigned mask = pendingHotkeys.exchange(0), action = 0; mask; mask >>= 1, action++)
         if (mask & 1) keybindings->setButtonIndex(static_cast<int>(action), true);
 
-    isFrameAllowed = true;
-    if (paused && gameState->checkMode())
+    callback();
+
+    if (!gameState->checkMode())
     {
-        if (pendingSteps > 0) pendingSteps--;
-        else isFrameAllowed = false;
+        paused = false;
+        pendingSteps = 0;
     }
-    else if (paused) paused = false;  // left training / replay
+
+    // Battle and replay must use the same decision even if a battle update
+    // finishes the first restored frame and changes the rewind state.
+    isFrameAllowed = !isPaused();
+    if (!isFrameAllowed && pendingSteps > 0)
+    {
+        pendingSteps--;
+        isFrameAllowed = true;
+    }
 }
 
 void Timeline::setPaused(bool paused)

@@ -347,6 +347,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
     orig_UpdateBattle(GameState, DeltaTime);
+    ReplayManager::instance().onBattleFrameProcessed();
 
     if (game_state.matchStarted)
     {
@@ -419,12 +420,11 @@ void hook_UpdateReplay(BattleReplayManager* Manager)
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
 {
     keybindings.checkBinds(false);
-    Timeline::instance().onPreTick();
-
-    if (game_state.checkMode())
-    {
+    // Rewind needs the queued Timeline hotkeys and can request Pause/Step.
+    // Run it between input processing and the final decision for this tick.
+    Timeline::instance().onPreTick([] {
         ReplayManager::instance().onPreTick();
-    }
+    });
 
     orig_UpdateOnPreTick(pThis, DeltaSeconds);
 }
@@ -512,7 +512,7 @@ public:
         game_state.initialize();
         Timeline::instance().initialize(game_state, keybindings);
 
-        ReplayManager::instance().initialize(game_state, keybindings);
+        ReplayManager::instance().initialize(game_state, keybindings, Timeline::instance());
 
         ASWInitFunctions();
         //    bbscript::BBSInitializeFunctions();

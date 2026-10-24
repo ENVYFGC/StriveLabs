@@ -10,20 +10,25 @@
 class asw_inputs;
 class GameState;
 class Keybinds;
+class Timeline;
 
 class ReplayManager
 {
 public:
     static ReplayManager& instance();
-    void initialize(GameState& gameState, Keybinds& keybindings);
+    void initialize(GameState& gameState, Keybinds& keybindings, Timeline& timeline);
 
     void onMatchStart();
     void onRoundStart();
     void onReplayFrame();
     void onPreTick();
     void onBattleUpdate();
+    void onBattleFrameProcessed();
     void update();
     void logStatus() const;
+
+    bool isRewindDelayActive() const;
+    int rewindCountdownSeconds() const;
 
     bool isTakeoverInput(const asw_inputs* input) const;
     bool playbackEnabled() const;
