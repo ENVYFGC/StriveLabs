@@ -47,6 +47,7 @@ namespace {
   WNDPROC g_wndproc = nullptr;
   bool g_init_failed = false;
   std::atomic<bool> g_running{false};
+  std::mutex g_frame_mutex;  // one ImGui frame at a time
 
   // Swap one entry of a COM vtable. Steam and Discord overlays detour the code
   // behind these entries; replacing the entry keeps their hooks in the chain.
@@ -145,7 +146,17 @@ namespace {
 
   void draw_ui() { menu_ui::draw(); }
 
+  // Every swap chain in the process goes through this hook, not only the game's:
+  // loading screens and overlays present too, sometimes from another thread. Draw
+  // only into the game's own window, from one thread at a time, and only while a
+  // fight is on screen. Menus and loading screens are left completely alone.
+  bool is_game_window(IDXGISwapChain* swap) {
+    DXGI_SWAP_CHAIN_DESC desc{};
+    return SUCCEEDED(swap->GetDesc(&desc)) && desc.OutputWindow == g_hwnd;
+  }
+
   HRESULT __stdcall hook_present(IDXGISwapChain* swap, UINT sync, UINT flags) {
+    if (g_running && !modScreenActive()) return g_present(swap, sync, flags);
     if (!g_running && !g_init_failed) {
       if (init(swap)) {
         g_running = true;
@@ -155,7 +166,8 @@ namespace {
         COMBO_LOG("imgui: init failed, using the HUD menu");
       }
     }
-    if (g_running && g_rtv) {
+    std::unique_lock<std::mutex> frame(g_frame_mutex, std::try_to_lock);
+    if (g_running && g_rtv && frame.owns_lock() && is_game_window(swap)) {
       // A window size or the overlay font changed: rebuild the fonts, so text stays sharp
       bool rebuild = ModMenu::overlayFont() != menu_ui::loaded_font;
       for (int e = 0; e < menu_ui::E_COUNT; e++)
@@ -181,9 +193,11 @@ namespace {
   }
 
   HRESULT __stdcall hook_resize(IDXGISwapChain* swap, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags) {
+    if (!g_running || !is_game_window(swap)) return g_resize(swap, count, w, h, fmt, flags);
+    std::lock_guard<std::mutex> frame(g_frame_mutex);
     if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
     const HRESULT hr = g_resize(swap, count, w, h, fmt, flags);
-    if (g_running && SUCCEEDED(hr)) create_rtv(swap);
+    if (SUCCEEDED(hr)) create_rtv(swap);
     return hr;
   }
 }
