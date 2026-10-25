@@ -52,7 +52,9 @@ void Keybinds::checkBinds(bool await)
     auto inputs = BindWatcherI::getInputs(await);
     for (const auto& input : inputs)
     {
-        if (binds::capturing >= 0) binds::offerKey(input);
-        else setButtonState(input, true);
+        const bool repeat = (input & BindWatcherI::REPEAT) != 0;
+        const int key = input & ~BindWatcherI::REPEAT;
+        if (binds::capturing >= 0) { if (!repeat) binds::offerKey(key); }
+        else if (!repeat || key == ADVANCE_BUTTON) setButtonState(key, true);  // holding frame step keeps stepping
     }
 }

@@ -2,6 +2,7 @@
 #include "menu.h"
 #include "replay_manager.h"
 #include "combo_log.h"
+#include "keybinds.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX

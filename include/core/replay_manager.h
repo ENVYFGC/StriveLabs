@@ -31,6 +31,21 @@ public:
     bool isRewindDelayActive() const;
     // Replay Assist: 0 = off, 1 = standby (remaining = 1..0 of the lead-in), 2 = just went active.
     int assistState(float& remaining) const;
+
+    // For the status line and the takeover prompt.
+    struct Status
+    {
+        bool replay = false;
+        bool rewindPoint = false;
+        int takeover = 0;             // 1 or 2 while taking over that side
+        double assistSeconds = 0.0;   // the setting, 0 = off
+        int assist = 0;               // 1 standby, 2 just went active
+        float assistLeftSeconds = 0.0f;
+        int prompt = 0;               // 1 or 2: asking about that side
+        bool promptStop = false;      // asking to stop rather than start
+        bool promptRewinds = false;   // stopping goes back to the rewind point
+    };
+    Status status() const;
     int rewindCountdownSeconds() const;
 
     bool isTakeoverInput(const asw_inputs* input) const;

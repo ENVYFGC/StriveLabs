@@ -3,6 +3,7 @@
 #include "arcsys.h"
 #include "combo_log.h"
 #include "keybinds.h"
+#include "bind_watcher.h"
 #include "keybindings.h"
 #include "recordings.h"
 #include "sigscan.h"
@@ -713,6 +714,7 @@ public:
         if (!rollback) return;
         rollback->CurrentBackupDataIndex = 18;
         orig_SaveBackup(rollback);
+        rewindPointSet = true;
         if (gameState->checkModeReplay())
         {
             pickAssistSave();
@@ -840,18 +842,35 @@ public:
         if (keybindings->getButtonState(keybindings->TAKEOVER_P1_BUTTON))
         {
             keybindings->resetButton(keybindings->TAKEOVER_P1_BUTTON);
-            toggleTakeover(&asw_engine::get()->inputs[0]);
+            takeoverKey(&asw_engine::get()->inputs[0]);
         }
 
         if (keybindings->getButtonState(keybindings->TAKEOVER_P2_BUTTON))
         {
             keybindings->resetButton(keybindings->TAKEOVER_P2_BUTTON);
-            toggleTakeover(&asw_engine::get()->inputs[3]);
+            takeoverKey(&asw_engine::get()->inputs[3]);
         }
+
+        // Prompt answers from the pad: the menu's Right is yes, Left is no.
+        if (promptSide && !ModMenu::instance().isShowing())
+        {
+            if (keybindings->getButtonState(keybindings->MENU_RIGHT_BUTTON))
+            {
+                keybindings->resetButton(keybindings->MENU_RIGHT_BUTTON);
+                takeoverKey(promptSide);
+            }
+            else if (keybindings->getButtonState(keybindings->MENU_LEFT_BUTTON))
+            {
+                keybindings->resetButton(keybindings->MENU_LEFT_BUTTON);
+                closePrompt("no");
+            }
+        }
+        if (promptSide && BindWatcherI::takeEscape()) closePrompt("no");
 
         if (keybindings->getButtonState(keybindings->TOGGLE_LOAD_BUTTON))
         {
             keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
+            if (promptSide) closePrompt("F9");
             if (isTakeover)
             {
                 loadState = true;
@@ -861,8 +880,44 @@ public:
         }
     }
 
+    // ---- Takeover prompt -------------------------------------------------------------
+    // F7/F8 pause on the current frame and ask first. The same key again says yes,
+    // Esc says no. Starting and stopping both ask, so the jump back to the rewind
+    // point that stopping does is never a surprise.
+    asw_inputs* promptSide = nullptr;
+    bool promptWasPaused = false;
+    bool rewindPointSet = false;
+
+    void takeoverKey(asw_inputs* side)
+    {
+        const auto* eng = asw_engine::get();
+        const char* name = eng && side == &eng->inputs[0] ? "P1" : "P2";
+        if (!promptSide)
+        {
+            promptSide = side;
+            promptWasPaused = timeline->isPaused();
+            timeline->setPaused(true);
+            BindWatcherI::setEscapeCapture(true);
+            COMBO_LOG(std::string("takeover: asking ") + (analyzer == side ? "to stop " : "to start ") + name);
+            return;
+        }
+        if (promptSide != side) return;  // the other side's key while asking: ignored
+        closePrompt("yes");
+        toggleTakeover(side);
+    }
+
+    void closePrompt(const char* answer)
+    {
+        if (!promptSide) return;
+        promptSide = nullptr;
+        BindWatcherI::setEscapeCapture(false);
+        if (!promptWasPaused) timeline->setPaused(false);
+        COMBO_LOG(std::string("takeover: prompt answered ") + answer);
+    }
+
     void reset()
     {
+        closePrompt("closed");
         isTakeover = false;
         loadState = false;
         rewindRequested = false;
@@ -1284,6 +1339,7 @@ void ReplayManager::onMatchStart()
     data->clearRing();
     data->diverged = false;
     data->assistSide = nullptr;
+    data->rewindPointSet = false;
 }
 
 void ReplayManager::onRoundStart()
@@ -1392,6 +1448,28 @@ int ReplayManager::assistState(float& remaining) const
     if (data->assistActiveAt && GetTickCount64() - data->assistActiveAt < 1000 && !data->isAnalyzerSame(nullptr))
         return 2;
     return 0;
+}
+
+ReplayManager::Status ReplayManager::status() const
+{
+    Status s;
+    if (!data->gameState) return s;
+    s.replay = data->gameState->checkModeReplay();
+    s.rewindPoint = data->rewindPointSet;
+    if (const auto p = takeoverPlayer()) s.takeover = *p;
+    s.assistSeconds = s.replay ? ModMenu::instance().replayAssistSeconds() : 0.0;
+    float left = 0.0f;
+    s.assist = s.replay ? assistState(left) : 0;
+    if (s.assist == 1)
+        s.assistLeftSeconds = static_cast<float>(static_cast<int>(data->assistTarget) - static_cast<int>(data->replayPosition())) / 60.0f;
+    if (const auto* side = data->promptSide)
+    {
+        const auto* eng = asw_engine::get();
+        s.prompt = eng && side == &eng->inputs[0] ? 1 : 2;
+        s.promptStop = !data->isAnalyzerSame(nullptr) && data->isAnalyzerSame(side);
+        s.promptRewinds = s.promptStop && data->isTakeover;
+    }
+    return s;
 }
 
 bool ReplayManager::isRewindDelayActive() const

@@ -113,6 +113,9 @@ namespace Settings {
   SettingsEntry INPUT_BAR = SettingsEntry{
       OptionData{L"Input Bar:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "input_bar", 0};
+  SettingsEntry STATUS_LINE = SettingsEntry{
+      OptionData{L"Status Line:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "status_line", 1};
   SettingsEntry CROSSUP_ENABLED = SettingsEntry{
       OptionData{L"Show Crossup: ", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "crossup_enabled", 0};
@@ -167,12 +170,12 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 25> settings = {
+  std::array<SettingsEntry *, 26> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
       &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
-      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR,
+      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE,
   };
 
   // Layout float settings
@@ -219,8 +222,10 @@ namespace Settings {
 
   FloatSetting REWIND_DELAY_SECONDS = {"rewind_delay_seconds", 0.0, 0.0, 0.0, 60.0, 1.0};
   FloatSetting REPLAY_ASSIST_SECONDS = {"replay_assist_seconds", 0.0, 0.0, 0.0, 5.0, 0.5};
+  FloatSetting STATUS_BG_OPACITY = {"status_bg_opacity", 0.6, 0.6, 0.0, 1.0, 0.05};
+  FloatSetting STATUS_TEXT_SIZE = {"status_text_size", 1.0, 1.0, 0.5, 2.0, 0.05};
 
-  std::array<FloatSetting *, 20> float_settings = {
+  std::array<FloatSetting *, 22> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -241,6 +246,8 @@ namespace Settings {
       &UI_SCALE_TIMELINE,     // 17
       &REWIND_DELAY_SECONDS,  // 18
       &REPLAY_ASSIST_SECONDS, // 19
+      &STATUS_BG_OPACITY,     // 20
+      &STATUS_TEXT_SIZE,      // 21
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
@@ -350,7 +357,7 @@ namespace Settings {
 
   void resetLayout() {
     for (auto *f : float_settings)
-      if (f != &REWIND_DELAY_SECONDS && f != &REPLAY_ASSIST_SECONDS && f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
+      if (f != &REWIND_DELAY_SECONDS && f != &REPLAY_ASSIST_SECONDS && f != &STATUS_BG_OPACITY && f != &STATUS_TEXT_SIZE && f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
     saveConfig();
   }
 }
@@ -751,6 +758,8 @@ namespace {
   std::wstring formatMenuNumber(const FloatSetting& setting) {
     if (&setting == &Settings::REWIND_DELAY_SECONDS)
       return std::to_wstring(static_cast<int>(setting.value));
+    if (&setting == &Settings::STATUS_BG_OPACITY || &setting == &Settings::STATUS_TEXT_SIZE)
+      return std::to_wstring(static_cast<int>(setting.value * 100.0 + 0.5)) + L"%";
     if (&setting == &Settings::REPLAY_ASSIST_SECONDS) {
       if (setting.value <= 0) return L"Off";
       wchar_t buf[16]{};
@@ -888,6 +897,9 @@ namespace {
       } else {
         rows.push_back({L"Rewind", L"Playback delay (seconds)", nullptr, &REWIND_DELAY_SECONDS});
         rows.push_back({L"", L"Replay Assist (seconds)", nullptr, &REPLAY_ASSIST_SECONDS});
+        rows.push_back({L"", L"Status line", &STATUS_LINE});
+        rows.push_back({L"", L"Status line background", nullptr, &STATUS_BG_OPACITY});
+        rows.push_back({L"", L"Status line text size", nullptr, &STATUS_TEXT_SIZE});
         const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
         rows[hotkeysBegin].section = L"Hotkeys";
@@ -1218,6 +1230,13 @@ void ModMenu::draw() {
       status.drawRect(-180, y - 12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
       status.drawOutlinedText(-165, y, FString(label.c_str()), 1.4);
     };
+    const auto rs = ReplayManager::instance().status();
+    if (rs.prompt) {
+      const std::wstring side = L"P" + std::to_wstring(rs.prompt);
+      drawStatus(rs.promptStop ? (rs.promptRewinds ? L"Stop " + side + L", back to the rewind point?" : L"Stop taking over " + side + L"?")
+                               : L"Take over " + side + L"?");
+      drawStatus(binds::keyName(binds::key[rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2]) + L" yes   Esc no");
+    }
     if (const auto player = ReplayManager::instance().takeoverPlayer())
       drawStatus(L"Takeover: P" + std::to_wstring(*player));
     float assistLeft = 0.0f;
@@ -1802,6 +1821,9 @@ void ModMenu::buildView() {
 }
 
 bool ModMenu::inputBarEnabled() const { return Settings::INPUT_BAR.value != 0; }
+bool ModMenu::statusLineEnabled() const { return Settings::STATUS_LINE.value != 0; }
+float ModMenu::statusLineOpacity() const { return static_cast<float>(Settings::STATUS_BG_OPACITY.value); }
+float ModMenu::statusLineSize() const { return static_cast<float>(Settings::STATUS_TEXT_SIZE.value); }
 bool ModMenu::barEnabled() const { return Settings::FRAMEBAR.value; }
 bool ModMenu::hitboxEnabled() const { return Settings::HITBOXES.value; }
 bool ModMenu::fadeEnabled() const { return Settings::FADE.value; }

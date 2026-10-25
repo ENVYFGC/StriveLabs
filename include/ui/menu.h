@@ -181,6 +181,9 @@ public:
   static std::string overlayFont();       // meters and frame bar font file in StriveLabs_fonts, "" = Barlow (any thread)
   bool barEnabled() const;
   bool inputBarEnabled() const;
+  bool statusLineEnabled() const;
+  float statusLineOpacity() const;  // black background behind the status line, 0..1
+  float statusLineSize() const;     // status line text size, 1 = normal
   bool hitboxEnabled() const;
   bool fadeEnabled() const;
   bool delimEnabled() const;

@@ -160,10 +160,11 @@ namespace menu_ui {
     return ImGui::InvisibleButton(id, ImVec2(std::max(b.x - a.x, 1.0f), std::max(b.y - a.y, 1.0f)));
   }
 
-  void text(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s) {
-    dl->AddText(f, f->FontSize, p, col, s.c_str());
+  // size 0 = the font's own size
+  void text(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s, float size = 0.0f) {
+    dl->AddText(f, size > 0.0f ? size : f->FontSize, p, col, s.c_str());
   }
-  void text_outlined(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s) {
+  void text_outlined(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s, float size = 0.0f) {
     const float width = std::max(S, 1.0f);
     for (int dy = -1; dy <= 1; dy++)
       for (int dx = -1; dx <= 1; dx++)
@@ -171,7 +172,7 @@ namespace menu_ui {
           // Equal radius on axes and diagonals, rather than a square stencil.
           const float step = (dx && dy) ? width * 0.70710678f : width;
           const int first_vertex = dl->VtxBuffer.Size;
-          text(dl, f, p, RGBA(0, 0, 0), s);
+          text(dl, f, p, RGBA(0, 0, 0), s, size);
           // AddText snaps positions to pixels. Offset the emitted vertices so
           // fractional shifts stay symmetric and are filtered by the renderer.
           for (int i = first_vertex; i < dl->VtxBuffer.Size; i++) {
@@ -179,7 +180,7 @@ namespace menu_ui {
             dl->VtxBuffer[i].pos.y += dy * step;
           }
         }
-    text(dl, f, p, col, s);
+    text(dl, f, p, col, s, size);
   }
   float text_w(ImFont* f, const std::string& s) { return f->CalcTextSizeA(f->FontSize, FLT_MAX, 0.0f, s.c_str()).x; }
   std::string upper(std::string s) {
@@ -964,9 +965,60 @@ namespace menu_ui {
     }
   }
 
+  // Takeover state in one line, in its own window: dragged while the menu is open,
+  // and the place is kept like the other windows. Starts above P1's health bar.
+  void draw_status_line(const ReplayManager::Status& s, bool interactive) {
+    std::string t = s.replay ? "Replay" : "Training";
+    auto add = [&t](const std::string& part) { t += "  \xC2\xB7  " + part; };
+    if (s.rewindPoint) add("Rewind point set");
+    char buf[64];
+    if (s.assist == 1) { snprintf(buf, sizeof(buf), "Assist: Standby %.1f s", std::max(0.0f, s.assistLeftSeconds)); add(buf); }
+    else if (s.assist == 2) add("Assist: Active");
+    else if (s.assistSeconds > 0.0) { snprintf(buf, sizeof(buf), "Assist %.1f s", s.assistSeconds); add(buf); }
+    if (s.takeover) { snprintf(buf, sizeof(buf), "Takeover: P%d", s.takeover); add(buf); }
+    else if (s.replay) add("Playback");
+
+    // Drawn from the larger input font, so it stays sharp when made bigger.
+    ImFont* font = f_input ? f_input : ImGui::GetFont();
+    const float size = font->FontSize * 0.75f * std::clamp(ModMenu::instance().statusLineSize(), 0.5f, 2.0f);
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(screen.x * (340.0f / 1920.0f), screen.y * (66.0f / 1080.0f)), ImGuiCond_FirstUseEver);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!interactive) flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs;
+    // Black at the chosen opacity. While the menu is open it never goes fully clear,
+    // so there is something to grab.
+    float bg = std::clamp(ModMenu::instance().statusLineOpacity(), 0.0f, 1.0f);
+    if (interactive) bg = std::max(bg, 0.3f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6 * S, 3 * S));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, bg));
+    if (ImGui::Begin("Status##sl_status", nullptr, flags)) {
+      const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, t.c_str());
+      text_outlined(ImGui::GetWindowDrawList(), font, ImGui::GetCursorScreenPos(), TEXT, t, size);
+      ImGui::Dummy(extent);
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+  }
+
   void draw_replay_status(const MenuView& v) {
     int row = 0;
-    if (v.takeover_player) {
+    const auto rs = ReplayManager::instance().status();
+    const bool status_line = ModMenu::instance().statusLineEnabled();
+    if (status_line) draw_status_line(rs, v.showing);
+    if (rs.prompt) {
+      char q[96], keys[64];
+      if (!rs.promptStop) snprintf(q, sizeof(q), "Take over P%d?", rs.prompt);
+      else if (rs.promptRewinds) snprintf(q, sizeof(q), "Stop P%d and go back to the rewind point?", rs.prompt);
+      else snprintf(q, sizeof(q), "Stop taking over P%d?", rs.prompt);
+      const std::wstring key = binds::keyName(binds::key[rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2]);
+      snprintf(keys, sizeof(keys), "%s yes     Esc no", std::string(key.begin(), key.end()).c_str());
+      draw_status_message(q, row++);
+      draw_status_message(keys, row++);
+    }
+    if (v.takeover_player && !status_line) {
       char label[32];
       snprintf(label, sizeof(label), "Takeover: P%d", *v.takeover_player);
       draw_status_message(label, row++);
