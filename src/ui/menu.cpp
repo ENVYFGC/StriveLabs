@@ -5,26 +5,14 @@
 #endif
 #include <Windows.h>
 #include "recordings.h"
+#include "replay_manager.h"
+#include "timeline.h"
 #include "combo_log.h"
 #include "imgui_overlay.h"
 #include <mutex>
 #include <atomic>
 #include <thread>
 #include <commdlg.h>
-
-// Defined in dllmain.cpp: pulls this round's inputs for a side out of the
-// replay buffer. Replay peers are one per seat: 0 = P1, 1 = P2.
-std::vector<uint16_t> captureCurrentRound(int peer);
-bool replayCaptureStart(int peer, std::wstring& err);
-std::vector<uint16_t> replayCaptureStop(std::wstring& err);
-bool replayCaptureActive();
-bool replayCaptureFull();
-uint32_t replayCaptureFrames();
-void timelinePressHotkey(int action);
-void timelineSetPaused(bool paused);
-bool timelinePaused();
-void timelineStep();
-int timelineMode();
 
 #include <vector>
 #include <string>
@@ -226,7 +214,9 @@ namespace Settings {
   FloatSetting UI_SCALE_BAR      = {"ui_scale_bar",      1.00, 1.00, 0.50, 2.00, 0.05};
   FloatSetting UI_SCALE_TIMELINE = {"ui_scale_timeline", 1.00, 1.00, 0.50, 2.00, 0.05};
 
-  std::array<FloatSetting *, 18> float_settings = {
+  FloatSetting REWIND_DELAY_SECONDS = {"rewind_delay_seconds", 0.0, 0.0, 0.0, 60.0, 1.0};
+
+  std::array<FloatSetting *, 19> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -245,6 +235,7 @@ namespace Settings {
       &UI_SCALE_METERS,       // 15
       &UI_SCALE_BAR,          // 16
       &UI_SCALE_TIMELINE,     // 17
+      &REWIND_DELAY_SECONDS,  // 18
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
@@ -354,7 +345,7 @@ namespace Settings {
 
   void resetLayout() {
     for (auto *f : float_settings)
-      if (f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
+      if (f != &REWIND_DELAY_SECONDS && f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
     saveConfig();
   }
 }
@@ -551,7 +542,7 @@ namespace {
 
   void finishCapture() {
     std::wstring err;
-    auto frames = replayCaptureStop(err);
+    auto frames = ReplayManager::instance().stopCapture(err);
     if (frames.empty()) { g_rec_status = err.empty() ? L"Nothing was captured" : err; return; }
     char stamp[32] = "";
     { const std::time_t t = std::time(nullptr); std::tm tm{};
@@ -572,9 +563,9 @@ namespace {
   }
 
   void toggleCapture() {
-    if (replayCaptureActive()) { finishCapture(); return; }
+    if (ReplayManager::instance().captureActive()) { finishCapture(); return; }
     std::wstring err;
-    if (!replayCaptureStart(g_cap_side, err)) { g_rec_status = err; return; }
+    if (!ReplayManager::instance().startCapture(g_cap_side, err)) { g_rec_status = err; return; }
     g_rec_status = std::wstring(L"Capturing ") + (g_cap_side == 0 ? L"P1" : L"P2") +
                    L". Press again to stop, or it stops at 40 s.";
   }
@@ -752,6 +743,12 @@ namespace {
     return buf;
   }
 
+  std::wstring formatMenuNumber(const FloatSetting& setting) {
+    if (&setting == &Settings::REWIND_DELAY_SECONDS)
+      return std::to_wstring(static_cast<int>(setting.value));
+    return formatMenuFloat(setting.value);
+  }
+
   static const Palette color_palettes[] = {
       Palette{// SF6
               convSRGB(201, 128, 0, 255), convSRGB(0, 0, 0, 255),
@@ -877,8 +874,10 @@ namespace {
         for (int action = 0; action < binds::COUNT; action++)
           if (!isTakeoverHotkey(action)) hotkey(action);
       } else {
+        rows.push_back({L"Rewind", L"Playback delay (seconds)", nullptr, &REWIND_DELAY_SECONDS});
+        const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
-        rows.front().section = L"Hotkeys";
+        rows[hotkeysBegin].section = L"Hotkeys";
         rows.push_back({L"Replay takeover", L"Use these buttons in takeover", nullptr, nullptr, SettingsAction::TakeoverToggle});
         for (int action = 0; action < binds::G_COUNT; action++) {
           SettingsRowDef row; row.label = binds::G_LABELS[action]; row.capture = binds::GAME_BASE + action;
@@ -1049,7 +1048,7 @@ void ModMenu::update(PressedKeys data) {
     if (c.type == MenuClick::Type::Move || c.type >= MenuClick::Type::TlRewind ||
         (binds::capturing < 0 && (is_showing || c.page >= 0))) applyClick(c);
   applyBrowsePick();
-  if (replayCaptureFull()) finishCapture();
+  if (ReplayManager::instance().captureFull()) finishCapture();
   updateInner(data);
   buildView();
 }
@@ -1188,7 +1187,30 @@ void ModMenu::updateInner(PressedKeys data) {
   }
 }
 
+void ModMenu::notifyRewindPointCreated() {
+  rewind_point_notification_until = GetTickCount64() + 2000;
+}
+
+bool ModMenu::isRewindPointNotificationVisible() const {
+  return GetTickCount64() < rewind_point_notification_until.load();
+}
+
 void ModMenu::draw() {
+  if (!imgui_overlay::running()) {
+    DrawContext status(0.5, 0.25);
+    status.update();
+    int row = 0;
+    auto drawStatus = [&](const std::wstring& label) {
+      const int y = row++ * 72;
+      status.drawRect(-180, y - 12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
+      status.drawOutlinedText(-165, y, FString(label.c_str()), 1.4);
+    };
+    if (const auto player = ReplayManager::instance().takeoverPlayer())
+      drawStatus(L"Takeover: P" + std::to_wstring(*player));
+    const int seconds = ReplayManager::instance().rewindCountdownSeconds();
+    if (seconds > 0) drawStatus(L"Playback in " + std::to_wstring(seconds) + L" s");
+    if (isRewindPointNotificationVisible()) drawStatus(L"Rewind point created");
+  }
   if (!is_showing) return;
   hud_panel = !imgui_overlay::running();
   if (!hud_panel) {
@@ -1326,8 +1348,8 @@ void ModMenu::draw() {
                                               + L"/" + std::to_wstring(recordings::streamLen()) + L")")
                                            : std::wstring(L">>  start  (no length limit)")},
       {L"Capture Side",                g_cap_side == 0 ? L"<     1P     >" : L"<     2P     >"},
-      {L"Capture from Replay",         replayCaptureActive()
-                                           ? (L">>  stop  (" + secondsText(replayCaptureFrames()) + L" / 40 s)")
+      {L"Capture from Replay",         ReplayManager::instance().captureActive()
+                                           ? (L">>  stop  (" + secondsText(ReplayManager::instance().captureFrames()) + L" / 40 s)")
                                            : std::wstring(L">>  start  (40 s max)")},
     };
     for (size_t i = 0; i < RECORDINGS_ROW_COUNT; i++) {
@@ -1369,7 +1391,7 @@ void ModMenu::draw() {
           : binds::keyName(game ? binds::gkey[id] : binds::key[id]) + L"  |  " +
             binds::padName(game ? binds::gpad[id] : binds::pad[id]);
       } else if (row.setting) value = row.setting->display.values[row.setting->value];
-      else if (row.number) value = formatMenuFloat(row.number->value);
+      else if (row.number) value = formatMenuNumber(*row.number);
       else if (row.action == SettingsAction::TakeoverToggle)
         value = binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >";
       tool.drawOutlinedText(label_left, cy + 8.0, FString(row.label), LABEL_SCALE);
@@ -1511,6 +1533,7 @@ float ModMenu::uiScale(int which) {
 }
 
 void ModMenu::hide() {
+  rewind_point_notification_until = 0;
   if (!is_showing) return;
   is_showing = false;
   buildView();
@@ -1545,12 +1568,17 @@ void ModMenu::applyClick(const MenuClick& c) {
   }
   switch (c.type) {  // timeline window
     case MenuClick::Type::TlRewind:
-      timelinePressHotkey(binds::LOAD);
-      if (timelinePaused()) timelineStep();  // show the restored moment
+      Timeline::instance().pressHotkey(binds::LOAD);
       return;
-    case MenuClick::Type::TlSetPoint: timelinePressHotkey(binds::SAVE); return;
-    case MenuClick::Type::TlPlay:     timelineSetPaused(!timelinePaused()); return;
-    case MenuClick::Type::TlStep:     if (timelinePaused()) timelineStep(); return;
+    case MenuClick::Type::TlSetPoint: Timeline::instance().pressHotkey(binds::SAVE); return;
+    case MenuClick::Type::TlPlay:
+      if (!ReplayManager::instance().isRewindDelayActive())
+        Timeline::instance().setPaused(!Timeline::instance().isPaused());
+      return;
+    case MenuClick::Type::TlStep:
+      if (!ReplayManager::instance().isRewindDelayActive() && Timeline::instance().isPaused())
+        Timeline::instance().advanceFrame();
+      return;
     case MenuClick::Type::TlRecord:   toggleCapture(); return;
     case MenuClick::Type::TlShow:     setTimelineOn(c.b != 0); return;
     default: break;
@@ -1667,7 +1695,7 @@ void ModMenu::buildView() {
         r.kind = MenuRowView::Kind::Number;
         if (f->id_.rfind("ui_", 0) == 0) {
           r.value = std::to_string(static_cast<int>(std::lround(f->value * 100))) + "%";
-        } else r.value = utf8(formatMenuFloat(f->value));
+        } else r.value = utf8(formatMenuNumber(*f));
       } else {
         r.kind = MenuRowView::Kind::Action;
         r.value = def.action == SettingsAction::PickColor ? "Pick" : "Reset";
@@ -1696,7 +1724,7 @@ void ModMenu::buildView() {
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Capture side";
       r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
     row(MenuRowView::Kind::Action, "Capture from replay",
-        replayCaptureActive() ? utf8(L"Stop (" + secondsText(replayCaptureFrames()) + L" / 40 s)") : std::string("Start"));
+        ReplayManager::instance().captureActive() ? utf8(L"Stop (" + secondsText(ReplayManager::instance().captureFrames()) + L" / 40 s)") : std::string("Start"));
     status = utf8(g_rec_status);
   } else if (shown == MenuPage::Layout) {
     for (size_t i = 0; i < LAYOUT_SUB_COUNT; i++) row(MenuRowView::Kind::Open, utf8(LAYOUT_SUBS[i].label), "Open");
@@ -1727,11 +1755,12 @@ void ModMenu::buildView() {
     v.opacity = static_cast<float>(Settings::UI_OPACITY.value);
     v.picker_seq = g_picker_seq;
   }
-  v.mode = timelineMode();
+  v.mode = Timeline::instance().mode();
   v.timeline_on = timelineOn();
-  v.paused = timelinePaused();
-  v.recording = replayCaptureActive();
-  v.rec_frames = replayCaptureFrames();
+  v.paused = Timeline::instance().isPaused();
+  v.takeover_player = ReplayManager::instance().takeoverPlayer();
+  v.recording = ReplayManager::instance().captureActive();
+  v.rec_frames = ReplayManager::instance().captureFrames();
   v.rec_status = utf8(g_rec_status);
   if (v.mode != 0) {
     static bool scanned = false;  // the timeline lists files before the Recordings page is ever opened
@@ -1763,6 +1792,8 @@ bool ModMenu::delimEnabled() const { return Settings::DELIM.value; }
 bool ModMenu::cancelEnabled() const { return false; }
 bool ModMenu::dashEnabled() const { return Settings::SHOW_DASH_FRAMES.value; }
 bool ModMenu::crossupEnabled() const { return Settings::CROSSUP_ENABLED.value; }
+int ModMenu::rewindDelaySeconds() const { return static_cast<int>(Settings::REWIND_DELAY_SECONDS.value); }
+
 int ModMenu::pauseType() const { return Settings::PAUSE_TYPE.value; }
 
 TensionOptions ModMenu::getTensionOptions() const {

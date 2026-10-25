@@ -2,7 +2,10 @@
 
 #include "draw_utils.h"
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -116,6 +119,7 @@ struct MenuView {
   int mode = 0;              // 0 = other, 1 = training, 2 = replay
   bool timeline_on = true;
   bool paused = false;
+  std::optional<int> takeover_player;
   bool recording = false;
   unsigned rec_frames = 0;
   std::string rec_status;
@@ -147,6 +151,7 @@ class ModMenu {
   bool is_showing = false;
   int cursor_position = 0;
   size_t current_page = 0;
+  std::atomic<uint64_t> rewind_point_notification_until{0};
 
   void changeSetting(size_t idx, bool right=true);
   void buildView();
@@ -162,6 +167,9 @@ public:
 
   void update(PressedKeys data);
   void draw();
+
+  void notifyRewindPointCreated();
+  bool isRewindPointNotificationVisible() const;
 
   bool isShowing() const { return is_showing; }
   void hide();                           // game thread: close the menu (left training / replay)
@@ -179,7 +187,7 @@ public:
   bool dashEnabled() const;
   int pauseType() const;
   int delayAmount() const;
-  // 0 = off, else frames between automatic rewind points.
+  int rewindDelaySeconds() const;
   bool crossupEnabled() const;
   TensionOptions getTensionOptions() const;
   LayoutPositions getLayoutPositions() const;

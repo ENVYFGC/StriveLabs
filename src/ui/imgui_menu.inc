@@ -830,6 +830,36 @@ namespace menu_ui {
     if (!open) preview_rgb = 0;
   }
 
+  void draw_status_message(const char* label, int row) {
+    ImFont* font = f_title ? f_title : ImGui::GetFont();
+    const float size = 30.0f * S;
+    const ImVec2 text = font->CalcTextSizeA(size, FLT_MAX, 0.0f, label);
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    const ImVec2 pos(screen.x * 0.5f - text.x * 0.5f, screen.y * 0.25f + row * 72.0f * S);
+    const float pad = 14.0f * S;
+    auto* dl = ImGui::GetForegroundDrawList();
+    dl->AddRectFilled(ImVec2(pos.x - pad, pos.y - pad),
+                      ImVec2(pos.x + text.x + pad, pos.y + text.y + pad), OVERLAY_BG);
+    dl->AddText(font, size, pos, TEXT, label);
+  }
+
+  void draw_replay_status(const MenuView& v) {
+    int row = 0;
+    if (v.takeover_player) {
+      char label[32];
+      snprintf(label, sizeof(label), "Takeover: P%d", *v.takeover_player);
+      draw_status_message(label, row++);
+    }
+    const int seconds = ReplayManager::instance().rewindCountdownSeconds();
+    if (seconds > 0) {
+      char label[64];
+      snprintf(label, sizeof(label), "Playback in %d s", seconds);
+      draw_status_message(label, row++);
+    }
+    if (ModMenu::instance().isRewindPointNotificationVisible())
+      draw_status_message("Rewind point created", row++);
+  }
+
   void draw() {
     // Outside a training or replay fight (menus, loading, character select): show nothing
     if (!modScreenActive()) { g_timeline_visible = false; return; }
@@ -839,6 +869,7 @@ namespace menu_ui {
     draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
     draw_timeline(v);
     use(E_MENU);
+    draw_replay_status(v);
     if (!v.showing) return;
     ImGuiIO& io = ImGui::GetIO();
     const float pad = PAD * S;
