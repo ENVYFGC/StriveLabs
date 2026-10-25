@@ -127,7 +127,7 @@ namespace menu_ui {
     f_framebar = add_ov("Barlow-Medium.ttf", 20.0f, SE[E_BAR]);
     f_framebar_stats = add_ov("Barlow-Medium.ttf", 24.0f, SE[E_BAR]);
     f_bar_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_BAR]);
-    f_input = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_BAR]);
+    f_input = add_ov("Barlow-SemiBold.ttf", 32.0f, SE[E_BAR]);
     f_meters = add_ov("Barlow-Medium.ttf", 32.0f, SE[E_METERS]);
     f_meters_bold = add_ov("Barlow-SemiBold.ttf", 32.0f, SE[E_METERS]);
     f_meters_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_METERS]);
@@ -584,17 +584,18 @@ namespace menu_ui {
       auto with_alpha = [](ImU32 c, int a) { return (c & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24); };
       auto inputs = [&](int row, float top) {
         dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, top + in_h), fb.bg);
+        // Three lanes of the same size in every row: direction, buttons, macro.
         // Symbols only on the frame an input starts; while it is held, a thin line
-        // carries on in its lane. The next cells are usually empty, so a symbol may
-        // be up to two cells wide.
-        const float u = in_h / 5.0f;
-        const float sym = std::min(u, cell * 2.0f);
+        // carries on. Buttons active on the same frame share the button lane, so only
+        // that frame gets smaller letters. The next cells are usually empty, so a
+        // symbol may spread into them.
+        const float u = in_h / 3.0f;
+        const float sym = std::min(u * 0.9f, cell * 2.6f);
         const float fs = std::min(f_input->FontSize, sym * 1.1f);
         const float thin = std::max(1.0f, u * 0.08f);
         auto hold_line = [&](float left, float ly, ImU32 col) {
           dl->AddRectFilled(ImVec2(left - sp, ly - thin), ImVec2(left + seg_w, ly + thin), col);
         };
-        int lane_of[5] = {-1, -1, -1, -1, -1};
         int prev_dir = -1;
         unsigned short prev_macro = 0;
         int hovered = -1;
@@ -602,7 +603,6 @@ namespace menu_ui {
           const auto& c = fb.rows[row][i];
           if (!c.on || c.dir == 0) {
             prev_dir = -1; prev_macro = 0;
-            for (int& l : lane_of) l = -1;
             continue;
           }
           const float left = x0 + cell * i + sp, cx = left + seg_w * 0.5f;
@@ -623,28 +623,20 @@ namespace menu_ui {
                                   ImVec2(tip.x - vx * hw + vy * hw * 0.8f, tip.y - vy * hw - vx * hw * 0.8f), TEXT);
           }
           prev_dir = c.dir;
-          // Buttons: held ones keep their lane, new presses take a free one
-          bool taken[3] = {};
-          for (int k = 0; k < 5; k++) {
-            const unsigned short bit = BTNS[k].bit;
-            if (!((c.held | c.pressed) & bit)) lane_of[k] = -1;
-            else if (!(c.pressed & bit) && lane_of[k] >= 0) taken[lane_of[k]] = true;
-          }
-          for (int k = 0; k < 5; k++) {
-            const auto& b = BTNS[k];
+          // Buttons: every active one gets an equal share of the button lane, in P K S H D order
+          int n = 0;
+          for (const auto& b : BTNS) if ((c.held | c.pressed) & b.bit) n++;
+          const float share = u / static_cast<float>(std::max(n, 1));
+          const float bfs = std::min(fs, share * 1.1f);
+          int slot = 0;
+          for (const auto& b : BTNS) {
             if (!((c.held | c.pressed) & b.bit)) continue;
-            const bool fresh = (c.pressed & b.bit) != 0;
-            if (fresh || lane_of[k] < 0) {
-              lane_of[k] = -1;
-              for (int l = 0; l < 3; l++) if (!taken[l]) { lane_of[k] = l; taken[l] = true; break; }
-              if (lane_of[k] < 0) continue;  // more than three at once: the tooltip has them
-            }
-            const float ly = top + u * (1 + lane_of[k]);
-            if (fresh) {
-              const float tw = f_input->CalcTextSizeA(fs, FLT_MAX, 0.0f, b.s).x;
-              dl->AddText(f_input, fs, ImVec2(cx - tw * 0.5f, ly + (u - fs) * 0.5f), b.col, b.s);
+            const float ly = top + u + share * slot++;
+            if (c.pressed & b.bit) {
+              const float tw = f_input->CalcTextSizeA(bfs, FLT_MAX, 0.0f, b.s).x;
+              dl->AddText(f_input, bfs, ImVec2(cx - tw * 0.5f, ly + (share - bfs) * 0.5f), b.col, b.s);
             } else {
-              hold_line(left, ly + u * 0.5f, with_alpha(b.col, 150));
+              hold_line(left, ly + share * 0.5f, with_alpha(b.col, 150));
             }
           }
           // Macro: a box on the frame it starts, a line while held
@@ -654,7 +646,7 @@ namespace menu_ui {
             macro = m.bit;
             const float by = top + in_h - u;
             if ((c.pressed & m.bit) || prev_macro != m.bit) {
-              const float bw = std::min(sym, cell * 2.0f - sp);
+              const float bw = std::min(sym, cell * 2.6f - sp);
               dl->AddRectFilled(ImVec2(cx - bw * 0.5f, by + (u - sym) * 0.5f), ImVec2(cx + bw * 0.5f, by + (u + sym) * 0.5f), m.col);
               const float tw = f_input->CalcTextSizeA(fs, FLT_MAX, 0.0f, m.s).x;
               dl->AddText(f_input, fs, ImVec2(cx - tw * 0.5f, by + (u - fs) * 0.5f), RGBA(255, 255, 255), m.s);
