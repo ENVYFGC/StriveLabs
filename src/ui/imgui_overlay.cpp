@@ -158,16 +158,21 @@ namespace {
   HRESULT __stdcall hook_present(IDXGISwapChain* swap, UINT sync, UINT flags) {
     if (g_running && !modScreenActive()) return g_present(swap, sync, flags);
     if (!g_running && !g_init_failed) {
-      if (init(swap)) {
-        g_running = true;
-        COMBO_LOG("imgui: running");
-      } else {
-        g_init_failed = true;
-        COMBO_LOG("imgui: init failed, using the HUD menu");
+      std::lock_guard<std::mutex> once(g_frame_mutex);  // two threads must not both set up
+      if (!g_running && !g_init_failed) {
+        if (init(swap)) {
+          g_running = true;
+          COMBO_LOG("imgui: running");
+        } else {
+          g_init_failed = true;
+          COMBO_LOG("imgui: init failed, using the HUD menu");
+        }
       }
     }
-    std::unique_lock<std::mutex> frame(g_frame_mutex, std::try_to_lock);
-    if (g_running && g_rtv && frame.owns_lock() && is_game_window(swap)) {
+    // The lock is let go before the real Present, which may resize on this thread.
+    std::unique_lock<std::mutex> frame;
+    if (g_running && g_rtv && is_game_window(swap)
+        && (frame = std::unique_lock<std::mutex>(g_frame_mutex, std::try_to_lock)).owns_lock()) {
       // A window size or the overlay font changed: rebuild the fonts, so text stays sharp
       bool rebuild = ModMenu::overlayFont() != menu_ui::loaded_font;
       for (int e = 0; e < menu_ui::E_COUNT; e++)
@@ -188,6 +193,7 @@ namespace {
       ImGui::Render();
       g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
       ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+      frame.unlock();
     }
     return g_present(swap, sync, flags);
   }

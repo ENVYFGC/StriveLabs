@@ -533,7 +533,7 @@ namespace menu_ui {
       float y = f.o.y + f.head + 3 * S;
       // Input bar: a row under each bar with five lanes (arrow, three letters,
       // macro box), sharing the height with the bars.
-      const float avail = f.o.y + f.h - 4 * S - y - 2 * lh - gap;
+      const float avail = std::max(0.0f, f.o.y + f.h - 4 * S - y - 2 * lh - gap);
       const float in_h = fb.inputs ? std::min((x1 - x0) / 120.0f * 8.0f, avail * 0.35f) : 0.0f;
       const float bar_h = std::max((avail - 2 * (in_h + (fb.inputs ? gap : 0))) * 0.5f, 6 * S);
       // Like the HUD bar, fit 120 cells plus a trailing gap into the background.

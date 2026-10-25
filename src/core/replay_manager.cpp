@@ -232,6 +232,7 @@ struct ReplayManager::Data
     RingSave ring[kRingSlots]{};
     int ringNext = 0;
     uint32_t ringLast = 0;
+    bool haveRingLast = false;
     int assistSlot = -1;          // ring slot picked by F6, -1 = plain rewind
     uint32_t assistTarget = 0;    // replay position at F6
     uint32_t assistFrom = 0;      // replay position of the picked save
@@ -258,20 +259,35 @@ struct ReplayManager::Data
         for (auto& r : ring) r.valid = false;
         ringNext = 0;
         ringLast = 0;
+        haveRingLast = false;
         assistSlot = -1;
         assistStandby = false;
+    }
+
+    // The ring lives in the game's backup slots 0-15 and F6 uses 18-19, so all 20 must exist.
+    static bool backupSlotsOk(asw_rollback* rollback)
+    {
+        return rollback && rollback->MaxBackupFrame >= 20 && rollback->BackupData.Num() >= 20;
     }
 
     void ringSave()
     {
         const int want = assistFrames();
         auto rollback = asw_rollback::get();
-        if (want <= 0 || !rollback || !manager || analyzer || diverged || assistStandby) return;
+        if (want <= 0 || !backupSlotsOk(rollback) || !manager) return;
         const uint32_t pos = replayPosition();
-        if (pos < ringLast) clearRing();  // the replay was moved back with its own controls
+        // Moved back with the replay's own controls: the fight follows the recording
+        // again from there, and saves ahead of it are no use.
+        if (haveRingLast && pos < ringLast)
+        {
+            clearRing();
+            diverged = false;
+        }
+        // Only while the round is being fought: no saves across a round change.
+        if (analyzer || diverged || assistStandby || !gameState->roundActive) return;
         // Spacing so the ring always reaches back far enough, with one slot locked by F6.
         const uint32_t every = (std::max)(6, (want + kRingSlots - 3) / (kRingSlots - 2));
-        if (pos < ringLast + every && ringLast != 0) return;
+        if (haveRingLast && pos < ringLast + every) return;
         if (ringNext == assistSlot) ringNext = (ringNext + 1) % kRingSlots;
         const int slot = ringNext;
         ringNext = (ringNext + 1) % kRingSlots;
@@ -286,6 +302,7 @@ struct ReplayManager::Data
         ring[slot].position = pos;
         for (int i = 0; i < 6; i++) ring[slot].heads[i] = manager->m_ReplayBuffer[i].m_ReadHead;
         ringLast = pos;
+        haveRingLast = true;
     }
 
     void pickAssistSave()
@@ -294,7 +311,12 @@ struct ReplayManager::Data
         assistStandby = false;
         pointDiverged = diverged;
         const int want = assistFrames();
-        if (want <= 0 || diverged) return;
+        if (want <= 0) return;
+        if (diverged)
+        {
+            COMBO_LOG("assist: F6 while the fight differs from the replay, plain rewind point");
+            return;
+        }
         assistTarget = replayPosition();
         for (int i = 0; i < kRingSlots; i++)
             if (ring[i].valid && ring[i].position + want <= assistTarget
@@ -306,12 +328,21 @@ struct ReplayManager::Data
 
     void updateAssist()
     {
-        if (!assistStandby || replayPosition() < assistTarget) return;
+        if (!assistStandby) return;
+        const uint32_t pos = replayPosition();
+        // Moved with the replay's own controls during standby: hand nothing over.
+        if (pos < assistFrom || pos > assistTarget + 4)
+        {
+            assistStandby = false;
+            return;
+        }
+        if (pos < assistTarget) return;
         assistStandby = false;
         if (!assistSide) return;
         analyzer = assistSide;
         diverged = true;
         assistActiveAt = GetTickCount64();
+        COMBO_LOG("assist: active at " + std::to_string(pos));
     }
 
 public:
@@ -518,6 +549,7 @@ public:
             {
                 auto*& fx = *reinterpret_cast<uint8_t**>(e + kFxLink);
                 const bool same = b && fx && b->fx == fx && !(fx[0x432] & 0x80)
+                    && *reinterpret_cast<void**>(fx + 0x668) == e
                     && !memcmp(b->fxName, e + kFxName, 32) && !memcmp(b->fxStarted, e + kFxStarted, 36);
                 if (!same)
                 {
@@ -542,16 +574,22 @@ public:
                 }
             }
 
-            // Model. Shared models are put back by the game itself.
-            if (e[kModelShared]) continue;
-            auto* model = *reinterpret_cast<void**>(e + kModelLink);
-            const bool want = e[kModelSaved] && !e[kModelTeam];
-            const bool same = b && model && b->model == model
+            // Model. Shared models are put back by the game itself; team models only
+            // exist in 3v3 and have no link function here, so both are left alone.
+            if (e[kModelShared] || e[kModelTeam]) continue;
+            auto*& model = *reinterpret_cast<uint8_t**>(e + kModelLink);
+            const bool want = e[kModelSaved] != 0;
+            const bool linkedBack = model && *reinterpret_cast<void**>(model + 0x29C98) == e;
+            const bool same = b && linkedBack && b->model == model
                 && !memcmp(b->modelName, e + kModelName, 32) && !memcmp(b->modelStarted, e + kModelStarted, 36);
             if (model && (!want || !same))
             {
                 using vfn_t = void (*)(void*);
-                (*reinterpret_cast<vfn_t*>(*reinterpret_cast<uintptr_t*>(e) + 0xB8))(e);  // the object's own unlink
+                auto unlink = *reinterpret_cast<vfn_t*>(*reinterpret_cast<uintptr_t*>(e) + 0xB8);  // the object's own unlink
+                // Only a model that points back at this object is ours to unlink;
+                // otherwise just drop the link and leave the model to its owner.
+                if (linkedBack && is_ptr_in_game_module(reinterpret_cast<void*>(unlink))) unlink(e);
+                else model = nullptr;
                 modelsLetGo++;
             }
             if (want && !same)
@@ -686,6 +724,7 @@ public:
     void restoreRewindPoint(int slot = 19)
     {
         auto rollback = asw_rollback::get();
+        if (!backupSlotsOk(rollback)) return;
         const int max = rollback->MaxBackupFrame;
         rollback->CurrentBackupDataIndex = (slot + 1) % max;
         rollback->RollbackFrame = 1;
@@ -709,13 +748,15 @@ public:
 
     bool restoreAssist()
     {
-        if (!gameState->checkModeReplay() || assistSlot < 0 || !ring[assistSlot].valid) return false;
+        if (!gameState->checkModeReplay() || assistFrames() <= 0 || !assistSide
+            || assistSlot < 0 || !ring[assistSlot].valid) return false;
         const RingSave& save = ring[assistSlot];
         restoreRewindPoint(assistSlot);
         for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = save.heads[i];
         analyzer = nullptr;
         diverged = false;
         ringLast = save.position;
+        haveRingLast = true;
         assistFrom = save.position;
         assistStandby = true;
         resetRewindDelay();
@@ -753,12 +794,20 @@ public:
         {
             keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
             const bool explicitRewind = rewindRequested || !gameState->checkModeReplay();
+            // Assist only for F9 with a side picked. Turning takeover off goes back to
+            // the F6 point itself, like before.
+            const bool assist = rewindRequested;
             loadState = false;
             rewindRequested = false;
-            if (!restoreAssist())
+            COMBO_LOG(std::string("load: ") + (assist ? "F9" : "takeover off") + ", side "
+                      + (assistSide ? "set" : "none") + ", analyzer " + (analyzer ? "set" : "none"));
+            if (!assist || !restoreAssist())
             {
                 restoreRewindPoint();
                 diverged = pointDiverged;
+                // Our own jump back: keep the ring, only restart its spacing from here.
+                ringLast = replayPosition();
+                haveRingLast = gameState->checkModeReplay();
                 if (explicitRewind) beginRewindDelay();
             }
         }
@@ -826,17 +875,22 @@ public:
     // fight no longer matches the recording, so the replay inputs would make no sense.
     void toggleTakeover(asw_inputs* side)
     {
+        const auto* eng = asw_engine::get();
+        const char* name = eng && side == &eng->inputs[0] ? "P1" : "P2";
         if (analyzer != side)
         {
             analyzer = side;
             assistSide = side;
             assistStandby = false;
             diverged = true;
+            COMBO_LOG(std::string("takeover: ") + name + " on at " + std::to_string(replayPosition()));
             return;
         }
         analyzer = nullptr;
         assistSide = nullptr;
         if (isTakeover) loadState = true;
+        COMBO_LOG(std::string("takeover: ") + name + " off at " + std::to_string(replayPosition())
+                  + (isTakeover ? ", back to the rewind point" : ""));
     }
 
     bool isTakeover = false;
@@ -1234,6 +1288,7 @@ void ReplayManager::onMatchStart()
 
 void ReplayManager::onRoundStart()
 {
+    data->clearRing();
     data->onRoundStart();
 }
 
