@@ -270,6 +270,10 @@ bool asw_player::is_in_hitstun() const {
     case ID_CmnActNokezoriBottomLv5:
     case ID_CmnActFloatDamage:
     case ID_CmnActGuardLanding:
+    case ID_CmnActFrozen:
+    case ID_CmnActDownGroundFrozen:
+    case ID_CmnActHarden:
+    case ID_CmnActHardenAir:
       return true;
     default:
       return false;

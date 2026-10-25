@@ -635,6 +635,13 @@ enum ID_CMNACT : uint32_t {
   ID_CmnActEntryToStand1P = 0x99,
   ID_CmnActEntryToStand2P = 0x9A,
   ID_CmnActGuardLanding = 0x9B,
+  // Newer than the list above, from the game's own list of common action names.
+  // Frozen in place by a hit (Lucy's Short Nerve Circuit, Bedman?, Dizzy's ice on
+  // a downed opponent); the hitstop runs inside these too.
+  ID_CmnActFrozen = 0x9E,
+  ID_CmnActDownGroundFrozen = 0x9F,
+  ID_CmnActHarden = 0xA0,
+  ID_CmnActHardenAir = 0xA1,
   ID_CmnAct_NUM = 0x9C,
   ID_CmnAct_NULL = 0xFFFFFFFF,
 };
