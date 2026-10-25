@@ -55,6 +55,7 @@ namespace menu_ui {
   struct FontSet { ImFont *body = nullptr, *bold = nullptr, *title = nullptr, *small_ = nullptr; };
   FontSet fs_menu, fs_timeline;
   ImFont* f_bar_title = nullptr;
+  ImFont* f_input = nullptr;  // input bar letters
   ImFont* f_meters_title = nullptr;
 
   void use(Elem e) {
@@ -126,6 +127,7 @@ namespace menu_ui {
     f_framebar = add_ov("Barlow-Medium.ttf", 20.0f, SE[E_BAR]);
     f_framebar_stats = add_ov("Barlow-Medium.ttf", 24.0f, SE[E_BAR]);
     f_bar_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_BAR]);
+    f_input = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_BAR]);
     f_meters = add_ov("Barlow-Medium.ttf", 32.0f, SE[E_METERS]);
     f_meters_bold = add_ov("Barlow-SemiBold.ttf", 32.0f, SE[E_METERS]);
     f_meters_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_METERS]);
@@ -520,7 +522,7 @@ namespace menu_ui {
     const float lh = f_framebar_stats->FontSize + 4 * S;
     Frame f = begin_window("Frame bar##sl_bar", "Frame bar",
                            ImVec2(io.DisplaySize.x * 0.5f - def_size.x * 0.5f, io.DisplaySize.y * 0.8f - def_size.y * 0.5f),
-                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + 60 * S), interactive, BAR_BG, hide_decorations, f_bar_title);
+                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + (fb.inputs ? 220 : 60) * S), interactive, BAR_BG, hide_decorations, f_bar_title);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::BarWindow, 0, 0});
     bar_rect = ImVec4(f.o.x, f.o.y, f.w, f.h);
     bar_frame = ImGui::GetFrameCount();
@@ -529,7 +531,11 @@ namespace menu_ui {
       const float pad = 10 * S, gap = 4 * S;
       const float x0 = f.o.x + pad, x1 = f.o.x + f.w - pad;
       float y = f.o.y + f.head + 3 * S;
-      const float bar_h = std::max((f.o.y + f.h - 4 * S - y - 2 * lh - gap) * 0.5f, 6 * S);
+      // Input bar: a row under each bar with five lanes (arrow, three letters,
+      // macro box), sharing the height with the bars.
+      const float avail = f.o.y + f.h - 4 * S - y - 2 * lh - gap;
+      const float in_h = fb.inputs ? std::min((x1 - x0) / 120.0f * 8.0f, avail * 0.35f) : 0.0f;
+      const float bar_h = std::max((avail - 2 * (in_h + (fb.inputs ? gap : 0))) * 0.5f, 6 * S);
       // Like the HUD bar, fit 120 cells plus a trailing gap into the background.
       // Keep enough space for the delimiter and crossup markers at either edge.
       const float desired_sp = std::max((x1 - x0) * (4.0f / (120 * 24.0f + 4.0f)), std::max(1.5f * S, 1.0f));
@@ -565,9 +571,117 @@ namespace menu_ui {
           text_outlined(dl, f_framebar, ImVec2(tx, ty), TEXT, n);
         }
       };
+      // Input row: arrow for the direction, P K S H D letters (bright = new
+      // press, faint = held), and a box for a macro (dash, RC, FD, Respect).
+      struct Btn { unsigned short bit; const char* s; ImU32 col; };
+      static const Btn BTNS[] = {{0x10, "P", RGBA(232, 90, 168)}, {0x20, "K", RGBA(61, 139, 255)},
+                                 {0x40, "S", RGBA(63, 195, 90)},  {0x80, "H", RGBA(232, 70, 60)},
+                                 {0x100, "D", RGBA(243, 154, 30)}};
+      static const Btn MACROS[] = {{0x400, "\xC2\xBB", RGBA(90, 99, 114)}, {0x800, "R", RGBA(142, 68, 214)},
+                                   {0x8000, "F", RGBA(31, 163, 163)}, {0x200, "T", RGBA(184, 134, 43)}};
+      static const char* MACRO_NAMES[] = {"Dash", "Roman Cancel", "Faultless Defense", "Respect"};
+      auto with_alpha = [](ImU32 c, int a) { return (c & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24); };
+      auto inputs = [&](int row, float top) {
+        dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, top + in_h), fb.bg);
+        // Symbols only on the frame an input starts; while it is held, a thin line
+        // carries on in its lane. The next cells are usually empty, so a symbol may
+        // be up to two cells wide.
+        const float u = in_h / 5.0f;
+        const float sym = std::min(u, cell * 2.0f);
+        const float fs = std::min(f_input->FontSize, sym * 1.1f);
+        const float thin = std::max(1.0f, u * 0.08f);
+        auto hold_line = [&](float left, float ly, ImU32 col) {
+          dl->AddRectFilled(ImVec2(left - sp, ly - thin), ImVec2(left + seg_w, ly + thin), col);
+        };
+        int lane_of[5] = {-1, -1, -1, -1, -1};
+        int prev_dir = -1;
+        unsigned short prev_macro = 0;
+        int hovered = -1;
+        for (int i = 0; i < 120; i++) {
+          const auto& c = fb.rows[row][i];
+          if (!c.on || c.dir == 0) {
+            prev_dir = -1; prev_macro = 0;
+            for (int& l : lane_of) l = -1;
+            continue;
+          }
+          const float left = x0 + cell * i + sp, cx = left + seg_w * 0.5f;
+          if (interactive && ImGui::IsMouseHoveringRect(ImVec2(left, top), ImVec2(left + seg_w, top + in_h), false)) hovered = i;
+          // Direction
+          const float ay = top + u * 0.5f;
+          if (c.dir != 5 && c.dir == prev_dir) {
+            hold_line(left, ay, with_alpha(TEXT, 110));
+          } else if (c.dir != 5) {
+            const int col = (c.dir - 1) % 3 - 1, rw = (c.dir - 1) / 3 - 1;
+            float vx = static_cast<float>(col), vy = static_cast<float>(-rw);
+            const float len = std::sqrt(vx * vx + vy * vy); vx /= len; vy /= len;
+            const float r = sym * 0.42f;
+            const ImVec2 tip(cx + vx * r, ay + vy * r), tail(cx - vx * r, ay - vy * r);
+            dl->AddLine(tail, tip, TEXT, std::max(1.0f, sym * 0.12f));
+            const float hw = r * 0.6f;
+            dl->AddTriangleFilled(tip, ImVec2(tip.x - vx * hw - vy * hw * 0.8f, tip.y - vy * hw + vx * hw * 0.8f),
+                                  ImVec2(tip.x - vx * hw + vy * hw * 0.8f, tip.y - vy * hw - vx * hw * 0.8f), TEXT);
+          }
+          prev_dir = c.dir;
+          // Buttons: held ones keep their lane, new presses take a free one
+          bool taken[3] = {};
+          for (int k = 0; k < 5; k++) {
+            const unsigned short bit = BTNS[k].bit;
+            if (!((c.held | c.pressed) & bit)) lane_of[k] = -1;
+            else if (!(c.pressed & bit) && lane_of[k] >= 0) taken[lane_of[k]] = true;
+          }
+          for (int k = 0; k < 5; k++) {
+            const auto& b = BTNS[k];
+            if (!((c.held | c.pressed) & b.bit)) continue;
+            const bool fresh = (c.pressed & b.bit) != 0;
+            if (fresh || lane_of[k] < 0) {
+              lane_of[k] = -1;
+              for (int l = 0; l < 3; l++) if (!taken[l]) { lane_of[k] = l; taken[l] = true; break; }
+              if (lane_of[k] < 0) continue;  // more than three at once: the tooltip has them
+            }
+            const float ly = top + u * (1 + lane_of[k]);
+            if (fresh) {
+              const float tw = f_input->CalcTextSizeA(fs, FLT_MAX, 0.0f, b.s).x;
+              dl->AddText(f_input, fs, ImVec2(cx - tw * 0.5f, ly + (u - fs) * 0.5f), b.col, b.s);
+            } else {
+              hold_line(left, ly + u * 0.5f, with_alpha(b.col, 150));
+            }
+          }
+          // Macro: a box on the frame it starts, a line while held
+          unsigned short macro = 0;
+          for (const auto& m : MACROS) {
+            if (!((c.held | c.pressed) & m.bit)) continue;
+            macro = m.bit;
+            const float by = top + in_h - u;
+            if ((c.pressed & m.bit) || prev_macro != m.bit) {
+              const float bw = std::min(sym, cell * 2.0f - sp);
+              dl->AddRectFilled(ImVec2(cx - bw * 0.5f, by + (u - sym) * 0.5f), ImVec2(cx + bw * 0.5f, by + (u + sym) * 0.5f), m.col);
+              const float tw = f_input->CalcTextSizeA(fs, FLT_MAX, 0.0f, m.s).x;
+              dl->AddText(f_input, fs, ImVec2(cx - tw * 0.5f, by + (u - fs) * 0.5f), RGBA(255, 255, 255), m.s);
+            } else {
+              hold_line(left, by + u * 0.5f, with_alpha(m.col, 170));
+            }
+            break;
+          }
+          prev_macro = macro;
+        }
+        if (hovered >= 0) {  // details for the cell under the mouse (menu open)
+          const auto& c = fb.rows[row][hovered];
+          std::string pressed, held;
+          auto add = [](std::string& s, const char* t) { if (!s.empty()) s += " + "; s += t; };
+          for (const auto& b : BTNS) { if (c.pressed & b.bit) add(pressed, b.s); else if (c.held & b.bit) add(held, b.s); }
+          for (int k = 0; k < 4; k++) { if (c.pressed & MACROS[k].bit) add(pressed, MACRO_NAMES[k]); else if (c.held & MACROS[k].bit) add(held, MACRO_NAMES[k]); }
+          std::string t = std::string(row == 0 ? "P1" : "P2") + ", direction " + std::to_string(c.dir);
+          if (!pressed.empty()) t += "\nPressed: " + pressed;
+          if (!held.empty()) t += "\nHeld: " + held;
+          if (c.trunc > 0) t += "\nCovers " + std::to_string(c.trunc) + " frames";
+          ImGui::SetTooltip("%s", t.c_str());
+        }
+      };
       stats(info[0], y);            y += lh;
       bar(0, y);                    y += bar_h + gap;
+      if (fb.inputs) { inputs(0, y); y += in_h + gap; }
       bar(1, y);                    y += bar_h;
+      if (fb.inputs) { y += gap; inputs(1, y); y += in_h; }
       stats(info[1], y + 1 * S);
     }
     end_window();

@@ -95,6 +95,11 @@ struct FrameInfo {
   ModifierType mods = MT_None;
   double decay = 1.0;
   int trunc = 0;
+  // Input bar: numpad direction relative to facing (0 = no data), the buttons
+  // held at the end of the cell, and every button newly pressed in it.
+  uint8_t input_dir = 0;
+  uint16_t input_held = 0;
+  uint16_t input_pressed = 0;
 };
 
 struct MoveStats {
@@ -122,6 +127,9 @@ struct PlayerData {
 struct FrameBar::Data {
   DrawContext tool;
   int last_game_frame = -1;
+  // Input bar: presses not yet stored in a cell (hitstop and super freeze
+  // frames are skipped by the bar, so their presses go to the next cell).
+  uint16_t pending_press[2] = {0, 0};
   bool combo_active = false;
   int current_segment_idx = 0;
   bool tracking_advantage = false;

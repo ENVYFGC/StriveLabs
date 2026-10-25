@@ -110,6 +110,9 @@ namespace Settings {
       OptionData{L"Delay Frames: ", 4,
                  {L"<     0ms     >", L"<     20ms    >", L"<     30ms    >", L"<     60ms    >"}},
       "delay_amount", 0};
+  SettingsEntry INPUT_BAR = SettingsEntry{
+      OptionData{L"Input Bar:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "input_bar", 0};
   SettingsEntry CROSSUP_ENABLED = SettingsEntry{
       OptionData{L"Show Crossup: ", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "crossup_enabled", 0};
@@ -164,12 +167,12 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 24> settings = {
+  std::array<SettingsEntry *, 25> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
       &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
-      &UI_HIDE_WINDOW_DECORATIONS,
+      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR,
   };
 
   // Layout float settings
@@ -822,6 +825,7 @@ namespace {
         {L"Settings", L"Frame Bar", &FRAMEBAR},
         {L"", L"Show Dash", &SHOW_DASH_FRAMES},
         {L"", L"Show Crossup", &CROSSUP_ENABLED},
+        {L"", L"Input bar", &INPUT_BAR},
         {L"Appearance", L"Color scheme", &COLOR_SCHEME},
         {L"", L"Fade effect", &FADE},
         {L"", L"Delimit segments", &DELIM},
@@ -1785,6 +1789,7 @@ void ModMenu::buildView() {
   g_view = std::move(v);
 }
 
+bool ModMenu::inputBarEnabled() const { return Settings::INPUT_BAR.value != 0; }
 bool ModMenu::barEnabled() const { return Settings::FRAMEBAR.value; }
 bool ModMenu::hitboxEnabled() const { return Settings::HITBOXES.value; }
 bool ModMenu::fadeEnabled() const { return Settings::FADE.value; }

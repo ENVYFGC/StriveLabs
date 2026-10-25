@@ -13,11 +13,15 @@ namespace imgui_overlay {
 
   // Game thread: the frame bar's cells and stats lines for this frame.
   struct FrameBarView {
-    struct Cell { unsigned color = 0; unsigned char mods = 0; int trunc = 0; bool on = false; };
+    struct Cell {
+      unsigned color = 0; unsigned char mods = 0; int trunc = 0; bool on = false;
+      unsigned char dir = 0;                         // input bar: numpad, 0 = no data
+      unsigned short held = 0, pressed = 0;          // input bar: RECFLG button bits
+    };
     Cell rows[2][120];
     std::wstring info[2];
     unsigned bg = 0;  // packed RGBA, same layout as IM_COL32
-    bool delim = false, cancels = false, crossups = false;
+    bool delim = false, cancels = false, crossups = false, inputs = false;
   };
   void setFrameBar(const FrameBarView& view);
 

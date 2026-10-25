@@ -180,6 +180,7 @@ public:
   static float uiScale(int which = 0);    // size setting: 0 menu, 1 meters, 2 frame bar, 3 timeline (any thread)
   static std::string overlayFont();       // meters and frame bar font file in StriveLabs_fonts, "" = Barlow (any thread)
   bool barEnabled() const;
+  bool inputBarEnabled() const;
   bool hitboxEnabled() const;
   bool fadeEnabled() const;
   bool delimEnabled() const;

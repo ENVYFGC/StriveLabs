@@ -362,6 +362,8 @@ void PlayerData::fadeSegment(int fade_idx) {
   auto &fade_segment = segments[fade_idx];
   fade_segment.state = PST_None;
   fade_segment.mods = MT_None;
+  fade_segment.input_dir = 0;
+  fade_segment.input_held = fade_segment.input_pressed = 0;
 }
 
 // ############################################################
@@ -526,6 +528,38 @@ void FrameBar::Data::addFrame() {
   auto &p_one = *engine->players[0].entity;
   auto &p_two = *engine->players[1].entity;
 
+  // Input bar: each player's input this frame (inputs[0] is P1, inputs[3] P2),
+  // the direction as numpad relative to facing, and new presses.
+  constexpr uint16_t SYSTEM_KEYS = 0x1000 | 0x2000 | 0x4000;  // training menu keys
+  uint8_t in_dir[2];
+  uint16_t in_held[2];
+  {
+    const asw_entity* ents[2] = {&p_one, &p_two};
+    for (int p = 0; p < 2; p++) {
+      const asw_inputs& in = engine->inputs[p * 3];
+      const uint16_t cur = in.m_CurRecFlg & ~SYSTEM_KEYS;
+      const bool left = ents[p]->facing == direction::left;
+      int d = 5;
+      if (cur & 0x1) d += 3;
+      if (cur & 0x2) d -= 3;
+      if (cur & (left ? 0x4 : 0x8)) d += 1;
+      if (cur & (left ? 0x8 : 0x4)) d -= 1;
+      in_dir[p] = static_cast<uint8_t>(d);
+      in_held[p] = cur & ~0xF;
+      pending_press[p] |= cur & ~in.m_PreRecFlg & ~0xF;
+    }
+  }
+  auto store_inputs = [&](int idx, bool merge) {
+    PlayerData* pd[2] = {&data.first, &data.second};
+    for (int p = 0; p < 2; p++) {
+      auto& seg = pd[p]->segments[idx];
+      seg.input_dir = in_dir[p];
+      seg.input_held = in_held[p];
+      seg.input_pressed = merge ? static_cast<uint16_t>(seg.input_pressed | pending_press[p]) : pending_press[p];
+      pending_press[p] = 0;
+    }
+  };
+
   // update projectiles, even during hitstun
   ptracker.processFrame();
   if constexpr (ENABLE_PRJT_DEBUG) {
@@ -567,11 +601,13 @@ void FrameBar::Data::addFrame() {
   // end combo if we've been idle for a long time
   if (data.first.current_state.type == PST_Idle && data.second.current_state.type == PST_Idle) {
     if (!combo_active) {
+      pending_press[0] = pending_press[1] = 0;  // nothing recorded while idle
       return;
     }
     if (data.first.current_state.state_time > COMBO_ENDED_TIME && data.second.current_state.state_time > COMBO_ENDED_TIME) {
       DEBUG_PRINT(STR("Combo ended\n"));
       combo_active = false;
+      pending_press[0] = pending_press[1] = 0;
       return;
     }
   }
@@ -616,6 +652,7 @@ void FrameBar::Data::addFrame() {
     // we are truncating, update truncated
     if (data.first.current_state.trunc_time > COMBO_TRUNC_TIME && data.second.current_state.trunc_time > COMBO_TRUNC_TIME) {
       doBoth(&PlayerData::truncSegment, prev_idx);
+      store_inputs(prev_idx, true);
       return;
     }
 
@@ -625,6 +662,7 @@ void FrameBar::Data::addFrame() {
 
     doBoth(&PlayerData::initSegment, current_segment_idx);
   }
+  store_inputs(current_segment_idx, false);
 
   // fade effect, clear segments near tail
   int fade_idx = (current_segment_idx + FADE_DISTANCE) % FRAME_SEGMENTS;
@@ -640,6 +678,7 @@ void FrameBar::Data::addFrame() {
 }
 void FrameBar::Data::reset() {
   last_game_frame = -1;
+  pending_press[0] = pending_press[1] = 0;
   combo_active = false;
   data.first.current_state = PlayerState();
   data.second.current_state = PlayerState();
@@ -678,6 +717,7 @@ void FrameBar::Data::draw() {
     view.delim = options.show_delim;
     view.cancels = options.show_cancels;
     view.crossups = options.show_crossups;
+    view.inputs = ModMenu::instance().inputBarEnabled();
     const PlayerData* rows[2] = {&data.first, &data.second};
     for (int r = 0; r < 2; r++) {
       for (int i = 0; i < FRAME_SEGMENTS && i < 120; i++) {
@@ -690,6 +730,9 @@ void FrameBar::Data::draw() {
         out.color = pack(color);
         out.mods = static_cast<unsigned char>(in.mods);
         out.trunc = in.trunc;
+        out.dir = in.input_dir;
+        out.held = in.input_held;
+        out.pressed = in.input_pressed;
       }
     }
     imgui_overlay::setFrameBar(view);
