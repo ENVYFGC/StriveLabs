@@ -113,6 +113,13 @@ namespace Settings {
   SettingsEntry INPUT_BAR = SettingsEntry{
       OptionData{L"Input Bar:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "input_bar", 0};
+  // Frame bar's own look while the menu is closed. 0 follows "Hide decorations".
+  SettingsEntry BAR_TITLE = SettingsEntry{
+      OptionData{L"Frame Bar Title:", 4, {L"< Like other windows >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}},
+      "framebar_title", 0};
+  SettingsEntry BAR_PANEL = SettingsEntry{
+      OptionData{L"Frame Bar Background:", 3, {L"< Like other windows >", L"<     Shown     >", L"<    Hidden     >"}},
+      "framebar_background", 0};
   SettingsEntry STATUS_LINE = SettingsEntry{
       OptionData{L"Status Line:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "status_line", 1};
@@ -170,12 +177,12 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 26> settings = {
+  std::array<SettingsEntry *, 28> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
       &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
-      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE,
+      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE, &BAR_TITLE, &BAR_PANEL,
   };
 
   // Layout float settings
@@ -846,6 +853,8 @@ namespace {
         {L"Appearance", L"Color scheme", &COLOR_SCHEME},
         {L"", L"Fade effect", &FADE},
         {L"", L"Delimit segments", &DELIM},
+        {L"", L"Title when menu is closed", &BAR_TITLE},
+        {L"", L"Background when menu is closed", &BAR_PANEL},
       };
       if (imgui_overlay::running())
         rows.push_back({L"", L"Frame bar size", nullptr, &UI_SCALE_BAR});
@@ -1782,6 +1791,8 @@ void ModMenu::buildView() {
   v.meters_right = Settings::TENSION_SIDE.value == 1;
   v.meters_snap = Settings::METERS_SNAP.value != 0;
   v.hide_window_decorations = Settings::UI_HIDE_WINDOW_DECORATIONS.value != 0;
+  v.bar_title = Settings::BAR_TITLE.value;
+  v.bar_panel = Settings::BAR_PANEL.value;
   {
     static constexpr unsigned kAccents[6] = {0xFF0000, 0x2B8CFF, 0x00C8AA, 0xA05AFF, 0xFFBE00, 0xE6E6EB};
     auto byte = [](double x) { return static_cast<unsigned>(std::lround(std::clamp(x, 0.0, 1.0) * 255.0)); };

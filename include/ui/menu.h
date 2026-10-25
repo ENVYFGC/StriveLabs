@@ -111,6 +111,9 @@ struct MenuView {
   bool meters_snap = false;  // Layout: keep the meters window on top of the frame bar
   // Appearance
   bool hide_window_decorations = false; // hide passive overlay chrome while the menu is closed
+  // Frame bar's own look while the menu is closed, 0 = like the other windows.
+  int bar_title = 0;  // 1 shown, 2 only the accent line, 3 hidden
+  int bar_panel = 0;  // 1 shown, 2 hidden
   unsigned accent_rgb = 0xFF0000;  // 0xRRGGBB
   unsigned custom_rgb = 0xFF0000;
   float opacity = 0.94f;           // panel background alpha

@@ -372,9 +372,13 @@ namespace menu_ui {
   // pos_anchor: (0,0) top-left, (0.5,0.5) centered on pos.
   Frame begin_window(const std::string& id, const std::string& title, ImVec2 def_pos, ImVec2 def_size,
                      ImVec2 min_size, bool interactive, ImU32 bg = PANEL, bool hide_decorations = false,
-                     ImFont* title_font = nullptr) {
+                     ImFont* title_font = nullptr, int title_mode = -1, int panel_mode = -1) {
     WinState& ws = g_win[id];
-    const bool hide_chrome = !interactive && hide_decorations;
+    // While the menu is closed: title 0 shown, 1 only its accent line, 2 hidden;
+    // panel shown or not. -1 = follow "Hide decorations" like the other windows.
+    // With the menu open everything is shown, so windows can still be moved.
+    const int title_state = interactive ? 0 : title_mode >= 0 ? title_mode : (hide_decorations ? 2 : 0);
+    const bool panel = interactive || (panel_mode >= 0 ? panel_mode == 0 : !hide_decorations);
     Frame f;
     f.head = HEAD * S;
     const int gen = g_layout_gen;
@@ -399,7 +403,7 @@ namespace menu_ui {
                              ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing;
     if (ws.collapsed) flags |= ImGuiWindowFlags_NoResize;
     if (!interactive) flags |= ImGuiWindowFlags_NoInputs;
-    if (hide_chrome) flags |= ImGuiWindowFlags_NoBackground;
+    if (title_state != 0 || !panel) flags |= ImGuiWindowFlags_NoBackground;
     ImGui::Begin(id.c_str(), nullptr, flags);
     f.dl = ImGui::GetWindowDrawList();
     f.o = ImGui::GetWindowPos();
@@ -409,12 +413,21 @@ namespace menu_ui {
     ImDrawList* dl = f.dl;
     const ImVec2 o = f.o;
 
-    // Skip the chrome and background, keeping the title space and content geometry.
-    if (hide_chrome) return f;
+    // Title as a line or hidden: the title space stays empty and the content keeps
+    // its place, so nothing moves when the menu opens again.
+    if (title_state != 0) {
+      const float top = o.y + f.head - (title_state == 1 ? 3 * S : 0.0f);
+      if (panel) {
+        dl->AddRectFilled(ImVec2(o.x, top), ImVec2(o.x + f.w, o.y + f.h), bg);
+        dl->AddRect(ImVec2(o.x, top), ImVec2(o.x + f.w, o.y + f.h), BORDER);
+      }
+      if (title_state == 1) dl->AddRectFilled(ImVec2(o.x, top), ImVec2(o.x + f.w, top + 3 * S), RED);
+      return f;
+    }
 
-    dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.h), bg);
+    if (panel) dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.h), bg);
     dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + f.head), SECTION);
-    dl->AddRect(o, ImVec2(o.x + f.w, o.y + f.h), BORDER);
+    if (panel) dl->AddRect(o, ImVec2(o.x + f.w, o.y + f.h), BORDER);
     dl->AddRectFilled(o, ImVec2(o.x + f.w, o.y + 3 * S), RED);
     // Buttons, right to left: close, minimize
     const float bs = f.head - 12 * S;
@@ -508,7 +521,7 @@ namespace menu_ui {
   ImVec4 bar_rect(0, 0, 0, 0);   // x, y, w, h of the frame bar window this frame
   int bar_frame = -1;            // ImGui frame the bar was drawn on
 
-  void draw_framebar(bool interactive, bool hide_decorations) {
+  void draw_framebar(bool interactive, bool hide_decorations, int title_mode, int panel_mode) {
     use(E_BAR);
     imgui_overlay::FrameBarView fb;
     std::string info[2];
@@ -523,7 +536,7 @@ namespace menu_ui {
     const float lh = f_framebar_stats->FontSize + 4 * S;
     Frame f = begin_window("Frame bar##sl_bar", "Frame bar",
                            ImVec2(io.DisplaySize.x * 0.5f - def_size.x * 0.5f, io.DisplaySize.y * 0.8f - def_size.y * 0.5f),
-                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + (fb.inputs ? 220 : 60) * S), interactive, BAR_BG, hide_decorations, f_bar_title);
+                           def_size, ImVec2(360 * S, HEAD * S + 2 * lh + (fb.inputs ? 220 : 60) * S), interactive, BAR_BG, hide_decorations, f_bar_title, title_mode, panel_mode);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::BarWindow, 0, 0});
     bar_rect = ImVec4(f.o.x, f.o.y, f.w, f.h);
     bar_frame = ImGui::GetFrameCount();
@@ -1034,7 +1047,7 @@ namespace menu_ui {
     if (!modScreenActive()) { g_timeline_visible = false; return; }
     const MenuView v = ModMenu::instance().view();
     apply_theme(v);
-    draw_framebar(v.showing, v.hide_window_decorations);
+    draw_framebar(v.showing, v.hide_window_decorations, v.bar_title - 1, v.bar_panel - 1);
     draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
     draw_timeline(v);
     use(E_MENU);
