@@ -442,6 +442,137 @@ public:
         }
     }
 
+    // ---- Effects and models after a load -------------------------------------------
+    // The game's own rollback is built to go back a few frames. After loading it keeps
+    // every fight object's effect as it was saved, and gives each model that is out
+    // right now back to whatever object sits in the same slot. F9 goes back seconds,
+    // and by then that effect may have been reused for something else and that slot
+    // may hold a different object: effects in the wrong place or at the wrong size,
+    // models on the wrong object.
+    // Each fight object also saves which effect and model it should have: the name,
+    // the move it came from and the frame it started. The rule below compares that with
+    // what the object had just before the load. If it is the same effect or model
+    // still running, the link is right and is kept. If not, the wrong one is let go and
+    // the right one is made again by name with the game's own link functions, starting
+    // partway through the way the game does it. This does not depend on the character.
+    static constexpr int kFxLink = 0x43C8, kModelLink = 0x43A0;
+    static constexpr int kFxName = 0x515C, kFxSource = 0x517C, kFxWithArgs = 0x5180, kFxArgs = 0x5184,
+                         kFxSaved = 0x51F0, kFxStarted = 0x51F4;          // started frame + move name: 36 bytes
+    static constexpr int kModelName = 0x521C, kModelSaved = 0x523C, kModelShared = 0x523D,
+                         kModelCommonFx = 0x523E, kModelTeam = 0x523F, kModelBlueprint = 0x5240,
+                         kModelStarted = 0x5244;                          // started frame + move name: 36 bytes
+    static constexpr int kSpawnArgs = 0x3DA8, kSpawnArgsSize = 0x6C, kFxStartTime = 0x54C0, kFxPlayed = 0x54C4;
+
+    using funcLinkFx_t = void (*)(void* obj, const char* name, int source);
+    using funcLinkByName_t = void (*)(void* obj, const char* name);
+    funcLinkFx_t orig_LinkFx = nullptr;
+    funcLinkByName_t orig_LinkFxWithArgs = nullptr;
+    funcLinkByName_t orig_LinkModel = nullptr;
+    funcLinkByName_t orig_LinkCommonFxModel = nullptr;
+    funcLinkByName_t orig_LinkBlueprintModel = nullptr;
+
+    struct BeforeLoad
+    {
+        void* fx = nullptr;
+        void* model = nullptr;
+        uint8_t fxName[32]{}, fxStarted[36]{};
+        uint8_t modelName[32]{}, modelStarted[36]{};
+    };
+    std::vector<std::pair<uint8_t*, BeforeLoad>> beforeLoad;
+
+    void rememberLinksBeforeLoad()
+    {
+        beforeLoad.clear();
+        std::vector<uint8_t*> objs;
+        collectFightObjects(objs);
+        for (auto* e : objs)
+        {
+            BeforeLoad b;
+            b.fx = *reinterpret_cast<void**>(e + kFxLink);
+            b.model = *reinterpret_cast<void**>(e + kModelLink);
+            memcpy(b.fxName, e + kFxName, 32);
+            memcpy(b.fxStarted, e + kFxStarted, 36);
+            memcpy(b.modelName, e + kModelName, 32);
+            memcpy(b.modelStarted, e + kModelStarted, 36);
+            beforeLoad.emplace_back(e, b);
+        }
+    }
+
+    void rebuildLinksAfterLoad()
+    {
+        if (!orig_LinkFx || !orig_LinkFxWithArgs || !orig_LinkModel || !orig_LinkCommonFxModel || !orig_LinkBlueprintModel)
+            return;
+        int fxRebuilt = 0, modelsRebuilt = 0, modelsLetGo = 0;
+        std::vector<uint8_t*> objs;
+        collectFightObjects(objs);
+        for (auto* e : objs)
+        {
+            if (e[0x20]) continue;  // players keep their own model and have no linked effect
+            const BeforeLoad* b = nullptr;
+            for (const auto& [obj, state] : beforeLoad)
+                if (obj == e) { b = &state; break; }
+
+            // Effect
+            const int played = *reinterpret_cast<int*>(e + kFxPlayed);
+            if (e[kFxSaved] && played > 0)
+            {
+                auto*& fx = *reinterpret_cast<uint8_t**>(e + kFxLink);
+                const bool same = b && fx && b->fx == fx && !(fx[0x432] & 0x80)
+                    && !memcmp(b->fxName, e + kFxName, 32) && !memcmp(b->fxStarted, e + kFxStarted, 36);
+                if (!same)
+                {
+                    char name[32];
+                    uint8_t started[36];
+                    memcpy(name, e + kFxName, 32);
+                    memcpy(started, e + kFxStarted, 36);
+                    fx = nullptr;  // not ours any more: linking anew must not delete it
+                    *reinterpret_cast<float*>(e + kFxStartTime) = static_cast<float>(played) / 60.0f;
+                    if (e[kFxWithArgs])
+                    {
+                        memcpy(e + kSpawnArgs, e + kFxArgs, kSpawnArgsSize);
+                        orig_LinkFxWithArgs(e, name);
+                    }
+                    else
+                    {
+                        orig_LinkFx(e, name, *reinterpret_cast<int*>(e + kFxSource));
+                    }
+                    *reinterpret_cast<float*>(e + kFxStartTime) = 0.0f;
+                    memcpy(e + kFxStarted, started, 36);  // keep the original start, not the load frame
+                    fxRebuilt++;
+                }
+            }
+
+            // Model. Shared models are put back by the game itself.
+            if (e[kModelShared]) continue;
+            auto* model = *reinterpret_cast<void**>(e + kModelLink);
+            const bool want = e[kModelSaved] && !e[kModelTeam];
+            const bool same = b && model && b->model == model
+                && !memcmp(b->modelName, e + kModelName, 32) && !memcmp(b->modelStarted, e + kModelStarted, 36);
+            if (model && (!want || !same))
+            {
+                using vfn_t = void (*)(void*);
+                (*reinterpret_cast<vfn_t*>(*reinterpret_cast<uintptr_t*>(e) + 0xB8))(e);  // the object's own unlink
+                modelsLetGo++;
+            }
+            if (want && !same)
+            {
+                char name[32];
+                uint8_t started[36];
+                memcpy(name, e + kModelName, 32);
+                memcpy(started, e + kModelStarted, 36);
+                if (e[kModelBlueprint]) orig_LinkBlueprintModel(e, name);
+                else if (e[kModelCommonFx]) orig_LinkCommonFxModel(e, name);
+                else orig_LinkModel(e, name);
+                memcpy(e + kModelStarted, started, 36);
+                modelsRebuilt++;
+            }
+        }
+        beforeLoad.clear();
+        if (fxRebuilt || modelsRebuilt || modelsLetGo)
+            COMBO_LOG("F9 links: effects rebuilt " + std::to_string(fxRebuilt) + ", models rebuilt "
+                      + std::to_string(modelsRebuilt) + ", models let go " + std::to_string(modelsLetGo));
+    }
+
     void repairEffectsAfterLoad()
     {
         if (!orig_FxRelease1 || !orig_FxRelease2 || g_fx_classes.empty()) return;
@@ -560,12 +691,14 @@ public:
         rollback->RollbackFrame = 1;
         rollback->TotalRollbackFrames = 0;
         auto backupData = rollback->BackupData[slot];
+        rememberLinksBeforeLoad();
         orig_Rollback(rollback);
         if (orig_EffectCleanupA && orig_EffectCleanupB)
         {
             orig_EffectCleanupA(rollback);
             orig_EffectCleanupB(rollback);
         }
+        rebuildLinksAfterLoad();
         repairEffectsAfterLoad();
         syncDangerBanner();
         rollback->BackupData[slot] = backupData;
@@ -776,6 +909,28 @@ public:
                     }
                 }
             }
+        }
+        catch (...) {}
+
+        // Link-by-name functions for effects and models (see rebuildLinksAfterLoad).
+        // Optional: if any moves in a game update, F9 just skips the rebuild.
+        try
+        {
+            orig_LinkFx = reinterpret_cast<funcLinkFx_t>(sigscan::get().scan(
+                "\x40\x55\x53\x56\x41\x54\x41\x56\x48\x8D\x6C\x24\xC0\x48\x81\xEC\x40\x01\x00\x00\x33\xDB\xC6\x81\xA8\x3D\x00\x00\x00\x45\x33\xC9\x48\x89\x99\xC8\x3D\x00\x00\x48\x89\x99\xD0\x3D\x00\x00",
+                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+            orig_LinkFxWithArgs = reinterpret_cast<funcLinkByName_t>(sigscan::get().scan(
+                "\x40\x55\x56\x41\x56\x41\x57\x48\x8D\x6C\x24\x88\x48\x81\xEC\x78\x01\x00\x00\x41\xB1\x01\x41\xB8\x17\x00\x00\x00\x4C\x8B\xF2\x48\x8B\xF1\xE8\x00\x00\x00\x00\x45\x33\xFF\x84\xC0",
+                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxx"));
+            orig_LinkModel = reinterpret_cast<funcLinkByName_t>(sigscan::get().scan(
+                "\x48\x89\x5C\x24\x18\x55\x56\x57\x48\x81\xEC\x70\x01\x00\x00\x48\x8B\x05\x00\x00\x00\x00\x48\x33\xC4\x48\x89\x84\x24\x60\x01\x00\x00\x48\x8B\x05\x00\x00\x00\x00\x48\x8B\xF2\x48\x8B\xF9",
+                "xxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxx????xxxxxx"));
+            orig_LinkCommonFxModel = reinterpret_cast<funcLinkByName_t>(sigscan::get().scan(
+                "\x40\x56\x57\x48\x81\xEC\x78\x01\x00\x00\x48\x8B\x05\x00\x00\x00\x00\x48\x33\xC4\x48\x89\x84\x24\x60\x01\x00\x00\xC6\x44\x24\x28\x00\x41\xB1\x01\x45\x33\xC0\xC6\x44\x24\x20\x00",
+                "xxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+            orig_LinkBlueprintModel = reinterpret_cast<funcLinkByName_t>(sigscan::get().scan(
+                "\x48\x89\x74\x24\x20\x57\x48\x81\xEC\x70\x01\x00\x00\x48\x8B\x05\x00\x00\x00\x00\x48\x33\xC4\x48\x89\x84\x24\x60\x01\x00\x00\xC6\x44\x24\x28\x01\x45\x33\xC9\x45\x33\xC0\xC6\x44\x24\x20\x00",
+                "xxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxx"));
         }
         catch (...) {}
 
@@ -1199,4 +1354,6 @@ void ReplayManager::logStatus() const
     COMBO_LOG(data->orig_FxRelease1 ? "effect repair: found" : "effect repair: NOT found");
     COMBO_LOG(data->orig_DangerHide ? "danger sync: found" : "danger sync: NOT found");
     COMBO_LOG(data->orig_ActorReleaseB ? "actor repair: found" : "actor repair: NOT found");
+    COMBO_LOG(data->orig_LinkBlueprintModel && data->orig_LinkCommonFxModel && data->orig_LinkModel
+              && data->orig_LinkFxWithArgs && data->orig_LinkFx ? "link rebuild: found" : "link rebuild: NOT found");
 }
