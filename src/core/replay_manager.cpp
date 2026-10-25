@@ -220,11 +220,12 @@ struct ReplayManager::Data
 
     // ---- Replay Assist ------------------------------------------------------------
     // While a replay plays by itself, keep a ring of saves in the game's backup slots
-    // 0-15 (offline nothing else uses them, F6 uses 18-19). F6 also remembers the
+    // 1-16 (offline nothing else uses them, F6 uses 18-19). F6 also remembers the
     // newest ring save that is at least the assist length older. F9 then loads that
     // one, lets the replay play both sides up to the F6 moment (standby), and hands
     // the chosen side over to the player right there.
     static constexpr int kRingSlots = 16;
+    static constexpr int kRingFirstSlot = 1;  // ring entry i lives in game slot 1 + i
     struct RingSave
     {
         bool valid = false;
@@ -295,8 +296,7 @@ struct ReplayManager::Data
         ringNext = (ringNext + 1) % kRingSlots;
 
         int savedIndex = rollback->CurrentBackupDataIndex;
-        const int max = rollback->MaxBackupFrame;
-        rollback->CurrentBackupDataIndex = slot == 0 ? max - 1 : slot - 1;
+        rollback->CurrentBackupDataIndex = kRingFirstSlot + slot - 1;  // the save goes to the next slot
         orig_SaveBackup(rollback);
         rollback->CurrentBackupDataIndex = savedIndex;
 
@@ -412,12 +412,6 @@ public:
             replayHead[i] = manager->m_ReplayBuffer[i].m_ReadHead;
         }
     }
-
-    // Auto rewind point.  The engine owns all 20 BackupData slots, so instead of
-    // keeping our own snapshot ring we simply re-place the single manual save point
-    // on a timer.  Rewind depth is therefore "up to N seconds ago" rather than
-    // arbitrary scrubbing, but it costs no extra memory and reuses the save/load
-    // path that is already proven to work in replays.
 
 
     // ---- F9 effect repair -------------------------------------------------------
@@ -581,7 +575,11 @@ public:
             if (e[kModelShared] || e[kModelTeam]) continue;
             auto*& model = *reinterpret_cast<uint8_t**>(e + kModelLink);
             const bool want = e[kModelSaved] != 0;
-            const bool linkedBack = model && *reinterpret_cast<void**>(model + 0x29C98) == e;
+            // Only a model that was out just before the load is known to be alive.
+            bool wasOut = false;
+            for (const auto& [obj, state] : beforeLoad)
+                if (state.model == model) { wasOut = true; break; }
+            const bool linkedBack = model && wasOut && *reinterpret_cast<void**>(model + 0x29C98) == e;
             const bool same = b && linkedBack && b->model == model
                 && !memcmp(b->modelName, e + kModelName, 32) && !memcmp(b->modelStarted, e + kModelStarted, 36);
             if (model && (!want || !same))
@@ -716,6 +714,7 @@ public:
         rollback->CurrentBackupDataIndex = 18;
         orig_SaveBackup(rollback);
         rewindPointSet = true;
+        rewindCharacters = currentCharacters();
         if (gameState->checkModeReplay())
         {
             pickAssistSave();
@@ -755,7 +754,7 @@ public:
         if (!gameState->checkModeReplay() || assistFrames() <= 0 || !assistSide
             || assistSlot < 0 || !ring[assistSlot].valid) return false;
         const RingSave& save = ring[assistSlot];
-        restoreRewindPoint(assistSlot);
+        if (!restoreRewindPoint(kRingFirstSlot + assistSlot)) return false;
         for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = save.heads[i];
         analyzer = nullptr;
         diverged = false;
@@ -813,7 +812,15 @@ public:
             rewindRequested = false;
             COMBO_LOG(std::string("load: ") + (assist ? "F9" : "takeover off") + ", side "
                       + (assistSide ? "set" : "none") + ", analyzer " + (analyzer ? "set" : "none"));
-            if ((!assist || !restoreAssist()) && restoreRewindPoint())
+            if (!rewindPointSet || rewindCharacters != currentCharacters())
+            {
+                // A new opponent or character starts a fresh fight, and the old save can't
+                // be loaded into it: do nothing at all rather than half a load.
+                COMBO_LOG(rewindPointSet ? "load: the rewind point was for other characters, press F6 again"
+                                         : "load: no rewind point yet");
+                rewindPointSet = false;
+            }
+            else if ((!assist || !restoreAssist()) && restoreRewindPoint())
             {
                 diverged = pointDiverged;
                 // Our own jump back: keep the ring, only restart its spacing from here.
@@ -863,7 +870,7 @@ public:
         // Prompt answers from the pad: d-pad Right is yes, Left is no. Only the real
         // d-pad counts (not the stick or the arrow keys, which may be moving a
         // character), and only once the prompt has been up for a moment.
-        const WORD dpad = dpadPresses();
+        const WORD dpad = promptSide ? dpadPresses() : 0;
         if (promptSide && !ModMenu::instance().isShowing() && GetTickCount64() - promptOpenedAt > 250)
         {
             if (dpad & XINPUT_GAMEPAD_DPAD_RIGHT) takeoverKey(promptSide);
@@ -888,6 +895,23 @@ public:
     // F7/F8 pause on the current frame and ask first. The same key again says yes,
     // Esc says no. Starting and stopping both ask, so the jump back to the rewind
     // point that stopping does is never a surprise.
+    std::string rewindCharacters;  // who was fighting when F6 was pressed
+
+    static std::string currentCharacters()
+    {
+        const auto* eng = asw_engine::get();
+        if (!eng) return {};
+        std::string who;
+        for (int p = 0; p < 2; p++)
+        {
+            const auto* e = eng->players[p].entity;
+            const char* sprite = e ? e->get_sprite_name() : nullptr;
+            who += sprite ? std::string(sprite, strnlen(sprite, 3)) : std::string("?");  // sprites start with the character code
+            who += '/';
+        }
+        return who;
+    }
+
     asw_inputs* promptSide = nullptr;
     bool promptStart = false;      // what the prompt asked: start (true) or stop
     bool promptWasPaused = false;
@@ -918,6 +942,7 @@ public:
             promptSide = side;
             promptStart = analyzer != side;
             promptOpenedAt = GetTickCount64();
+            dpadPresses();  // a d-pad already held now doesn't count as an answer
             promptWasPaused = timeline->isPaused();
             timeline->setPaused(true);
             BindWatcherI::setEscapeCapture(true);
@@ -1370,6 +1395,7 @@ void ReplayManager::onMatchStart()
 
 void ReplayManager::onRoundStart()
 {
+    if (data->isAnalyzerSame(nullptr)) data->diverged = false;  // not taking over: the round starts as recorded
     data->clearRing();
     data->onRoundStart();
 }
@@ -1497,6 +1523,11 @@ ReplayManager::Status ReplayManager::status() const
         s.promptRewinds = s.promptStop && data->isTakeover;
     }
     return s;
+}
+
+bool ReplayManager::promptOpen() const
+{
+    return data->promptSide != nullptr;
 }
 
 bool ReplayManager::isRewindDelayActive() const

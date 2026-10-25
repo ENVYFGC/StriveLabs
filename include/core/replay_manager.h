@@ -47,6 +47,7 @@ public:
         bool promptRewinds = false;   // stopping goes back to the rewind point
     };
     Status status() const;
+    bool promptOpen() const;
     int rewindCountdownSeconds() const;
 
     bool isTakeoverInput(const asw_inputs* input) const;

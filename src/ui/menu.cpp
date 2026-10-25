@@ -849,12 +849,12 @@ namespace {
         {L"Settings", L"Frame Bar", &FRAMEBAR},
         {L"", L"Show Dash", &SHOW_DASH_FRAMES},
         {L"", L"Show Crossup", &CROSSUP_ENABLED},
-        {L"", L"Input bar", &INPUT_BAR},
         {L"Appearance", L"Color scheme", &COLOR_SCHEME},
         {L"", L"Fade effect", &FADE},
         {L"", L"Delimit segments", &DELIM},
       };
       if (imgui_overlay::running()) {
+        rows.insert(rows.begin() + 3, SettingsRowDef{L"", L"Input bar", &INPUT_BAR});  // drawn by the overlay only
         rows.push_back({L"", L"Title when menu is closed", &BAR_TITLE});
         rows.push_back({L"", L"Background when menu is closed", &BAR_PANEL});
       }
@@ -1249,7 +1249,7 @@ void ModMenu::draw() {
       drawStatus(rs.promptStop ? (rs.promptRewinds ? L"Stop " + side + L", back to the rewind point?" : L"Stop taking over " + side + L"?")
                                : L"Take over " + side + L"?");
       const int a = rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2;
-      drawStatus((binds::key[a] ? binds::keyName(binds::key[a]) : binds::padName(binds::pad[a])) + L" yes   Esc no");
+      drawStatus((binds::key[a] ? binds::keyName(binds::key[a]) : binds::padName(binds::pad[a])) + L" yes   Esc no   (pad: Right / Left)");
     }
     if (const auto player = ReplayManager::instance().takeoverPlayer())
       drawStatus(L"Takeover: P" + std::to_wstring(*player));
@@ -1621,11 +1621,12 @@ void ModMenu::applyClick(const MenuClick& c) {
       return;
     case MenuClick::Type::TlSetPoint: Timeline::instance().pressHotkey(binds::SAVE); return;
     case MenuClick::Type::TlPlay:
-      if (!ReplayManager::instance().isRewindDelayActive())
+      if (!ReplayManager::instance().isRewindDelayActive() && !ReplayManager::instance().promptOpen())
         Timeline::instance().setPaused(!Timeline::instance().isPaused());
       return;
     case MenuClick::Type::TlStep:
-      if (!ReplayManager::instance().isRewindDelayActive() && Timeline::instance().isPaused())
+      if (!ReplayManager::instance().isRewindDelayActive() && !ReplayManager::instance().promptOpen()
+          && Timeline::instance().isPaused())
         Timeline::instance().advanceFrame();
       return;
     case MenuClick::Type::TlRecord:   toggleCapture(); return;

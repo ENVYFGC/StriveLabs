@@ -989,7 +989,10 @@ namespace menu_ui {
     ImFont* font = f_status ? f_status : ImGui::GetFont();
     const float size = font->FontSize * 0.5f * std::clamp(ModMenu::instance().statusLineSize(), 0.5f, 2.0f);
     const ImVec2 screen = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(screen.x * (340.0f / 1920.0f), screen.y * (66.0f / 1080.0f)), ImGuiCond_FirstUseEver);
+    static int placed_gen = -1;  // "Reset all window positions" puts it back too
+    ImGui::SetNextWindowPos(ImVec2(screen.x * (340.0f / 1920.0f), screen.y * (66.0f / 1080.0f)),
+                            placed_gen != g_layout_gen && placed_gen != -1 ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+    placed_gen = g_layout_gen;
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing;
     if (!interactive) flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs;
@@ -1016,7 +1019,7 @@ namespace menu_ui {
     const bool status_line = ModMenu::instance().statusLineEnabled();
     if (status_line) draw_status_line(rs, v.showing);
     if (rs.prompt) {
-      char q[96], keys[64];
+      char q[96], keys[128];
       if (!rs.promptStop) snprintf(q, sizeof(q), "Take over P%d?", rs.prompt);
       else if (rs.promptRewinds) snprintf(q, sizeof(q), "Stop P%d and go back to the rewind point?", rs.prompt);
       else snprintf(q, sizeof(q), "Stop taking over P%d?", rs.prompt);
@@ -1024,7 +1027,7 @@ namespace menu_ui {
       const std::wstring key = binds::key[a] ? binds::keyName(binds::key[a]) : binds::padName(binds::pad[a]);
       char key8[48]{};
       WideCharToMultiByte(CP_UTF8, 0, key.c_str(), -1, key8, sizeof(key8) - 1, nullptr, nullptr);
-      snprintf(keys, sizeof(keys), "%s yes     Esc no", key8);
+      snprintf(keys, sizeof(keys), "%s yes     Esc no     (pad: Right / Left)", key8);
       draw_status_message(q, row++);
       draw_status_message(keys, row++);
     }
