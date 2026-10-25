@@ -8,10 +8,10 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 
 ## What it does
 
-- A frame bar that shows startup, active and recovery frames as you play.
+- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it.
 - Hitboxes and hurtboxes.
 - Meters for tension gain, burst, tension pulse, tension penalty and wall damage.
-- Replay takeover, so you can jump into either side of a replay and play it out yourself.
+- Replay takeover, so you can jump into either side of a replay and play it out yourself. Replay Assist can start you a moment early, so you're already in the flow when control is handed to you.
 - Recordings. Save your training slots as .txt files you can edit, share and load back in, or record a player straight from a replay.
 - A timeline with rewind, pause, frame step and record.
 - A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size.
@@ -46,12 +46,20 @@ F5 opens the menu, or Back(select) + Start on a controller. Up and Down to move,
 | F3 | Freeze |
 | F4 | Advance one frame (hold it to keep stepping) |
 | F5 | Menu |
-| F6 | Set a rewind point and start takeover |
-| F7 | Take over P1 (press again to stop) |
-| F8 | Take over P2 (press again to stop) |
+| F6 | Set a rewind point |
+| F7 | Take over P1 (asks first, press again to stop) |
+| F8 | Take over P2 (asks first, press again to stop) |
 | F9 | Rewind to your saved point |
 
-You can rebind all of them on the Controls page. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the same page.
+You can rebind all of them on the Controls and Takeover pages. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the Takeover page.
+
+## Replay takeover
+
+In a replay, F7 or F8 pauses on the current frame and asks before taking over. Press the same key again for yes, or Esc for no. On a pad, Right on the d-pad is yes and Left is no. Stopping asks the same way, and takes you back to your rewind point if you set one.
+
+With Replay Assist on (Takeover page, in seconds), F9 goes back a little before your rewind point and lets the replay play both sides. A bar counts down, and at the exact frame you picked, control is handed to you.
+
+A small status line shows what's going on: replay or training, the rewind point, Replay Assist and who you're taking over. Drag it anywhere while the menu is open, or turn it off on the Takeover page.
 
 ## Recordings
 
