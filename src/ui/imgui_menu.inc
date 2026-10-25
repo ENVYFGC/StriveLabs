@@ -56,6 +56,7 @@ namespace menu_ui {
   FontSet fs_menu, fs_timeline;
   ImFont* f_bar_title = nullptr;
   ImFont* f_input = nullptr;  // input bar letters
+  ImFont* f_status = nullptr; // status line, only the screen scale (it has its own size setting)
   ImFont* f_meters_title = nullptr;
 
   void use(Elem e) {
@@ -128,6 +129,7 @@ namespace menu_ui {
     f_framebar_stats = add_ov("Barlow-Medium.ttf", 24.0f, SE[E_BAR]);
     f_bar_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_BAR]);
     f_input = add_ov("Barlow-SemiBold.ttf", 32.0f, SE[E_BAR]);
+    f_status = add_ov("Barlow-SemiBold.ttf", 48.0f, base);
     f_meters = add_ov("Barlow-Medium.ttf", 32.0f, SE[E_METERS]);
     f_meters_bold = add_ov("Barlow-SemiBold.ttf", 32.0f, SE[E_METERS]);
     f_meters_title = add_ov("Barlow-SemiBold.ttf", 20.0f, SE[E_METERS]);
@@ -545,8 +547,8 @@ namespace menu_ui {
       const float pad = 10 * S, gap = 4 * S;
       const float x0 = f.o.x + pad, x1 = f.o.x + f.w - pad;
       float y = f.o.y + f.head + 3 * S;
-      // Input bar: a row under each bar with five lanes (arrow, three letters,
-      // macro box), sharing the height with the bars.
+      // Input bar: a row under each bar with three lanes (direction, buttons,
+      // macro), sharing the height with the bars.
       const float avail = std::max(0.0f, f.o.y + f.h - 4 * S - y - 2 * lh - gap);
       const float in_h = fb.inputs ? std::min((x1 - x0) / 120.0f * 8.0f, avail * 0.35f) : 0.0f;
       const float bar_h = std::max((avail - 2 * (in_h + (fb.inputs ? gap : 0))) * 0.5f, 6 * S);
@@ -983,9 +985,9 @@ namespace menu_ui {
     if (s.takeover) { snprintf(buf, sizeof(buf), "Takeover: P%d", s.takeover); add(buf); }
     else if (s.replay) add("Playback");
 
-    // Drawn from the larger input font, so it stays sharp when made bigger.
-    ImFont* font = f_input ? f_input : ImGui::GetFont();
-    const float size = font->FontSize * 0.75f * std::clamp(ModMenu::instance().statusLineSize(), 0.5f, 2.0f);
+    // Its own font at twice the normal size, so it stays sharp when made bigger.
+    ImFont* font = f_status ? f_status : ImGui::GetFont();
+    const float size = font->FontSize * 0.5f * std::clamp(ModMenu::instance().statusLineSize(), 0.5f, 2.0f);
     const ImVec2 screen = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(screen.x * (340.0f / 1920.0f), screen.y * (66.0f / 1080.0f)), ImGuiCond_FirstUseEver);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
@@ -995,7 +997,7 @@ namespace menu_ui {
     // so there is something to grab.
     float bg = std::clamp(ModMenu::instance().statusLineOpacity(), 0.0f, 1.0f);
     if (interactive) bg = std::max(bg, 0.3f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6 * S, 3 * S));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(size * 0.25f, size * 0.12f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, bg));
     if (ImGui::Begin("Status##sl_status", nullptr, flags)) {
@@ -1010,7 +1012,7 @@ namespace menu_ui {
 
   void draw_replay_status(const MenuView& v) {
     int row = 0;
-    const auto rs = ReplayManager::instance().status();
+    const auto& rs = v.replay;
     const bool status_line = ModMenu::instance().statusLineEnabled();
     if (status_line) draw_status_line(rs, v.showing);
     if (rs.prompt) {
@@ -1018,8 +1020,11 @@ namespace menu_ui {
       if (!rs.promptStop) snprintf(q, sizeof(q), "Take over P%d?", rs.prompt);
       else if (rs.promptRewinds) snprintf(q, sizeof(q), "Stop P%d and go back to the rewind point?", rs.prompt);
       else snprintf(q, sizeof(q), "Stop taking over P%d?", rs.prompt);
-      const std::wstring key = binds::keyName(binds::key[rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2]);
-      snprintf(keys, sizeof(keys), "%s yes     Esc no", std::string(key.begin(), key.end()).c_str());
+      const int a = rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2;
+      const std::wstring key = binds::key[a] ? binds::keyName(binds::key[a]) : binds::padName(binds::pad[a]);
+      char key8[48]{};
+      WideCharToMultiByte(CP_UTF8, 0, key.c_str(), -1, key8, sizeof(key8) - 1, nullptr, nullptr);
+      snprintf(keys, sizeof(keys), "%s yes     Esc no", key8);
       draw_status_message(q, row++);
       draw_status_message(keys, row++);
     }
@@ -1028,10 +1033,8 @@ namespace menu_ui {
       snprintf(label, sizeof(label), "Takeover: P%d", *v.takeover_player);
       draw_status_message(label, row++);
     }
-    float assist_left = 0.0f;
-    const int assist = ReplayManager::instance().assistState(assist_left);
-    if (assist == 1) draw_status_message("Replay Assist: Standby", row++, assist_left);
-    else if (assist == 2) draw_status_message("Replay Assist: Active", row++);
+    if (rs.assist == 1) draw_status_message("Replay Assist: Standby", row++, rs.assistFraction);
+    else if (rs.assist == 2) draw_status_message("Replay Assist: Active", row++);
     const int seconds = ReplayManager::instance().rewindCountdownSeconds();
     if (seconds > 0) {
       char label[64];

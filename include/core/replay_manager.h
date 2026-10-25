@@ -41,6 +41,7 @@ public:
         double assistSeconds = 0.0;   // the setting, 0 = off
         int assist = 0;               // 1 standby, 2 just went active
         float assistLeftSeconds = 0.0f;
+        float assistFraction = 0.0f;  // standby bar, 1..0
         int prompt = 0;               // 1 or 2: asking about that side
         bool promptStop = false;      // asking to stop rather than start
         bool promptRewinds = false;   // stopping goes back to the rewind point

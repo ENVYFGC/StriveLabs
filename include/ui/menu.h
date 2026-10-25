@@ -1,6 +1,7 @@
 #pragma once
 
 #include "draw_utils.h"
+#include "replay_manager.h"
 
 #include <atomic>
 #include <cstdint>
@@ -114,6 +115,7 @@ struct MenuView {
   // Frame bar's own look while the menu is closed, 0 = like the other windows.
   int bar_title = 0;  // 1 shown, 2 only the accent line, 3 hidden
   int bar_panel = 0;  // 1 shown, 2 hidden
+  ReplayManager::Status replay;  // takeover state for the status line and the prompt
   unsigned accent_rgb = 0xFF0000;  // 0xRRGGBB
   unsigned custom_rgb = 0xFF0000;
   float opacity = 0.94f;           // panel background alpha

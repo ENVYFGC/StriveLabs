@@ -22,6 +22,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <Psapi.h>
+#include <Xinput.h>
 #pragma comment(lib, "Psapi.lib")
 
 using namespace RC;
@@ -332,7 +333,7 @@ struct ReplayManager::Data
         if (!assistStandby) return;
         const uint32_t pos = replayPosition();
         // Moved with the replay's own controls during standby: hand nothing over.
-        if (pos < assistFrom || pos > assistTarget + 4)
+        if (pos < assistFrom || pos > assistTarget + 12)
         {
             assistStandby = false;
             return;
@@ -711,7 +712,7 @@ public:
     void placeRewindPoint()
     {
         auto rollback = asw_rollback::get();
-        if (!rollback) return;
+        if (!backupSlotsOk(rollback)) return;
         rollback->CurrentBackupDataIndex = 18;
         orig_SaveBackup(rollback);
         rewindPointSet = true;
@@ -723,10 +724,10 @@ public:
         ModMenu::instance().notifyRewindPointCreated();
     }
 
-    void restoreRewindPoint(int slot = 19)
+    bool restoreRewindPoint(int slot = 19)
     {
         auto rollback = asw_rollback::get();
-        if (!backupSlotsOk(rollback)) return;
+        if (!backupSlotsOk(rollback)) return false;
         const int max = rollback->MaxBackupFrame;
         rollback->CurrentBackupDataIndex = (slot + 1) % max;
         rollback->RollbackFrame = 1;
@@ -746,6 +747,7 @@ public:
         rollback->RollbackFrame = 0;
         rollback->TotalRollbackFrames = 0;
         restoreReplayHead();
+        return true;
     }
 
     bool restoreAssist()
@@ -770,13 +772,21 @@ public:
     {
         if (!gameState->checkMode())
         {
+            closePrompt("left the fight");
             resetRewindDelay();
             return;
         }
+        if (promptSide && !gameState->checkModeReplay()) closePrompt("left the replay");
+        if (promptSide) BindWatcherI::setEscapeCapture(true);  // keep Esc for the prompt a little longer
 
         if (!isWaitingForFrame && rewindFramesRemaining > 0)
         {
-            if (--rewindFramesRemaining == 0) timeline->setPaused(false);
+            // With the prompt up the fight stays paused until it is answered.
+            if (--rewindFramesRemaining == 0)
+            {
+                if (promptSide) promptWasPaused = false;
+                else timeline->setPaused(false);
+            }
         }
 
         // No automatic rewind point. A timer that re-saved every N seconds
@@ -803,9 +813,8 @@ public:
             rewindRequested = false;
             COMBO_LOG(std::string("load: ") + (assist ? "F9" : "takeover off") + ", side "
                       + (assistSide ? "set" : "none") + ", analyzer " + (analyzer ? "set" : "none"));
-            if (!assist || !restoreAssist())
+            if ((!assist || !restoreAssist()) && restoreRewindPoint())
             {
-                restoreRewindPoint();
                 diverged = pointDiverged;
                 // Our own jump back: keep the ring, only restart its spacing from here.
                 ringLast = replayPosition();
@@ -851,19 +860,14 @@ public:
             takeoverKey(&asw_engine::get()->inputs[3]);
         }
 
-        // Prompt answers from the pad: the menu's Right is yes, Left is no.
-        if (promptSide && !ModMenu::instance().isShowing())
+        // Prompt answers from the pad: d-pad Right is yes, Left is no. Only the real
+        // d-pad counts (not the stick or the arrow keys, which may be moving a
+        // character), and only once the prompt has been up for a moment.
+        const WORD dpad = dpadPresses();
+        if (promptSide && !ModMenu::instance().isShowing() && GetTickCount64() - promptOpenedAt > 250)
         {
-            if (keybindings->getButtonState(keybindings->MENU_RIGHT_BUTTON))
-            {
-                keybindings->resetButton(keybindings->MENU_RIGHT_BUTTON);
-                takeoverKey(promptSide);
-            }
-            else if (keybindings->getButtonState(keybindings->MENU_LEFT_BUTTON))
-            {
-                keybindings->resetButton(keybindings->MENU_LEFT_BUTTON);
-                closePrompt("no");
-            }
+            if (dpad & XINPUT_GAMEPAD_DPAD_RIGHT) takeoverKey(promptSide);
+            else if (dpad & XINPUT_GAMEPAD_DPAD_LEFT) closePrompt("no");
         }
         if (promptSide && BindWatcherI::takeEscape()) closePrompt("no");
 
@@ -885,8 +889,25 @@ public:
     // Esc says no. Starting and stopping both ask, so the jump back to the rewind
     // point that stopping does is never a surprise.
     asw_inputs* promptSide = nullptr;
+    bool promptStart = false;      // what the prompt asked: start (true) or stop
     bool promptWasPaused = false;
+    ULONGLONG promptOpenedAt = 0;
+    WORD dpadHeld = 0;
     bool rewindPointSet = false;
+
+    WORD dpadPresses()
+    {
+        WORD now = 0;
+        for (DWORD i = 0; i < 4; i++)
+        {
+            XINPUT_STATE st{};
+            if (XInputGetState(i, &st) == ERROR_SUCCESS)
+                now |= st.Gamepad.wButtons & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT);
+        }
+        const WORD pressed = now & ~dpadHeld;
+        dpadHeld = now;
+        return pressed;
+    }
 
     void takeoverKey(asw_inputs* side)
     {
@@ -895,6 +916,8 @@ public:
         if (!promptSide)
         {
             promptSide = side;
+            promptStart = analyzer != side;
+            promptOpenedAt = GetTickCount64();
             promptWasPaused = timeline->isPaused();
             timeline->setPaused(true);
             BindWatcherI::setEscapeCapture(true);
@@ -902,8 +925,11 @@ public:
             return;
         }
         if (promptSide != side) return;  // the other side's key while asking: ignored
+        // Do what was asked, even if the state changed in the frame before the pause.
+        const bool start = promptStart;
         closePrompt("yes");
-        toggleTakeover(side);
+        if (start == (analyzer != side)) toggleTakeover(side);
+        else COMBO_LOG("takeover: already so, nothing to do");
     }
 
     void closePrompt(const char* answer)
@@ -1339,7 +1365,7 @@ void ReplayManager::onMatchStart()
     data->clearRing();
     data->diverged = false;
     data->assistSide = nullptr;
-    data->rewindPointSet = false;
+    if (!data->gameState->checkModeTraining()) data->rewindPointSet = false;
 }
 
 void ReplayManager::onRoundStart()
@@ -1460,13 +1486,14 @@ ReplayManager::Status ReplayManager::status() const
     s.assistSeconds = s.replay ? ModMenu::instance().replayAssistSeconds() : 0.0;
     float left = 0.0f;
     s.assist = s.replay ? assistState(left) : 0;
+    s.assistFraction = left;
     if (s.assist == 1)
         s.assistLeftSeconds = static_cast<float>(static_cast<int>(data->assistTarget) - static_cast<int>(data->replayPosition())) / 60.0f;
     if (const auto* side = data->promptSide)
     {
         const auto* eng = asw_engine::get();
         s.prompt = eng && side == &eng->inputs[0] ? 1 : 2;
-        s.promptStop = !data->isAnalyzerSame(nullptr) && data->isAnalyzerSame(side);
+        s.promptStop = !data->promptStart;
         s.promptRewinds = s.promptStop && data->isTakeover;
     }
     return s;

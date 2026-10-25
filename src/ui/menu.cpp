@@ -853,9 +853,11 @@ namespace {
         {L"Appearance", L"Color scheme", &COLOR_SCHEME},
         {L"", L"Fade effect", &FADE},
         {L"", L"Delimit segments", &DELIM},
-        {L"", L"Title when menu is closed", &BAR_TITLE},
-        {L"", L"Background when menu is closed", &BAR_PANEL},
       };
+      if (imgui_overlay::running()) {
+        rows.push_back({L"", L"Title when menu is closed", &BAR_TITLE});
+        rows.push_back({L"", L"Background when menu is closed", &BAR_PANEL});
+      }
       if (imgui_overlay::running())
         rows.push_back({L"", L"Frame bar size", nullptr, &UI_SCALE_BAR});
       else {
@@ -906,9 +908,11 @@ namespace {
       } else {
         rows.push_back({L"Rewind", L"Playback delay (seconds)", nullptr, &REWIND_DELAY_SECONDS});
         rows.push_back({L"", L"Replay Assist (seconds)", nullptr, &REPLAY_ASSIST_SECONDS});
-        rows.push_back({L"", L"Status line", &STATUS_LINE});
-        rows.push_back({L"", L"Status line background", nullptr, &STATUS_BG_OPACITY});
-        rows.push_back({L"", L"Status line text size", nullptr, &STATUS_TEXT_SIZE});
+        if (imgui_overlay::running()) {
+          rows.push_back({L"", L"Status line", &STATUS_LINE});
+          rows.push_back({L"", L"Status line background", nullptr, &STATUS_BG_OPACITY});
+          rows.push_back({L"", L"Status line text size", nullptr, &STATUS_TEXT_SIZE});
+        }
         const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
         rows[hotkeysBegin].section = L"Hotkeys";
@@ -1244,7 +1248,8 @@ void ModMenu::draw() {
       const std::wstring side = L"P" + std::to_wstring(rs.prompt);
       drawStatus(rs.promptStop ? (rs.promptRewinds ? L"Stop " + side + L", back to the rewind point?" : L"Stop taking over " + side + L"?")
                                : L"Take over " + side + L"?");
-      drawStatus(binds::keyName(binds::key[rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2]) + L" yes   Esc no");
+      const int a = rs.prompt == 1 ? binds::TAKEOVER_P1 : binds::TAKEOVER_P2;
+      drawStatus((binds::key[a] ? binds::keyName(binds::key[a]) : binds::padName(binds::pad[a])) + L" yes   Esc no");
     }
     if (const auto player = ReplayManager::instance().takeoverPlayer())
       drawStatus(L"Takeover: P" + std::to_wstring(*player));
@@ -1793,6 +1798,7 @@ void ModMenu::buildView() {
   v.hide_window_decorations = Settings::UI_HIDE_WINDOW_DECORATIONS.value != 0;
   v.bar_title = Settings::BAR_TITLE.value;
   v.bar_panel = Settings::BAR_PANEL.value;
+  v.replay = ReplayManager::instance().status();
   {
     static constexpr unsigned kAccents[6] = {0xFF0000, 0x2B8CFF, 0x00C8AA, 0xA05AFF, 0xFFBE00, 0xE6E6EB};
     auto byte = [](double x) { return static_cast<unsigned>(std::lround(std::clamp(x, 0.0, 1.0) * 255.0)); };

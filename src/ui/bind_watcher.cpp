@@ -41,13 +41,18 @@ class BindWatcher {
   BindWorker worker;
   std::mutex state_mutex;
   std::condition_variable await_con;
-  std::bitset<0xff> filter;
+  std::bitset<0x100> filter;
   std::vector<int> inputs;
   std::atomic<bool> stopped{false};
   std::atomic<bool> capture_all{false};
-  std::atomic<bool> esc_capture{false};
+  // Esc goes to the prompt only while the game thread keeps renewing this: if the
+  // fight goes away with the prompt up, Esc comes back to the game by itself.
+  std::atomic<ULONGLONG> esc_capture_until{0};
   std::atomic<bool> esc_pressed{false};
-  std::bitset<0x100> held;  // hook thread only
+  std::bitset<0x100> held;       // hook thread only
+  bool esc_down_swallowed = false;  // hook thread only: its key-up is ours too
+
+  bool escCaptured() const { return GetTickCount64() < esc_capture_until.load(); }
 
   bool markKey(DWORD code) {
     std::lock_guard state_lock(state_mutex);
@@ -68,7 +73,11 @@ public:
 
   void addToFilter(unsigned long code) { filter.set(code & 0xFF, true); }
   void setCaptureAll(bool on) { capture_all.store(on); }
-  void setEscapeCapture(bool on) { esc_capture.store(on); if (!on) esc_pressed.store(false); }
+  void setEscapeCapture(bool on) {
+    if (on && !escCaptured()) esc_pressed.store(false);  // a new prompt starts clean
+    esc_capture_until.store(on ? GetTickCount64() + 500 : 0);
+    if (!on) esc_pressed.store(false);
+  }
   bool takeEscape() { return esc_pressed.exchange(false); }
 
   std::vector<int> getInputs(bool await) {
@@ -85,7 +94,10 @@ public:
     if (nCode >= HC_ACTION && (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)) {
       const DWORD vk = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam)->vkCode & 0xFF;
       held.reset(vk);
-      if (vk == VK_ESCAPE && esc_capture.load()) return 1;  // the prompt had the press too
+      if (vk == VK_ESCAPE && esc_down_swallowed) {  // only the release of a press we kept
+        esc_down_swallowed = false;
+        return 1;
+      }
     }
     if (nCode >= HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
       // Only process keystrokes when the game window has focus.
@@ -105,8 +117,11 @@ public:
         const DWORD vk = k.vkCode & 0xFF;
         const bool repeat = held.test(vk);
         held.set(vk);
-        if (vk == VK_ESCAPE && esc_capture.load()) {
-          if (!repeat) esc_pressed.store(true);
+        if (vk == VK_ESCAPE && escCaptured()) {
+          esc_down_swallowed = true;
+          // While a key is being rebound, Esc still cancels the rebind.
+          if (capture_all.load()) { if (!repeat && markKey(vk)) await_con.notify_all(); }
+          else if (!repeat) esc_pressed.store(true);
           return 1;  // not for the game while the prompt is up
         }
         if (markKey(repeat ? (vk | BindWatcherI::REPEAT) : vk)) await_con.notify_all();
