@@ -527,6 +527,20 @@ void draw_pushbox(const DrawTool &tool, const asw_entity &entity) {
   draw_rect(tool, corners, color);
 }
 
+// A player's position point, a small cross at the feet. Some objects react to this
+// point rather than to the hurtbox: Faust's banana trips a player the frame after
+// their point enters its box.
+void draw_origin(const DrawTool &tool, const asw_entity &entity) {
+  FVector2D pos(static_cast<float>(entity.get_pos_x()), static_cast<float>(entity.get_pos_y()));
+  asw_coords_to_screen(tool, pos);
+  constexpr float R = 9.F;
+  const FLinearColor dark{0.f, 0.f, 0.f, 1.f}, light{1.f, 1.f, 1.f, 1.f};
+  for (const auto &[color, width] : {std::pair{dark, 5.F}, std::pair{light, 2.F}}) {
+    tool.drawLine(FVector2D(pos.x - R, pos.y), FVector2D(pos.x + R, pos.y), color, width);
+    tool.drawLine(FVector2D(pos.x, pos.y - R), FVector2D(pos.x, pos.y + R), color, width);
+  }
+}
+
 void drawAllBoxes() {
   const auto *engine = asw_engine::get();
   if (!engine) return;
@@ -549,7 +563,7 @@ void drawAllBoxes() {
       attached = attached->attached;
     }
 
-    // draw_origin(canvas, entity);
+    if (entity.is_player) draw_origin(tool, entity);
     // draw_debuglines(canvas, entity);
   }
 }
