@@ -189,6 +189,7 @@ public:
   int pauseType() const;
   int delayAmount() const;
   int rewindDelaySeconds() const;
+  double replayAssistSeconds() const;
   bool crossupEnabled() const;
   TensionOptions getTensionOptions() const;
   LayoutPositions getLayoutPositions() const;

@@ -216,6 +216,104 @@ struct ReplayManager::Data
     ReplayHead replayHead[6]{};
     ReplayManager_Internal* manager{};
 
+    // ---- Replay Assist ------------------------------------------------------------
+    // While a replay plays by itself, keep a ring of saves in the game's backup slots
+    // 0-15 (offline nothing else uses them, F6 uses 18-19). F6 also remembers the
+    // newest ring save that is at least the assist length older. F9 then loads that
+    // one, lets the replay play both sides up to the F6 moment (standby), and hands
+    // the chosen side over to the player right there.
+    static constexpr int kRingSlots = 16;
+    struct RingSave
+    {
+        bool valid = false;
+        uint32_t position = 0;  // peer 0 replay frame position
+        ReplayHead heads[6]{};
+    };
+    RingSave ring[kRingSlots]{};
+    int ringNext = 0;
+    uint32_t ringLast = 0;
+    int assistSlot = -1;          // ring slot picked by F6, -1 = plain rewind
+    uint32_t assistTarget = 0;    // replay position at F6
+    uint32_t assistFrom = 0;      // replay position of the picked save
+    bool assistStandby = false;
+    asw_inputs* assistSide = nullptr;
+    ULONGLONG assistActiveAt = 0;
+    // Set once takeover changes the fight: from then on it no longer matches the
+    // replay's read position, so saves taken in that state would be wrong.
+    bool diverged = false;
+    bool pointDiverged = false;
+
+    int assistFrames() const
+    {
+        return static_cast<int>(ModMenu::instance().replayAssistSeconds() * 60.0 + 0.5);
+    }
+
+    uint32_t replayPosition() const
+    {
+        return manager ? manager->m_ReplayBuffer[0].m_ReadHead.m_SolidPosition : 0;
+    }
+
+    void clearRing()
+    {
+        for (auto& r : ring) r.valid = false;
+        ringNext = 0;
+        ringLast = 0;
+        assistSlot = -1;
+        assistStandby = false;
+    }
+
+    void ringSave()
+    {
+        const int want = assistFrames();
+        auto rollback = asw_rollback::get();
+        if (want <= 0 || !rollback || !manager || analyzer || diverged || assistStandby) return;
+        const uint32_t pos = replayPosition();
+        if (pos < ringLast) clearRing();  // the replay was moved back with its own controls
+        // Spacing so the ring always reaches back far enough, with one slot locked by F6.
+        const uint32_t every = (std::max)(6, (want + kRingSlots - 3) / (kRingSlots - 2));
+        if (pos < ringLast + every && ringLast != 0) return;
+        if (ringNext == assistSlot) ringNext = (ringNext + 1) % kRingSlots;
+        const int slot = ringNext;
+        ringNext = (ringNext + 1) % kRingSlots;
+
+        int savedIndex = rollback->CurrentBackupDataIndex;
+        const int max = rollback->MaxBackupFrame;
+        rollback->CurrentBackupDataIndex = slot == 0 ? max - 1 : slot - 1;
+        orig_SaveBackup(rollback);
+        rollback->CurrentBackupDataIndex = savedIndex;
+
+        ring[slot].valid = true;
+        ring[slot].position = pos;
+        for (int i = 0; i < 6; i++) ring[slot].heads[i] = manager->m_ReplayBuffer[i].m_ReadHead;
+        ringLast = pos;
+    }
+
+    void pickAssistSave()
+    {
+        assistSlot = -1;
+        assistStandby = false;
+        pointDiverged = diverged;
+        const int want = assistFrames();
+        if (want <= 0 || diverged) return;
+        assistTarget = replayPosition();
+        for (int i = 0; i < kRingSlots; i++)
+            if (ring[i].valid && ring[i].position + want <= assistTarget
+                && (assistSlot < 0 || ring[i].position > ring[assistSlot].position))
+                assistSlot = i;
+        COMBO_LOG("assist: F6 at " + std::to_string(assistTarget) + ", save " + std::to_string(assistSlot)
+                  + (assistSlot >= 0 ? " at " + std::to_string(ring[assistSlot].position) : std::string()));
+    }
+
+    void updateAssist()
+    {
+        if (!assistStandby || replayPosition() < assistTarget) return;
+        assistStandby = false;
+        if (!assistSide) return;
+        analyzer = assistSide;
+        diverged = true;
+        assistActiveAt = GetTickCount64();
+    }
+
 public:
     void setManager(ReplayManager_Internal* inManager)
     {
@@ -446,17 +544,22 @@ public:
         if (!rollback) return;
         rollback->CurrentBackupDataIndex = 18;
         orig_SaveBackup(rollback);
-        if (gameState->checkModeReplay()) saveBackup();
+        if (gameState->checkModeReplay())
+        {
+            pickAssistSave();
+            saveBackup();
+        }
         ModMenu::instance().notifyRewindPointCreated();
     }
 
-    void restoreRewindPoint()
+    void restoreRewindPoint(int slot = 19)
     {
         auto rollback = asw_rollback::get();
-        rollback->CurrentBackupDataIndex = 0;
+        const int max = rollback->MaxBackupFrame;
+        rollback->CurrentBackupDataIndex = (slot + 1) % max;
         rollback->RollbackFrame = 1;
         rollback->TotalRollbackFrames = 0;
-        auto backupData = rollback->BackupData[19];
+        auto backupData = rollback->BackupData[slot];
         orig_Rollback(rollback);
         if (orig_EffectCleanupA && orig_EffectCleanupB)
         {
@@ -465,10 +568,26 @@ public:
         }
         repairEffectsAfterLoad();
         syncDangerBanner();
-        rollback->BackupData[19] = backupData;
+        rollback->BackupData[slot] = backupData;
         rollback->RollbackFrame = 0;
         rollback->TotalRollbackFrames = 0;
         restoreReplayHead();
+    }
+
+    bool restoreAssist()
+    {
+        if (!gameState->checkModeReplay() || assistSlot < 0 || !ring[assistSlot].valid) return false;
+        const RingSave& save = ring[assistSlot];
+        restoreRewindPoint(assistSlot);
+        for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = save.heads[i];
+        analyzer = nullptr;
+        diverged = false;
+        ringLast = save.position;
+        assistFrom = save.position;
+        assistStandby = true;
+        resetRewindDelay();
+        timeline->setPaused(false);
+        return true;
     }
 
     void onPreTick()
@@ -503,8 +622,18 @@ public:
             const bool explicitRewind = rewindRequested || !gameState->checkModeReplay();
             loadState = false;
             rewindRequested = false;
-            restoreRewindPoint();
-            if (explicitRewind) beginRewindDelay();
+            if (!restoreAssist())
+            {
+                restoreRewindPoint();
+                diverged = pointDiverged;
+                if (explicitRewind) beginRewindDelay();
+            }
+        }
+
+        if (gameState->checkModeReplay())
+        {
+            updateAssist();
+            ringSave();
         }
 
         // A tick can consume Step without reaching UpdateBattle. Keep requesting
@@ -523,19 +652,7 @@ public:
         if (keybindings->getButtonState(keybindings->TOGGLE_SAVE_BUTTON))
         {
             keybindings->resetButton(keybindings->TOGGLE_SAVE_BUTTON);
-            if (isTakeover)
-            {
-                reset();
-            }
-            isTakeover = true;
-            auto rollback = asw_rollback::get();
-            rollback->CurrentBackupDataIndex = 18;
-            orig_SaveBackup(rollback);
-            for (int i = 0; i < 6; i++)
-            {
-                replayHead[i] = manager->m_ReplayBuffer[i].m_ReadHead;
-            }
-            ModMenu::instance().notifyRewindPointCreated();
+            placeRewindPoint();
         }
 
         if (keybindings->getButtonState(keybindings->TAKEOVER_P1_BUTTON))
@@ -557,6 +674,7 @@ public:
             {
                 loadState = true;
                 rewindRequested = true;
+                if (analyzer) assistSide = analyzer;
             }
         }
     }
@@ -567,6 +685,7 @@ public:
         loadState = false;
         rewindRequested = false;
         analyzer = nullptr;
+        assistStandby = false;
     }
 
     // Same side's key again = stop taking over. The replay then plays on by itself.
@@ -577,9 +696,13 @@ public:
         if (analyzer != side)
         {
             analyzer = side;
+            assistSide = side;
+            assistStandby = false;
+            diverged = true;
             return;
         }
         analyzer = nullptr;
+        assistSide = nullptr;
         if (isTakeover) loadState = true;
     }
 
@@ -949,6 +1072,9 @@ void ReplayManager::onMatchStart()
     // re-anchor the capture range.
     data->g_anchor_set = false;
     data->reset();
+    data->clearRing();
+    data->diverged = false;
+    data->assistSide = nullptr;
 }
 
 void ReplayManager::onRoundStart()
@@ -1042,6 +1168,20 @@ void ReplayManager::onBattleUpdate()
 void ReplayManager::onBattleFrameProcessed()
 {
     data->onBattleFrameProcessed();
+}
+
+int ReplayManager::assistState(float& remaining) const
+{
+    if (data->assistStandby)
+    {
+        const float total = static_cast<float>(data->assistTarget - data->assistFrom);
+        const float left = static_cast<float>(data->assistTarget) - static_cast<float>(data->replayPosition());
+        remaining = total > 0 ? (std::clamp)(left / total, 0.0f, 1.0f) : 0.0f;
+        return 1;
+    }
+    if (data->assistActiveAt && GetTickCount64() - data->assistActiveAt < 1000 && !data->isAnalyzerSame(nullptr))
+        return 2;
+    return 0;
 }
 
 bool ReplayManager::isRewindDelayActive() const

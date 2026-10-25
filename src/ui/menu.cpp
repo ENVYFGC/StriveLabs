@@ -218,8 +218,9 @@ namespace Settings {
   FloatSetting UI_SCALE_TIMELINE = {"ui_scale_timeline", 1.00, 1.00, 0.50, 2.00, 0.05};
 
   FloatSetting REWIND_DELAY_SECONDS = {"rewind_delay_seconds", 0.0, 0.0, 0.0, 60.0, 1.0};
+  FloatSetting REPLAY_ASSIST_SECONDS = {"replay_assist_seconds", 0.0, 0.0, 0.0, 5.0, 0.5};
 
-  std::array<FloatSetting *, 19> float_settings = {
+  std::array<FloatSetting *, 20> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -239,6 +240,7 @@ namespace Settings {
       &UI_SCALE_BAR,          // 16
       &UI_SCALE_TIMELINE,     // 17
       &REWIND_DELAY_SECONDS,  // 18
+      &REPLAY_ASSIST_SECONDS, // 19
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
@@ -348,7 +350,7 @@ namespace Settings {
 
   void resetLayout() {
     for (auto *f : float_settings)
-      if (f != &REWIND_DELAY_SECONDS && f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
+      if (f != &REWIND_DELAY_SECONDS && f != &REPLAY_ASSIST_SECONDS && f->id_.rfind("ui_", 0) != 0) f->reset();  // positions only, not the look
     saveConfig();
   }
 }
@@ -749,6 +751,12 @@ namespace {
   std::wstring formatMenuNumber(const FloatSetting& setting) {
     if (&setting == &Settings::REWIND_DELAY_SECONDS)
       return std::to_wstring(static_cast<int>(setting.value));
+    if (&setting == &Settings::REPLAY_ASSIST_SECONDS) {
+      if (setting.value <= 0) return L"Off";
+      wchar_t buf[16]{};
+      swprintf_s(buf, L"%.1f", setting.value);
+      return buf;
+    }
     return formatMenuFloat(setting.value);
   }
 
@@ -879,6 +887,7 @@ namespace {
           if (!isTakeoverHotkey(action)) hotkey(action);
       } else {
         rows.push_back({L"Rewind", L"Playback delay (seconds)", nullptr, &REWIND_DELAY_SECONDS});
+        rows.push_back({L"", L"Replay Assist (seconds)", nullptr, &REPLAY_ASSIST_SECONDS});
         const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
         rows[hotkeysBegin].section = L"Hotkeys";
@@ -1211,6 +1220,9 @@ void ModMenu::draw() {
     };
     if (const auto player = ReplayManager::instance().takeoverPlayer())
       drawStatus(L"Takeover: P" + std::to_wstring(*player));
+    float assistLeft = 0.0f;
+    if (const int assist = ReplayManager::instance().assistState(assistLeft))
+      drawStatus(assist == 1 ? L"Replay Assist: Standby" : L"Replay Assist: Active");
     const int seconds = ReplayManager::instance().rewindCountdownSeconds();
     if (seconds > 0) drawStatus(L"Playback in " + std::to_wstring(seconds) + L" s");
     if (isRewindPointNotificationVisible()) drawStatus(L"Rewind point created");
@@ -1798,6 +1810,7 @@ bool ModMenu::cancelEnabled() const { return false; }
 bool ModMenu::dashEnabled() const { return Settings::SHOW_DASH_FRAMES.value; }
 bool ModMenu::crossupEnabled() const { return Settings::CROSSUP_ENABLED.value; }
 int ModMenu::rewindDelaySeconds() const { return static_cast<int>(Settings::REWIND_DELAY_SECONDS.value); }
+double ModMenu::replayAssistSeconds() const { return Settings::REPLAY_ASSIST_SECONDS.value; }
 
 int ModMenu::pauseType() const { return Settings::PAUSE_TYPE.value; }
 

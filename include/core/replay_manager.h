@@ -29,6 +29,8 @@ public:
     void logStatus() const;
 
     bool isRewindDelayActive() const;
+    // Replay Assist: 0 = off, 1 = standby (remaining = 1..0 of the lead-in), 2 = just went active.
+    int assistState(float& remaining) const;
     int rewindCountdownSeconds() const;
 
     bool isTakeoverInput(const asw_inputs* input) const;

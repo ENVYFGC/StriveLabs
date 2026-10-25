@@ -944,7 +944,8 @@ namespace menu_ui {
     if (!open) preview_rgb = 0;
   }
 
-  void draw_status_message(const char* label, int row) {
+  // bar >= 0 adds a draining bar under the text (1 = full).
+  void draw_status_message(const char* label, int row, float bar = -1.0f) {
     ImFont* font = f_title ? f_title : ImGui::GetFont();
     const float size = 30.0f * S;
     const ImVec2 text = font->CalcTextSizeA(size, FLT_MAX, 0.0f, label);
@@ -955,6 +956,12 @@ namespace menu_ui {
     dl->AddRectFilled(ImVec2(pos.x - pad, pos.y - pad),
                       ImVec2(pos.x + text.x + pad, pos.y + text.y + pad), OVERLAY_BG);
     dl->AddText(font, size, pos, TEXT, label);
+    if (bar >= 0.0f) {
+      const float y = pos.y + text.y + pad - 6.0f * S;
+      const float x0 = pos.x - pad, x1 = pos.x + text.x + pad;
+      dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + 6.0f * S), BAR_BG);
+      dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + (x1 - x0) * bar, y + 6.0f * S), RED);
+    }
   }
 
   void draw_replay_status(const MenuView& v) {
@@ -964,6 +971,10 @@ namespace menu_ui {
       snprintf(label, sizeof(label), "Takeover: P%d", *v.takeover_player);
       draw_status_message(label, row++);
     }
+    float assist_left = 0.0f;
+    const int assist = ReplayManager::instance().assistState(assist_left);
+    if (assist == 1) draw_status_message("Replay Assist: Standby", row++, assist_left);
+    else if (assist == 2) draw_status_message("Replay Assist: Active", row++);
     const int seconds = ReplayManager::instance().rewindCountdownSeconds();
     if (seconds > 0) {
       char label[64];
