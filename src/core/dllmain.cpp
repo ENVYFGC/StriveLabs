@@ -328,6 +328,8 @@ static void pollGamepad()
 
 void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 {
+    // One frame per press: last frame's is over, also when this mode isn't handled.
+    g_training_press = 0;
     if (!game_state.checkMode())
     {
         orig_UpdateBattle(GameState, DeltaTime);
@@ -339,8 +341,6 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
 
     pollGamepad();  // before anything reads button states this frame
-    // One frame per press: last frame's is over.
-    g_training_press = 0;
     uint32_t pressed = 0;
     if (keybindings.takeAction(binds::TRAINING_RECORD)) pressed |= kFakeRecord;
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
@@ -569,6 +569,7 @@ public:
         ReplayManager::instance().initialize(game_state, keybindings, Timeline::instance());
 
         // Optional: without it the training record / playback / reset binds do nothing.
+        bool training_hook = false;
         try
         {
             const uint64_t KeyConfigLookup_Addr = sigscan::get().scan(
@@ -576,9 +577,9 @@ public:
                 "xxxxxxxxxxxxx????xxxxxxxxxx????xxxxxxxxx");
             KeyConfigLookup_Detour = new PLH::x64Detour(KeyConfigLookup_Addr, reinterpret_cast<uint64_t>(&hook_KeyConfigLookup),
                                                         reinterpret_cast<uint64_t*>(&orig_KeyConfigLookup));
-            KeyConfigLookup_Detour->hook();
+            training_hook = KeyConfigLookup_Detour->hook();
         }
-        catch (...) { COMBO_LOG("training binds: button config lookup not found"); }
+        catch (...) {}
 
         ASWInitFunctions();
         //    bbscript::BBSInitializeFunctions();
@@ -588,6 +589,7 @@ public:
         auto working_dir = UE4SSProgram::get_program().get_working_directory();
         ComboLog::instance().init(working_dir);
         COMBO_LOG("StriveLabs loaded");
+        if (!training_hook) COMBO_LOG("training binds: button config lookup not found");
         crash_log::install(working_dir);  // first hard fault -> combo_log.txt + StriveLabs_crash.dmp, for user reports
         select_memory::init(working_dir);
         imgui_overlay::install();

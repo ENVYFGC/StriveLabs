@@ -136,6 +136,8 @@ struct FrameBar::Data {
   // they happen; the bar moves past them when the fold ends.
   static constexpr int MAX_UNFOLD = 8;
   int fold_tail_n = 0;
+  bool folding = false;
+  int fold_keep = 0;  // read once per fold, so changing the setting mid-fold can't mix the two
   bool combo_active = false;
   int current_segment_idx = 0;
   bool tracking_advantage = false;

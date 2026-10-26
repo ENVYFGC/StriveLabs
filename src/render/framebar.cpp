@@ -519,6 +519,7 @@ void FrameBar::Data::drawFrame(const CurrentOptions& scheme, const FrameInfo &in
 void FrameBar::Data::resetFrames() {
   current_segment_idx = 0;
   fold_tail_n = 0;
+  folding = false;
   doBoth(&PlayerData::resetFrames);
   advantage = 0;
 }
@@ -662,7 +663,11 @@ void FrameBar::Data::addFrame() {
     // we are truncating, update truncated
     if (data.first.current_state.trunc_time > COMBO_TRUNC_TIME && data.second.current_state.trunc_time > COMBO_TRUNC_TIME) {
       doBoth(&PlayerData::truncSegment, prev_idx);
-      const int keep = (std::min)(ModMenu::instance().unfoldFrames(), MAX_UNFOLD);
+      if (!folding) {
+        folding = true;
+        fold_keep = (std::min)(ModMenu::instance().unfoldFrames(), MAX_UNFOLD);
+      }
+      const int keep = fold_keep;
       if (keep <= 0) {
         store_inputs(prev_idx, true);
         return;
@@ -688,7 +693,8 @@ void FrameBar::Data::addFrame() {
         auto* s = pd[p]->segments;
         for (int k = 0; k + 1 < fold_tail_n; k++) s[tail(k)].trunc = 0;
         s[idx].state = s[prev_idx].state;
-        s[idx].mods = static_cast<ModifierType>(s[prev_idx].mods & ~(MT_SegmentEnd | MT_Perfect));
+        s[idx].mods = static_cast<ModifierType>(s[prev_idx].mods & ~(MT_SegmentEnd | MT_Perfect | MT_Projectile));
+        if (pd[p]->current_state.anyProjectiles()) s[idx].mods |= MT_Projectile;
         s[idx].decay = s[prev_idx].decay;
         s[idx].trunc = s[prev_idx].trunc;
         s[prev_idx].trunc = 0;
@@ -699,6 +705,7 @@ void FrameBar::Data::addFrame() {
     }
 
     // A fold just ended: move past its last cells.
+    folding = false;
     if (fold_tail_n > 0) {
       current_segment_idx = (current_segment_idx + fold_tail_n) % FRAME_SEGMENTS;
       fold_tail_n = 0;
