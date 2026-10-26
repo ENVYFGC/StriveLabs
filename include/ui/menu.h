@@ -196,7 +196,7 @@ public:
   bool dashEnabled() const;
   int pauseType() const;
   int delayAmount() const;
-  int rewindDelaySeconds() const;
+  double rewindDelaySeconds() const;
   double replayAssistSeconds() const;
   bool crossupEnabled() const;
   TensionOptions getTensionOptions() const;

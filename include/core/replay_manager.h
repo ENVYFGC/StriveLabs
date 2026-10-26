@@ -42,13 +42,14 @@ public:
         int assist = 0;               // 1 standby, 2 just went active
         float assistLeftSeconds = 0.0f;
         float assistFraction = 0.0f;  // standby bar, 1..0
+        float rewindLeftSeconds = 0.0f; // rounded up to tenths while waiting, 0 when inactive
+        float rewindFraction = 0.0f;   // delay bar, 1..0
         int prompt = 0;               // 1 or 2: asking about that side
         bool promptStop = false;      // asking to stop rather than start
         bool promptRewinds = false;   // stopping goes back to the rewind point
     };
     Status status() const;
     bool promptOpen() const;
-    int rewindCountdownSeconds() const;
 
     bool isTakeoverInput(const asw_inputs* input) const;
     // Selected replay player (1 or 2), or empty while watching playback.

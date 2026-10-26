@@ -127,6 +127,7 @@ struct ReplayManager::Data
     Timeline* timeline = nullptr;
     static constexpr int kRewindFramesPerSecond = 60;
     std::atomic<int> rewindFramesRemaining{0};
+    int rewindFramesTotal = 0; // duration captured when the countdown starts
     bool isWaitingForFrame = false;
     int lastGameFrame = -1;
 
@@ -134,6 +135,7 @@ struct ReplayManager::Data
     {
         if (rewindFramesRemaining > 0) timeline->setPaused(false);
         rewindFramesRemaining = 0;
+        rewindFramesTotal = 0;
         isWaitingForFrame = false;
     }
 
@@ -141,7 +143,8 @@ struct ReplayManager::Data
     {
         const bool wasPaused = timeline->isPaused();
         resetRewindDelay();
-        rewindFramesRemaining = ModMenu::instance().rewindDelaySeconds() * kRewindFramesPerSecond;
+        rewindFramesTotal = static_cast<int>(ModMenu::instance().rewindDelaySeconds() * kRewindFramesPerSecond + 0.5);
+        rewindFramesRemaining = rewindFramesTotal;
         if (rewindFramesRemaining <= 0 && !wasPaused) return;
 
         // setPaused(false) clears queued manual steps, preventing extra frames after
@@ -165,12 +168,6 @@ struct ReplayManager::Data
         if (gameFrame == lastGameFrame) return;
         lastGameFrame = gameFrame;
         isWaitingForFrame = false;
-    }
-
-    int rewindCountdownSeconds() const
-    {
-        const int remaining = rewindFramesRemaining.load();
-        return (remaining + kRewindFramesPerSecond - 1) / kRewindFramesPerSecond;
     }
 
     using funcSaveBackup_t = void (*)(asw_rollback*);
@@ -1508,6 +1505,12 @@ ReplayManager::Status ReplayManager::status() const
     if (!data->gameState) return s;
     s.replay = data->gameState->checkModeReplay();
     s.rewindPoint = data->rewindPointSet;
+    const int rewindFrames = data->rewindFramesRemaining.load();
+    // Round up so the banner never shows 0.0 before playback actually resumes.
+    constexpr int framesPerTenth = Data::kRewindFramesPerSecond / 10;
+    s.rewindLeftSeconds = ((rewindFrames + framesPerTenth - 1) / framesPerTenth) / 10.0f;
+    if (data->rewindFramesTotal > 0)
+        s.rewindFraction = (std::clamp)(static_cast<float>(rewindFrames) / data->rewindFramesTotal, 0.0f, 1.0f);
     if (const auto p = takeoverPlayer()) s.takeover = *p;
     s.assistSeconds = s.replay ? ModMenu::instance().replayAssistSeconds() : 0.0;
     float left = 0.0f;
@@ -1533,11 +1536,6 @@ bool ReplayManager::promptOpen() const
 bool ReplayManager::isRewindDelayActive() const
 {
     return data->rewindFramesRemaining.load() > 0;
-}
-
-int ReplayManager::rewindCountdownSeconds() const
-{
-    return data->rewindCountdownSeconds();
 }
 
 void ReplayManager::logStatus() const
