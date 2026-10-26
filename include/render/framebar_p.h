@@ -28,7 +28,8 @@ enum ModifierType {
   MT_Projectile = 0x2,
   MT_SegmentEnd = 0x4,
   MT_CrossUp = 0x8,
-  MT_CleanHit = 0x10
+  MT_CleanHit = 0x10,
+  MT_Perfect = 0x20  // a move that started on the first frame it could
 };
 inline ModifierType operator|(ModifierType a, ModifierType b) { return (ModifierType)((int)a | (int)b);}
 inline ModifierType operator&(ModifierType a, ModifierType b) { return (ModifierType)((int)a & (int)b);}
@@ -76,6 +77,7 @@ public:
   bool active_stall = true;
   bool can_cancel = false;
   bool show_crossup = false;
+  bool burst = false;
 
   // -2 means our x < other x
   // -1 means our x = other x but we just came from -2
@@ -130,6 +132,10 @@ struct FrameBar::Data {
   // Input bar: presses not yet stored in a cell (hitstop and super freeze
   // frames are skipped by the bar, so their presses go to the next cell).
   uint16_t pending_press[2] = {0, 0};
+  // Last frames of a folded stretch: cells right after the folded one, written as
+  // they happen; the bar moves past them when the fold ends.
+  static constexpr int MAX_UNFOLD = 8;
+  int fold_tail_n = 0;
   bool combo_active = false;
   int current_segment_idx = 0;
   bool tracking_advantage = false;

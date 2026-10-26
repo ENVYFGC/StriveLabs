@@ -186,6 +186,11 @@ public:
   static std::string overlayFont();       // meters and frame bar font file in StriveLabs_fonts, "" = Barlow (any thread)
   bool barEnabled() const;
   bool inputBarEnabled() const;
+  int inputBarRows() const;   // bits: 1 = P1's input row, 2 = P2's
+  int barRows() const;        // bits: 1 = P1's frame bar row, 2 = P2's
+  int unfoldFrames() const;   // last frames of a folded stretch shown as cells, 0 = off
+  bool barBlocks() const;     // long stretches drawn as one block
+  bool markPerfect() const;   // frame perfect moves marked on the bar
   bool statusLineEnabled() const;
   float statusLineOpacity() const;  // black background behind the status line, 0..1
   float statusLineSize() const;     // status line text size, 1 = normal

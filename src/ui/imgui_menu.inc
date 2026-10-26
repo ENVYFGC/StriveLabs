@@ -547,11 +547,13 @@ namespace menu_ui {
       const float pad = 10 * S, gap = 4 * S;
       const float x0 = f.o.x + pad, x1 = f.o.x + f.w - pad;
       float y = f.o.y + f.head + 3 * S;
-      // Input bar: a row under each bar with three lanes (direction, buttons,
-      // macro), sharing the height with the bars.
-      const float avail = std::max(0.0f, f.o.y + f.h - 4 * S - y - 2 * lh - gap);
-      const float in_h = fb.inputs ? std::min((x1 - x0) / 120.0f * 8.0f, avail * 0.35f) : 0.0f;
-      const float bar_h = std::max((avail - 2 * (in_h + (fb.inputs ? gap : 0))) * 0.5f, 6 * S);
+      // Each shown side: its stats line, its bar and, if on, an input row with three
+      // lanes (direction, buttons, macro) sharing the height with the bars.
+      const int nbars = int(fb.show[0]) + int(fb.show[1]);
+      const int nin = int(fb.show_inputs[0]) + int(fb.show_inputs[1]);
+      const float avail = std::max(0.0f, f.o.y + f.h - 4 * S - y - nbars * lh - (nbars > 1 ? gap : 0.0f));
+      const float in_h = nin ? std::min((x1 - x0) / 120.0f * 8.0f, avail * (nin > 1 ? 0.35f : 0.5f)) : 0.0f;
+      const float bar_h = std::max((avail - nin * (in_h + gap)) / static_cast<float>(std::max(nbars, 1)), 6 * S);
       // Like the HUD bar, fit 120 cells plus a trailing gap into the background.
       // Keep enough space for the delimiter and crossup markers at either edge.
       const float desired_sp = std::max((x1 - x0) * (4.0f / (120 * 24.0f + 4.0f)), std::max(1.5f * S, 1.0f));
@@ -568,12 +570,37 @@ namespace menu_ui {
       auto bar = [&](int row, float top) {
         dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, top + bar_h), fb.bg);
         const float sy = top + vsp, sh = bar_h - 2 * vsp, bt = std::min(sp, std::max(1.5f * S, 1.0f));
+        // One block: a stretch has its cells joined, all but its last `keep` ones. A
+        // stretch ends at a segment end or an empty cell.
+        bool join[120] = {};
+        if (fb.blocks) {
+          for (int s = 0; s < 120;) {
+            if (!fb.rows[row][s].on) { s++; continue; }
+            int e = s;
+            while (!(fb.rows[row][e].mods & 4) && e < 119 && fb.rows[row][e + 1].on) e++;
+            for (int j = s; j < e - fb.keep; j++) join[j] = true;
+            s = e + 1;
+          }
+        }
         for (int i = 0; i < 120; i++) {
           const auto& c = fb.rows[row][i];
           if (!c.on) continue;
           const float left = x0 + cell * i + sp;
           if (c.mods & 2) dl->AddRectFilled(ImVec2(left - bt, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), fb.bg);
           dl->AddRectFilled(ImVec2(left, sy), ImVec2(left + seg_w, sy + sh), c.color);
+          if (join[i]) dl->AddRectFilled(ImVec2(left + seg_w, sy), ImVec2(left + cell, sy + sh), c.color);
+          if (fb.perfect && (c.mods & 0x20)) {
+            // White outline, and a white cap on top with a black star.
+            dl->AddRect(ImVec2(left - bt * 0.5f, sy - bt * 0.5f), ImVec2(left + seg_w + bt * 0.5f, sy + sh + bt * 0.5f), RGBA(255, 255, 255), 0, 0, bt);
+            const float ch = std::min(seg_w, sh * 0.45f), r = ch * 0.42f;
+            dl->AddRectFilled(ImVec2(left, sy), ImVec2(left + seg_w, sy + ch), RGBA(255, 255, 255));
+            ImVec2 p[10];
+            for (int k = 0; k < 10; k++) {
+              const float a = -IM_PI / 2 + k * IM_PI / 5, rr = (k & 1) ? r * 0.4f : r;
+              p[k] = ImVec2(left + seg_w * 0.5f + std::cos(a) * rr, sy + ch * 0.5f + std::sin(a) * rr);
+            }
+            dl->AddConcavePolyFilled(p, 10, RGBA(0, 0, 0));
+          }
           if (fb.delim && (c.mods & 4)) dl->AddRectFilled(ImVec2(left + seg_w, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), RGBA(255, 255, 255));
           if (fb.cancels && (c.mods & 1)) dl->AddRectFilled(ImVec2(left, sy + sh * 2 / 3), ImVec2(left + seg_w, sy + sh), RGBA(255, 255, 255));
           if (fb.crossups && (c.mods & 8)) dl->AddRectFilled(ImVec2(left + seg_w - bt, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), RED);
@@ -685,12 +712,17 @@ namespace menu_ui {
           ImGui::SetTooltip("%s", t.c_str());
         }
       };
-      stats(info[0], y);            y += lh;
-      bar(0, y);                    y += bar_h + gap;
-      if (fb.inputs) { inputs(0, y); y += in_h + gap; }
-      bar(1, y);                    y += bar_h;
-      if (fb.inputs) { y += gap; inputs(1, y); y += in_h; }
-      stats(info[1], y + 1 * S);
+      if (fb.show[0]) {
+        stats(info[0], y);          y += lh;
+        bar(0, y);                  y += bar_h;
+        if (fb.show_inputs[0]) { y += gap; inputs(0, y); y += in_h; }
+      }
+      if (fb.show[1]) {
+        if (fb.show[0]) y += gap;
+        bar(1, y);                  y += bar_h;
+        if (fb.show_inputs[1]) { y += gap; inputs(1, y); y += in_h; }
+        stats(info[1], y + 1 * S);
+      }
     }
     end_window();
   }

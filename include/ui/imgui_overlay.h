@@ -22,6 +22,11 @@ namespace imgui_overlay {
     std::wstring info[2];
     unsigned bg = 0;  // packed RGBA, same layout as IM_COL32
     bool delim = false, cancels = false, crossups = false, inputs = false;
+    bool show[2] = {true, true};          // frame bar rows shown
+    bool show_inputs[2] = {false, false}; // input rows shown (only under a shown bar)
+    bool blocks = false;   // long stretches drawn as one block, but their last `keep` cells
+    bool perfect = false;  // mark frame perfect moves
+    int keep = 0;
   };
   void setFrameBar(const FrameBarView& view);
 

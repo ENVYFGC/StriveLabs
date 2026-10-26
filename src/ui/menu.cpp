@@ -111,8 +111,20 @@ namespace Settings {
                  {L"<     0ms     >", L"<     20ms    >", L"<     30ms    >", L"<     60ms    >"}},
       "delay_amount", 0};
   SettingsEntry INPUT_BAR = SettingsEntry{
-      OptionData{L"Input Bar:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      OptionData{L"Input Bar:", 4, {L"<  Disabled  >", L"<    Both    >", L"<  P1 only   >", L"<  P2 only   >"}},
       "input_bar", 0};
+  SettingsEntry BAR_ROWS = SettingsEntry{
+      OptionData{L"Frame Bar Rows:", 3, {L"<    Both    >", L"<  P1 only   >", L"<  P2 only   >"}},
+      "framebar_rows", 0};
+  SettingsEntry BAR_UNFOLD = SettingsEntry{
+      OptionData{L"Last Frames Of Long Stretches:", 4, {L"<    Off     >", L"<     3      >", L"<     5      >", L"<     8      >"}},
+      "framebar_unfold", 0};
+  SettingsEntry BAR_BLOCKS = SettingsEntry{
+      OptionData{L"Long Stretches As:", 2, {L"<   Cells    >", L"< One block  >"}},
+      "framebar_blocks", 0};
+  SettingsEntry BAR_PERFECT = SettingsEntry{
+      OptionData{L"Mark Frame Perfect Moves:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "framebar_perfect", 0};
   // Frame bar's own look while the menu is closed. 0 follows "Hide decorations".
   SettingsEntry BAR_TITLE = SettingsEntry{
       OptionData{L"Frame Bar Title:", 4, {L"< Like other windows >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}},
@@ -177,12 +189,12 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 28> settings = {
+  std::array<SettingsEntry *, 32> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
       &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
-      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE, &BAR_TITLE, &BAR_PANEL,
+      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE, &BAR_TITLE, &BAR_PANEL, &BAR_ROWS, &BAR_UNFOLD, &BAR_BLOCKS, &BAR_PERFECT,
   };
 
   // Layout float settings
@@ -847,12 +859,16 @@ namespace {
         {L"Settings", L"Frame Bar", &FRAMEBAR},
         {L"", L"Show Dash", &SHOW_DASH_FRAMES},
         {L"", L"Show Crossup", &CROSSUP_ENABLED},
+        {L"", L"Rows", &BAR_ROWS},
+        {L"", L"Last frames of long stretches", &BAR_UNFOLD},
         {L"Appearance", L"Color scheme", &COLOR_SCHEME},
         {L"", L"Fade effect", &FADE},
         {L"", L"Delimit segments", &DELIM},
       };
       if (imgui_overlay::running()) {
-        rows.insert(rows.begin() + 3, SettingsRowDef{L"", L"Input bar", &INPUT_BAR});  // drawn by the overlay only
+        rows.insert(rows.begin() + 5, {SettingsRowDef{L"", L"Long stretches as", &BAR_BLOCKS},  // drawn by the overlay only
+                                       SettingsRowDef{L"", L"Mark frame perfect moves", &BAR_PERFECT},
+                                       SettingsRowDef{L"", L"Input bar", &INPUT_BAR}});
         rows.push_back({L"", L"Title when menu is closed", &BAR_TITLE});
         rows.push_back({L"", L"Background when menu is closed", &BAR_PANEL});
       }
@@ -1844,6 +1860,18 @@ void ModMenu::buildView() {
 }
 
 bool ModMenu::inputBarEnabled() const { return Settings::INPUT_BAR.value != 0; }
+int ModMenu::inputBarRows() const {
+  switch (Settings::INPUT_BAR.value) { case 1: return 3; case 2: return 1; case 3: return 2; default: return 0; }
+}
+int ModMenu::barRows() const {
+  switch (Settings::BAR_ROWS.value) { case 1: return 1; case 2: return 2; default: return 3; }
+}
+int ModMenu::unfoldFrames() const {
+  static const int frames[] = {0, 3, 5, 8};
+  return frames[std::clamp(static_cast<int>(Settings::BAR_UNFOLD.value), 0, 3)];
+}
+bool ModMenu::barBlocks() const { return Settings::BAR_BLOCKS.value != 0; }
+bool ModMenu::markPerfect() const { return Settings::BAR_PERFECT.value != 0; }
 bool ModMenu::statusLineEnabled() const { return Settings::STATUS_LINE.value != 0; }
 float ModMenu::statusLineOpacity() const { return static_cast<float>(Settings::STATUS_BG_OPACITY.value); }
 float ModMenu::statusLineSize() const { return static_cast<float>(Settings::STATUS_TEXT_SIZE.value); }

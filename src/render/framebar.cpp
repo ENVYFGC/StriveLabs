@@ -323,6 +323,14 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
       DEBUG_PRINT(STR("Last section requires truncating\n"));
       previous.trunc = previous_state.state_time;
     }
+
+    // A move that started right as stun or recovery ended, with no neutral frame
+    // between. Bursts never count: one out of stun cuts it short, so its timing says nothing.
+    const auto was = previous_state.type;
+    if ((current_state.type == PST_Busy || current_state.type == PST_Attacking) && current_state.time <= 1 && !current_state.burst &&
+        (was == PST_BlockStunned || was == PST_HitStunned || was == PST_Recovering)) {
+      active.mods |= MT_Perfect;
+    }
   } else {
     DEBUG_PRINT(STR("Same Section for One\n"));
     if(previous_state.can_cancel != current_state.can_cancel && previous_state.trunc_time > COMBO_NUM_TIME){
@@ -396,6 +404,7 @@ PlayerState::PlayerState(asw_player &player, asw_player &opp, const PlayerState 
   const bool block_stunned = player.is_in_blockstun() || player.is_stagger() || player.is_guard_crush();
   const bool hit_stunned = player.is_in_hitstun();
   const bool knockdown = player.is_knockdown();
+  burst = player.cur_cmn_action_id == ID_CmnActBurst;
   const bool player_active = player.is_active() && (player.hitbox_count > 0 || player.throw_range >= 0);
   const bool jump_recovery = player.is_jump_recovery();
   const bool is_dash = player.is_fdash();
@@ -509,6 +518,7 @@ void FrameBar::Data::drawFrame(const CurrentOptions& scheme, const FrameInfo &in
 
 void FrameBar::Data::resetFrames() {
   current_segment_idx = 0;
+  fold_tail_n = 0;
   doBoth(&PlayerData::resetFrames);
   advantage = 0;
 }
@@ -652,8 +662,47 @@ void FrameBar::Data::addFrame() {
     // we are truncating, update truncated
     if (data.first.current_state.trunc_time > COMBO_TRUNC_TIME && data.second.current_state.trunc_time > COMBO_TRUNC_TIME) {
       doBoth(&PlayerData::truncSegment, prev_idx);
-      store_inputs(prev_idx, true);
+      const int keep = (std::min)(ModMenu::instance().unfoldFrames(), MAX_UNFOLD);
+      if (keep <= 0) {
+        store_inputs(prev_idx, true);
+        return;
+      }
+      // The last `keep` frames of the fold keep cells of their own, right after the
+      // folded cell, so the end of a long recovery lines up frame by frame with the
+      // other side, inputs and all. Older ones go into the folded cell. The count
+      // sits on the newest cell.
+      PlayerData* pd[2] = {&data.first, &data.second};
+      auto tail = [&](int k) { return (current_segment_idx + k) % FRAME_SEGMENTS; };
+      while (fold_tail_n >= keep) {
+        for (int p = 0; p < 2; p++) {
+          auto* s = pd[p]->segments;
+          s[prev_idx].input_dir = s[tail(0)].input_dir;
+          s[prev_idx].input_held = s[tail(0)].input_held;
+          s[prev_idx].input_pressed = static_cast<uint16_t>(s[prev_idx].input_pressed | s[tail(0)].input_pressed);
+          for (int k = 1; k < fold_tail_n; k++) s[tail(k - 1)] = s[tail(k)];
+        }
+        fold_tail_n--;
+      }
+      const int idx = tail(fold_tail_n++);
+      for (int p = 0; p < 2; p++) {
+        auto* s = pd[p]->segments;
+        for (int k = 0; k + 1 < fold_tail_n; k++) s[tail(k)].trunc = 0;
+        s[idx].state = s[prev_idx].state;
+        s[idx].mods = static_cast<ModifierType>(s[prev_idx].mods & ~(MT_SegmentEnd | MT_Perfect));
+        s[idx].decay = s[prev_idx].decay;
+        s[idx].trunc = s[prev_idx].trunc;
+        s[prev_idx].trunc = 0;
+      }
+      store_inputs(idx, false);
+      doBoth(&PlayerData::fadeSegment, tail(fold_tail_n - 1 + FADE_DISTANCE));
       return;
+    }
+
+    // A fold just ended: move past its last cells.
+    if (fold_tail_n > 0) {
+      current_segment_idx = (current_segment_idx + fold_tail_n) % FRAME_SEGMENTS;
+      fold_tail_n = 0;
+      prev_idx = (current_segment_idx + FRAME_SEGMENTS - 1) % FRAME_SEGMENTS;
     }
 
     doBoth(&PlayerData::updateSegment, prev_idx, current_segment_idx);
@@ -717,7 +766,15 @@ void FrameBar::Data::draw() {
     view.delim = options.show_delim;
     view.cancels = options.show_cancels;
     view.crossups = options.show_crossups;
-    view.inputs = ModMenu::instance().inputBarEnabled();
+    const int bars = menu.barRows(), in_rows = menu.inputBarRows();
+    for (int r = 0; r < 2; r++) {
+      view.show[r] = (bars >> r) & 1;
+      view.show_inputs[r] = view.show[r] && ((in_rows >> r) & 1);
+    }
+    view.inputs = view.show_inputs[0] || view.show_inputs[1];
+    view.blocks = menu.barBlocks();
+    view.perfect = menu.markPerfect();
+    view.keep = menu.unfoldFrames();
     const PlayerData* rows[2] = {&data.first, &data.second};
     for (int r = 0; r < 2; r++) {
       for (int i = 0; i < FRAME_SEGMENTS && i < 120; i++) {
@@ -739,16 +796,20 @@ void FrameBar::Data::draw() {
     return;
   }
 
-  tool.drawOutlinedText(BAR_LEFT, INFO_ONE_LOC, Unreal::FString(player_one_info.c_str()), BAR_TEXT_SIZE);
-  tool.drawOutlinedText(BAR_LEFT, INFO_TWO_LOC, Unreal::FString(player_two_info.c_str()), BAR_TEXT_SIZE);
-
-  tool.drawRect(BAR_LEFT, BAR_ONE_TOP, BAR_WIDTH, BAR_HEIGHT, options.palette.background_color);
-  tool.drawRect(BAR_LEFT, BAR_TWO_TOP, BAR_WIDTH, BAR_HEIGHT, options.palette.background_color);
+  const int bars = menu.barRows();
+  if (bars & 1) {
+    tool.drawOutlinedText(BAR_LEFT, INFO_ONE_LOC, Unreal::FString(player_one_info.c_str()), BAR_TEXT_SIZE);
+    tool.drawRect(BAR_LEFT, BAR_ONE_TOP, BAR_WIDTH, BAR_HEIGHT, options.palette.background_color);
+  }
+  if (bars & 2) {
+    tool.drawOutlinedText(BAR_LEFT, INFO_TWO_LOC, Unreal::FString(player_two_info.c_str()), BAR_TEXT_SIZE);
+    tool.drawRect(BAR_LEFT, BAR_TWO_TOP, BAR_WIDTH, BAR_HEIGHT, options.palette.background_color);
+  }
 
   for (int idx = 0; idx < FRAME_SEGMENTS; ++idx) {
     int left = BAR_LEFT + (SEG_TOTAL * idx) + SEG_SPACING;
-    drawFrame(options,  data.first.segments[idx], SEGS_ONE_TOP, left);
-    drawFrame(options, data.second.segments[idx], SEGS_TWO_TOP, left);
+    if (bars & 1) drawFrame(options,  data.first.segments[idx], SEGS_ONE_TOP, left);
+    if (bars & 2) drawFrame(options, data.second.segments[idx], SEGS_TWO_TOP, left);
   }
 }
 

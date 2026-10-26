@@ -8,7 +8,7 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 
 ## What it does
 
-- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it.
+- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show one side only, draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could.
 - Hitboxes and hurtboxes.
 - Meters for tension gain, burst, tension pulse, tension penalty and wall damage.
 - Replay takeover, so you can jump into either side of a replay and play it out yourself. Replay Assist can start you a moment early, so you're already in the flow when control is handed to you.
