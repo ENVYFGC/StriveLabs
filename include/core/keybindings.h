@@ -26,6 +26,8 @@ public:
     void setButtonIndex(int index, bool val);
     bool setButtonState(int input, bool val);
     bool getButtonState(int input);
+    // By action, for binds that may have no key (pad only).
+    bool takeAction(int action);
     void resetButton(int input);
     void resetButtons();
     void loadButtons();

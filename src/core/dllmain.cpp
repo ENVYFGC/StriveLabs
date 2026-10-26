@@ -93,6 +93,37 @@ Keybinds keybindings;
 
 static void pollGamepad();
 
+// Training record / playback / reset from the mod's binds. The training mode checks
+// these buttons itself: it asks the button config which buttons are set for them
+// (entries 0xB playback, 0xC record, 0xD reset position) and then asks the pad's key controller
+// whether one of those was just pressed. While a bind fires, the lookup also hands out
+// a made-up button no pad has, and "just pressed" says yes for it for that one frame.
+// Works with or without the game's own buttons set for them.
+static uint32_t g_training_press = 0;  // made-up buttons pressed this frame
+constexpr uint32_t kFakeReset = 0x1000000, kFakeRecord = 0x2000000, kFakePlayback = 0x4000000;
+
+using funcKeyConfigLookup_t = uint32_t (*)(int pad, int entry);
+funcKeyConfigLookup_t orig_KeyConfigLookup = nullptr;
+uint32_t hook_KeyConfigLookup(int pad, int entry)
+{
+    uint32_t mask = orig_KeyConfigLookup(pad, entry);
+    if (g_training_press && pad >= 0 && pad < PAD_ID_MAX)
+    {
+        if (entry == 0xB) mask |= g_training_press & kFakePlayback;
+        else if (entry == 0xC) mask |= g_training_press & kFakeRecord;
+        else if (entry == 0xD) mask |= g_training_press & kFakeReset;
+    }
+    return mask;
+}
+
+using funcKeyTrigger_t = bool (*)(void* controller, uint32_t mask);
+funcKeyTrigger_t orig_KeyTrigger = nullptr;
+bool hook_KeyTrigger(void* controller, uint32_t mask)
+{
+    if (mask & g_training_press) return true;
+    return orig_KeyTrigger(controller, mask);
+}
+
 class PauseManager
 {
     bool isPaused = false;
@@ -308,6 +339,18 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
 
     pollGamepad();  // before anything reads button states this frame
+    // One frame per press: last frame's is over.
+    g_training_press = 0;
+    uint32_t pressed = 0;
+    if (keybindings.takeAction(binds::TRAINING_RECORD)) pressed |= kFakeRecord;
+    if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
+    if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
+    if (pressed && game_state.checkModeTraining() && orig_KeyTrigger)
+    {
+        g_training_press = pressed;
+        COMBO_LOG(std::string("training: ") + (pressed & kFakeRecord ? "record " : "") + (pressed & kFakePlayback ? "playback " : "")
+                  + (pressed & kFakeReset ? "reset " : "") + "bind");
+    }
     ReplayManager::instance().onBattleUpdate();
     pause_manager.checkPause();
 
@@ -404,6 +447,16 @@ void hook_UpdateSystem(uintptr_t System)
 {
     orig_UpdateSystem(System);
     ReplayManager::instance().setInputSystem(System);
+    // The pads' key controllers share one vtable; its "just pressed" check is the
+    // function at +0x60. Hooked once, as soon as the first controller exists.
+    if (!orig_KeyTrigger && orig_KeyConfigLookup && System)
+    {
+        if (auto* controller = *reinterpret_cast<void**>(System + 0x1F8))
+        {
+            auto** vtable = *reinterpret_cast<const void***>(controller);
+            orig_KeyTrigger = reinterpret_cast<funcKeyTrigger_t>(vtable_hook(vtable, 0x60 / 8, reinterpret_cast<const void*>(&hook_KeyTrigger)));
+        }
+    }
 }
 
 
@@ -439,6 +492,7 @@ public:
     PLH::x64Detour* UpdateSystem_Detour;
     PLH::x64Detour* UpdateReplay_Detour;
     PLH::x64Detour* UpdateOnPreTick_Detour;
+    PLH::x64Detour* KeyConfigLookup_Detour = nullptr;
 
     StriveFrameData()
         : CppUserModBase()
@@ -513,6 +567,18 @@ public:
         Timeline::instance().initialize(game_state, keybindings);
 
         ReplayManager::instance().initialize(game_state, keybindings, Timeline::instance());
+
+        // Optional: without it the training record / playback / reset binds do nothing.
+        try
+        {
+            const uint64_t KeyConfigLookup_Addr = sigscan::get().scan(
+                "\x48\x89\x5C\x24\x10\x57\x48\x83\xEC\x50\x48\x8B\x05\x00\x00\x00\x00\x48\x33\xC4\x48\x89\x44\x24\x40\x8B\x05\x00\x00\x00\x00\x8B\xD9\x48\x63\xFA\x85\xC9\x74\x06",
+                "xxxxxxxxxxxxx????xxxxxxxxxx????xxxxxxxxx");
+            KeyConfigLookup_Detour = new PLH::x64Detour(KeyConfigLookup_Addr, reinterpret_cast<uint64_t>(&hook_KeyConfigLookup),
+                                                        reinterpret_cast<uint64_t*>(&orig_KeyConfigLookup));
+            KeyConfigLookup_Detour->hook();
+        }
+        catch (...) { COMBO_LOG("training binds: button config lookup not found"); }
 
         ASWInitFunctions();
         //    bbscript::BBSInitializeFunctions();

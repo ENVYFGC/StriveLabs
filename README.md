@@ -51,7 +51,7 @@ F5 opens the menu, or Back(select) + Start on a controller. Up and Down to move,
 | F8 | Take over P2 (asks first, press again to stop) |
 | F9 | Rewind to your saved point |
 
-You can rebind all of them on the Controls and Takeover pages. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the Takeover page.
+You can rebind all of them on the Controls and Takeover pages. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the Takeover page. Training Record, Training Playback and Training Reset Position (unbound by default) do the same as the game's own buttons, so you can put them on a key or a button combo.
 
 ## Replay takeover
 

@@ -31,6 +31,13 @@ bool Keybinds::getButtonState(int input)
     return index != -1 && buttonStates[index];
 }
 
+bool Keybinds::takeAction(int action)
+{
+    if (action < 0 || action >= BUTTON_COUNT || !buttonStates[action]) return false;
+    buttonStates[action] = false;
+    return true;
+}
+
 void Keybinds::resetButton(int input)
 {
     int index = getButtonIndex(input);

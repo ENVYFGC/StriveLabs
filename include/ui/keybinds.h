@@ -8,7 +8,8 @@
 #include <string>
 
 namespace binds {
-  enum Action { FRAMEBAR, HITBOXES, PAUSE, ADVANCE, MENU, SAVE, TAKEOVER_P1, TAKEOVER_P2, LOAD, UP, DOWN, LEFT, RIGHT, COUNT };
+  enum Action { FRAMEBAR, HITBOXES, PAUSE, ADVANCE, MENU, SAVE, TAKEOVER_P1, TAKEOVER_P2, LOAD, UP, DOWN, LEFT, RIGHT,
+                TRAINING_RECORD, TRAINING_PLAYBACK, TRAINING_RESET, COUNT };
   extern const char* const NAMES[COUNT];      // config ids
   extern const wchar_t* const LABELS[COUNT];  // menu labels
   extern int key[COUNT];                      // VK code, 0 = none

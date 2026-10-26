@@ -7,13 +7,15 @@
 
 namespace binds {
   const char* const NAMES[COUNT] = {"framebar", "hitboxes", "pause", "advance", "menu", "save",
-                                    "takeover_1p", "takeover_2p", "load", "up", "down", "left", "right"};
+                                    "takeover_1p", "takeover_2p", "load", "up", "down", "left", "right",
+                                    "training_record", "training_playback", "training_reset"};
   const wchar_t* const LABELS[COUNT] = {L"Toggle Frame Bar", L"Toggle Hitboxes", L"Pause", L"Advance Frame",
                                         L"Toggle Menu", L"Rewind Point + Takeover", L"Takeover 1P", L"Takeover 2P",
-                                        L"Rewind", L"Menu Up", L"Menu Down", L"Menu Left", L"Menu Right"};
-  int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT};
+                                        L"Rewind", L"Menu Up", L"Menu Down", L"Menu Left", L"Menu Right",
+                                        L"Training Record", L"Training Playback", L"Training Reset Position"};
+  int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0};
   unsigned short pad[COUNT] = {0, 0, 0, 0, XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START, 0, 0, 0, 0,
-                               XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT};
+                               XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, 0, 0, 0};
 
   const char* const G_NAMES[G_COUNT] = {"up", "down", "left", "right", "p", "k", "s", "hs", "d", "dash", "rc", "fd", "respect"};
   const wchar_t* const G_LABELS[G_COUNT] = {L"Up", L"Down", L"Left", L"Right", L"Punch", L"Kick", L"Slash",
