@@ -99,7 +99,9 @@ static void pollGamepad();
 // whether one of those was just pressed. While a bind fires, the lookup also hands out
 // a made-up button no pad has, and "just pressed" says yes for it for that one frame.
 // Works with or without the game's own buttons set for them.
-static uint32_t g_training_press = 0;  // made-up buttons pressed this frame
+static uint32_t g_training_press = 0;    // made-up buttons pressed this frame
+static uint32_t g_training_pending = 0;  // pressed while the fight is held (mod pause, timeline pause)
+static bool g_battle_ran = false;        // a battle update ran since the last system update
 constexpr uint32_t kFakeReset = 0x1000000, kFakeRecord = 0x2000000, kFakePlayback = 0x4000000;
 
 using funcKeyConfigLookup_t = uint32_t (*)(int pad, int entry);
@@ -116,12 +118,12 @@ uint32_t hook_KeyConfigLookup(int pad, int entry)
     return mask;
 }
 
-using funcKeyTrigger_t = bool (*)(void* controller, uint32_t mask);
-funcKeyTrigger_t orig_KeyTrigger = nullptr;
-bool hook_KeyTrigger(void* controller, uint32_t mask)
+using funcKeyJustPressed_t = bool (*)(void* controller, uint32_t mask);
+funcKeyJustPressed_t orig_KeyJustPressed = nullptr;
+bool hook_KeyJustPressed(void* controller, uint32_t mask)
 {
     if (mask & g_training_press) return true;
-    return orig_KeyTrigger(controller, mask);
+    return orig_KeyJustPressed(controller, mask);
 }
 
 class PauseManager
@@ -330,8 +332,10 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 {
     // One frame per press: last frame's is over, also when this mode isn't handled.
     g_training_press = 0;
+    g_battle_ran = true;
     if (!game_state.checkMode())
     {
+        g_training_pending = 0;
         orig_UpdateBattle(GameState, DeltaTime);
         return;
     }
@@ -345,12 +349,9 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (keybindings.takeAction(binds::TRAINING_RECORD)) pressed |= kFakeRecord;
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
     if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
-    if (pressed && game_state.checkModeTraining() && orig_KeyTrigger)
-    {
-        g_training_press = pressed;
-        COMBO_LOG(std::string("training: ") + (pressed & kFakeRecord ? "record " : "") + (pressed & kFakePlayback ? "playback " : "")
-                  + (pressed & kFakeReset ? "reset " : "") + "bind");
-    }
+    // Held until the fight actually updates, so a press during a pause isn't lost.
+    if (game_state.checkModeTraining() && orig_KeyJustPressed) g_training_pending |= pressed;
+    else g_training_pending = 0;
     ReplayManager::instance().onBattleUpdate();
     pause_manager.checkPause();
 
@@ -389,6 +390,13 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     }
 
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
+    if (g_training_pending)
+    {
+        g_training_press = g_training_pending;
+        g_training_pending = 0;
+        COMBO_LOG(std::string("training: ") + (g_training_press & kFakeRecord ? "record " : "") + (g_training_press & kFakePlayback ? "playback " : "")
+                  + (g_training_press & kFakeReset ? "reset " : "") + "bind");
+    }
     orig_UpdateBattle(GameState, DeltaTime);
     ReplayManager::instance().onBattleFrameProcessed();
 
@@ -447,14 +455,18 @@ void hook_UpdateSystem(uintptr_t System)
 {
     orig_UpdateSystem(System);
     ReplayManager::instance().setInputSystem(System);
+    // Out of battle (the fight ended on the frame a bind fired), nothing clears the
+    // press at the start of the next battle update, so clear it here.
+    if (!g_battle_ran) g_training_press = 0;
+    g_battle_ran = false;
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.
-    if (!orig_KeyTrigger && orig_KeyConfigLookup && System)
+    if (!orig_KeyJustPressed && orig_KeyConfigLookup && System)
     {
         if (auto* controller = *reinterpret_cast<void**>(System + 0x1F8))
         {
             auto** vtable = *reinterpret_cast<const void***>(controller);
-            orig_KeyTrigger = reinterpret_cast<funcKeyTrigger_t>(vtable_hook(vtable, 0x60 / 8, reinterpret_cast<const void*>(&hook_KeyTrigger)));
+            orig_KeyJustPressed = reinterpret_cast<funcKeyJustPressed_t>(vtable_hook(vtable, 0x60 / 8, reinterpret_cast<const void*>(&hook_KeyJustPressed)));
         }
     }
 }

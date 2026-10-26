@@ -317,6 +317,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     // don't delim starts of cancel frames
     previous.mods |= MT_SegmentEnd;
     active.decay = 1.0;
+    active.keep = static_cast<uint8_t>(ModMenu::instance().unfoldFrames());
 
     // ... and was long enough that we want trucated
     if (previous_state.state_time > COMBO_NUM_TIME) {
@@ -325,9 +326,10 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     }
 
     // A move that started right as stun or recovery ended, with no neutral frame
-    // between. Bursts never count: one out of stun cuts it short, so its timing says nothing.
+    // between. Bursts and Roman Cancels never count: they cut stun or recovery short,
+    // so their timing says nothing.
     const auto was = previous_state.type;
-    if ((current_state.type == PST_Busy || current_state.type == PST_Attacking) && current_state.time <= 1 && !current_state.burst &&
+    if ((current_state.type == PST_Busy || current_state.type == PST_Attacking) && current_state.time <= 1 && !current_state.cut_short &&
         (was == PST_BlockStunned || was == PST_HitStunned || was == PST_Recovering)) {
       active.mods |= MT_Perfect;
     }
@@ -339,6 +341,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     // we are drawing this section, fade its color slightly
     // active_segment.color_one = state_colors[type_one] * COLOR_DECAY;
     active.decay = previous.decay * COLOR_DECAY;
+    active.keep = previous.keep;
   }
 
   if(current_state.anyProjectiles()){
@@ -353,6 +356,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
 void PlayerData::initSegment(int curr_idx) {
   auto &active = segments[curr_idx];
   active.state = current_state.type;
+  active.keep = static_cast<uint8_t>(ModMenu::instance().unfoldFrames());
   active.mods = MT_None;
   if(current_state.anyProjectiles()){
     active.mods |= MT_Projectile;
@@ -404,7 +408,7 @@ PlayerState::PlayerState(asw_player &player, asw_player &opp, const PlayerState 
   const bool block_stunned = player.is_in_blockstun() || player.is_stagger() || player.is_guard_crush();
   const bool hit_stunned = player.is_in_hitstun();
   const bool knockdown = player.is_knockdown();
-  burst = player.cur_cmn_action_id == ID_CmnActBurst;
+  cut_short = player.cur_cmn_action_id == ID_CmnActBurst || player.cur_cmn_action_id == ID_CmnActRomanCancel;
   const bool player_active = player.is_active() && (player.hitbox_count > 0 || player.throw_range >= 0);
   const bool jump_recovery = player.is_jump_recovery();
   const bool is_dash = player.is_fdash();
@@ -666,6 +670,7 @@ void FrameBar::Data::addFrame() {
       if (!folding) {
         folding = true;
         fold_keep = (std::min)(ModMenu::instance().unfoldFrames(), MAX_UNFOLD);
+        data.first.segments[prev_idx].keep = data.second.segments[prev_idx].keep = static_cast<uint8_t>(fold_keep);
       }
       const int keep = fold_keep;
       if (keep <= 0) {
@@ -696,6 +701,7 @@ void FrameBar::Data::addFrame() {
         s[idx].mods = static_cast<ModifierType>(s[prev_idx].mods & ~(MT_SegmentEnd | MT_Perfect | MT_Projectile));
         if (pd[p]->current_state.anyProjectiles()) s[idx].mods |= MT_Projectile;
         s[idx].decay = s[prev_idx].decay;
+        s[idx].keep = s[prev_idx].keep;
         s[idx].trunc = s[prev_idx].trunc;
         s[prev_idx].trunc = 0;
       }
@@ -781,7 +787,6 @@ void FrameBar::Data::draw() {
     view.inputs = view.show_inputs[0] || view.show_inputs[1];
     view.blocks = menu.barBlocks();
     view.perfect = menu.markPerfect();
-    view.keep = menu.unfoldFrames();
     const PlayerData* rows[2] = {&data.first, &data.second};
     for (int r = 0; r < 2; r++) {
       for (int i = 0; i < FRAME_SEGMENTS && i < 120; i++) {
@@ -794,6 +799,7 @@ void FrameBar::Data::draw() {
         out.color = pack(color);
         out.mods = static_cast<unsigned char>(in.mods);
         out.trunc = in.trunc;
+        out.keep = in.keep;
         out.dir = in.input_dir;
         out.held = in.input_held;
         out.pressed = in.input_pressed;

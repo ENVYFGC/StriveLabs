@@ -17,6 +17,7 @@ namespace imgui_overlay {
       unsigned color = 0; unsigned char mods = 0; int trunc = 0; bool on = false;
       unsigned char dir = 0;                         // input bar: numpad, 0 = no data
       unsigned short held = 0, pressed = 0;          // input bar: RECFLG button bits
+      unsigned char keep = 0;                        // one block: last frames of the stretch kept as cells
     };
     Cell rows[2][120];
     std::wstring info[2];
@@ -24,9 +25,8 @@ namespace imgui_overlay {
     bool delim = false, cancels = false, crossups = false, inputs = false;
     bool show[2] = {true, true};          // frame bar rows shown
     bool show_inputs[2] = {false, false}; // input rows shown (only under a shown bar)
-    bool blocks = false;   // long stretches drawn as one block, but their last `keep` cells
+    bool blocks = false;   // stretches drawn as one block, but their last few cells
     bool perfect = false;  // mark frame perfect moves
-    int keep = 0;
   };
   void setFrameBar(const FrameBarView& view);
 

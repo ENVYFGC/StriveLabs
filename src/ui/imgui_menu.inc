@@ -570,15 +570,17 @@ namespace menu_ui {
       auto bar = [&](int row, float top) {
         dl->AddRectFilled(ImVec2(x0, top), ImVec2(x1, top + bar_h), fb.bg);
         const float sy = top + vsp, sh = bar_h - 2 * vsp, bt = std::min(sp, std::max(1.5f * S, 1.0f));
-        // One block: a stretch has its cells joined, all but its last `keep` ones. A
-        // stretch ends at a segment end or an empty cell.
+        // One block: a stretch has its cells joined, all but its last few (as many as
+        // were set when it began). A stretch ends at a segment end or an empty cell; one
+        // that runs past the right end goes on at the left, so that part is all block.
         bool join[120] = {};
         if (fb.blocks) {
           for (int s = 0; s < 120;) {
             if (!fb.rows[row][s].on) { s++; continue; }
             int e = s;
             while (!(fb.rows[row][e].mods & 4) && e < 119 && fb.rows[row][e + 1].on) e++;
-            for (int j = s; j < e - fb.keep; j++) join[j] = true;
+            const bool wraps = e == 119 && !(fb.rows[row][e].mods & 4) && fb.rows[row][0].on;
+            for (int j = s; j < (wraps ? e : e - fb.rows[row][e].keep); j++) join[j] = true;
             s = e + 1;
           }
         }

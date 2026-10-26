@@ -77,7 +77,7 @@ public:
   bool active_stall = true;
   bool can_cancel = false;
   bool show_crossup = false;
-  bool burst = false;
+  bool cut_short = false;  // a burst or a Roman Cancel: cuts stun or recovery short
 
   // -2 means our x < other x
   // -1 means our x = other x but we just came from -2
@@ -102,6 +102,9 @@ struct FrameInfo {
   uint8_t input_dir = 0;
   uint16_t input_held = 0;
   uint16_t input_pressed = 0;
+  // One block: how many last frames of this cell's stretch stay as cells, as set
+  // when the stretch (or its fold) began.
+  uint8_t keep = 0;
 };
 
 struct MoveStats {
