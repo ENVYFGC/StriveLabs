@@ -1236,10 +1236,14 @@ void ModMenu::draw() {
     DrawContext status(0.5, 0.25);
     status.update();
     int row = 0;
-    auto drawStatus = [&](const std::wstring& label) {
+    auto drawStatus = [&](const std::wstring& label, float bar = -1.0f) {
       const int y = row++ * 72;
       status.drawRect(-180, y - 12, 360, 60, FLinearColor{0.01f, 0.02f, 0.04f, 0.9f});
       status.drawOutlinedText(-165, y, FString(label.c_str()), 1.4);
+      if (bar >= 0.0f) {
+        status.drawRect(-180, y + 42, 360, 6, FLinearColor{0.02f, 0.03f, 0.06f, 0.8f});
+        status.drawRect(-180, y + 42, static_cast<int>(360.0f * bar), 6, FLinearColor{0.8f, 0.1f, 0.1f, 1.0f});
+      }
     };
     const auto rs = ReplayManager::instance().status();
     if (rs.prompt) {
@@ -1254,8 +1258,11 @@ void ModMenu::draw() {
     float assistLeft = 0.0f;
     if (const int assist = ReplayManager::instance().assistState(assistLeft))
       drawStatus(assist == 1 ? L"Replay Assist: Standby" : L"Replay Assist: Active");
-    const int seconds = ReplayManager::instance().rewindCountdownSeconds();
-    if (seconds > 0) drawStatus(L"Playback in " + std::to_wstring(seconds) + L" s");
+    if (rs.rewindLeftSeconds > 0.0f) {
+      wchar_t label[64]{};
+      swprintf_s(label, L"Playback in %.1f s", rs.rewindLeftSeconds);
+      drawStatus(label, rs.rewindFraction);
+    }
     if (isRewindPointNotificationVisible()) drawStatus(L"Rewind point created");
   }
   if (!is_showing) return;

@@ -1038,11 +1038,10 @@ namespace menu_ui {
     }
     if (rs.assist == 1) draw_status_message("Replay Assist: Standby", row++, rs.assistFraction);
     else if (rs.assist == 2) draw_status_message("Replay Assist: Active", row++);
-    const int seconds = ReplayManager::instance().rewindCountdownSeconds();
-    if (seconds > 0) {
+    if (rs.rewindLeftSeconds > 0.0f) {
       char label[64];
-      snprintf(label, sizeof(label), "Playback in %d s", seconds);
-      draw_status_message(label, row++);
+      snprintf(label, sizeof(label), "Playback in %.1f s", rs.rewindLeftSeconds);
+      draw_status_message(label, row++, rs.rewindFraction);
     }
     if (ModMenu::instance().isRewindPointNotificationVisible())
       draw_status_message("Rewind point created", row++);
