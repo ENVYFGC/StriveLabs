@@ -227,7 +227,7 @@ namespace Settings {
   FloatSetting UI_SCALE_BAR      = {"ui_scale_bar",      1.00, 1.00, 0.50, 2.00, 0.05};
   FloatSetting UI_SCALE_TIMELINE = {"ui_scale_timeline", 1.00, 1.00, 0.50, 2.00, 0.05};
 
-  FloatSetting REWIND_DELAY_SECONDS = {"rewind_delay_seconds", 0.0, 0.0, 0.0, 60.0, 1.0};
+  FloatSetting REWIND_DELAY_SECONDS = {"rewind_delay_seconds", 0.0, 0.0, 0.0, 5.0, 0.5};
   FloatSetting REPLAY_ASSIST_SECONDS = {"replay_assist_seconds", 0.0, 0.0, 0.0, 5.0, 0.5};
   FloatSetting STATUS_BG_OPACITY = {"status_bg_opacity", 0.6, 0.6, 0.0, 1.0, 0.05};
   FloatSetting STATUS_TEXT_SIZE = {"status_text_size", 1.0, 1.0, 0.5, 2.0, 0.05};
@@ -763,11 +763,9 @@ namespace {
   }
 
   std::wstring formatMenuNumber(const FloatSetting& setting) {
-    if (&setting == &Settings::REWIND_DELAY_SECONDS)
-      return std::to_wstring(static_cast<int>(setting.value));
     if (&setting == &Settings::STATUS_BG_OPACITY || &setting == &Settings::STATUS_TEXT_SIZE)
       return std::to_wstring(static_cast<int>(setting.value * 100.0 + 0.5)) + L"%";
-    if (&setting == &Settings::REPLAY_ASSIST_SECONDS) {
+    if (&setting == &Settings::REWIND_DELAY_SECONDS || &setting == &Settings::REPLAY_ASSIST_SECONDS) {
       if (setting.value <= 0) return L"Off";
       wchar_t buf[16]{};
       swprintf_s(buf, L"%.1f", setting.value);
@@ -1849,7 +1847,7 @@ bool ModMenu::delimEnabled() const { return Settings::DELIM.value; }
 bool ModMenu::cancelEnabled() const { return false; }
 bool ModMenu::dashEnabled() const { return Settings::SHOW_DASH_FRAMES.value; }
 bool ModMenu::crossupEnabled() const { return Settings::CROSSUP_ENABLED.value; }
-int ModMenu::rewindDelaySeconds() const { return static_cast<int>(Settings::REWIND_DELAY_SECONDS.value); }
+double ModMenu::rewindDelaySeconds() const { return Settings::REWIND_DELAY_SECONDS.value; }
 double ModMenu::replayAssistSeconds() const { return Settings::REPLAY_ASSIST_SECONDS.value; }
 
 int ModMenu::pauseType() const { return Settings::PAUSE_TYPE.value; }

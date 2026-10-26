@@ -141,7 +141,7 @@ struct ReplayManager::Data
     {
         const bool wasPaused = timeline->isPaused();
         resetRewindDelay();
-        rewindFramesRemaining = ModMenu::instance().rewindDelaySeconds() * kRewindFramesPerSecond;
+        rewindFramesRemaining = static_cast<int>(ModMenu::instance().rewindDelaySeconds() * kRewindFramesPerSecond + 0.5);
         if (rewindFramesRemaining <= 0 && !wasPaused) return;
 
         // setPaused(false) clears queued manual steps, preventing extra frames after
