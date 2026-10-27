@@ -345,15 +345,18 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
 
     pollGamepad();  // before anything reads button states this frame
+    ReplayManager::instance().onBattleUpdate();
+    pause_manager.checkPause();
+    g_last_battle_update = GetTickCount64();  // the pause can hold this call for a long time
+
+    // After the pause, which reads binds while it holds: a press made then counts too.
+    // Held until the fight actually updates, so a press during a pause isn't lost.
     uint32_t pressed = 0;
     if (keybindings.takeAction(binds::TRAINING_RECORD)) pressed |= kFakeRecord;
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
     if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
-    // Held until the fight actually updates, so a press during a pause isn't lost.
     if (game_state.checkModeTraining() && orig_KeyJustPressed) g_training_pending |= pressed;
     else g_training_pending = 0;
-    ReplayManager::instance().onBattleUpdate();
-    pause_manager.checkPause();
 
     if (game_state.checkModeReplay()) ReplayManager::instance().update();
 
@@ -456,9 +459,17 @@ void hook_UpdateSystem(uintptr_t System)
     orig_UpdateSystem(System);
     ReplayManager::instance().setInputSystem(System);
     // Out of battle (the fight ended on the frame a bind fired), nothing clears the
-    // press at the start of the next battle update, so clear it here.
-    if (!g_battle_ran) g_training_press = 0;
+    // press at the start of the next battle update, so clear it here, and drop one
+    // still held from a pause.
+    if (!g_battle_ran) g_training_press = g_training_pending = 0;
     g_battle_ran = false;
+    // Keys are only read during fights; drop the ones pressed outside one (character
+    // select, loading), or they would all fire on the first fight frame.
+    if (GetTickCount64() - g_last_battle_update > 250)
+    {
+        keybindings.checkBinds(false);
+        keybindings.resetButtons();
+    }
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.
     if (!orig_KeyJustPressed && orig_KeyConfigLookup && System)
