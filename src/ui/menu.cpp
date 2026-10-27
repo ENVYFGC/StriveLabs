@@ -1604,6 +1604,8 @@ float ModMenu::uiScale(int which) {
 
 void ModMenu::hide() {
   rewind_point_notification_until = 0;
+  // A bind left waiting for a key would take the next one pressed anywhere.
+  if (binds::capturing >= 0) binds::cancelCapture();
   if (!is_showing) return;
   is_showing = false;
   buildView();

@@ -454,6 +454,17 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
     orig_UpdateBattleInput(Analyzer, ReplayManager::instance().takeoverInput(recFlag, ModMenu::instance().isShowing()));
 }
 
+// Keys are only read during fights; drop the ones pressed outside one (character
+// select, loading), or they would all fire on the first fight frame.
+static void dropKeysOutsideFight()
+{
+    if (GetTickCount64() - g_last_battle_update > 250)
+    {
+        keybindings.checkBinds(false);
+        keybindings.resetButtons();
+    }
+}
+
 void hook_UpdateSystem(uintptr_t System)
 {
     orig_UpdateSystem(System);
@@ -463,13 +474,7 @@ void hook_UpdateSystem(uintptr_t System)
     // still held from a pause.
     if (!g_battle_ran) g_training_press = g_training_pending = 0;
     g_battle_ran = false;
-    // Keys are only read during fights; drop the ones pressed outside one (character
-    // select, loading), or they would all fire on the first fight frame.
-    if (GetTickCount64() - g_last_battle_update > 250)
-    {
-        keybindings.checkBinds(false);
-        keybindings.resetButtons();
-    }
+    dropKeysOutsideFight();
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.
     if (!orig_KeyJustPressed && orig_KeyConfigLookup && System)
@@ -495,6 +500,7 @@ void hook_UpdateReplay(BattleReplayManager* Manager)
 
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
 {
+    dropKeysOutsideFight();  // first tick after a load: what was pressed during it
     keybindings.checkBinds(false);
     // Rewind needs the queued Timeline hotkeys and can request Pause/Step.
     // Run it between input processing and the final decision for this tick.
