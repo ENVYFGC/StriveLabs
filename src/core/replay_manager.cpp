@@ -1504,6 +1504,7 @@ ReplayManager::Status ReplayManager::status() const
     Status s;
     if (!data->gameState) return s;
     s.replay = data->gameState->checkModeReplay();
+    s.training = data->gameState->checkModeTraining();
     s.rewindPoint = data->rewindPointSet;
     const int rewindFrames = data->rewindFramesRemaining.load();
     // Round up so the banner never shows 0.0 before playback actually resumes.

@@ -7,47 +7,72 @@
 
 namespace bbscript {
     short* instruction_sizes;
+    bool available = false;
 
-	using get_func_addr_t = char*(*)(char* bbs_file, char* func_name[32], char* table);
-	get_func_addr_t get_func_addr;
-
-    using get_action_addr_t = char*(*)(char* obj, char* action_name[32], int* out_index);
-    get_action_addr_t get_action_addr;
-
-    using get_operand_value_t = char*(*)(char* obj, char* operand);
+    // get_operand_value(obj, value) returns the value's current number.
+    using get_operand_value_t = int(*)(char* obj, char* operand);
     get_operand_value_t get_operand_value;
 
+	// Found in the running game's code: the game's own script walker reads each
+	// instruction's size from this table, and get_operand_value resolves the
+	// variables some instructions use. If either can't be found or the table doesn't
+	// look right, `available` stays false and nothing reads scripts.
 	void BBSInitializeFunctions()
 	{
-		instruction_sizes = reinterpret_cast<short*>(sigscan::get().scan("\x24\x00\x04\x00\x28\x00", "xxxxxx"));
-		get_func_addr = reinterpret_cast<get_func_addr_t>(sigscan::get().scan("\x8D\x3C\x2E\xD1\xFF", "xxxxx") - 0x40);
-		get_action_addr = reinterpret_cast<get_action_addr_t>(sigscan::get().scan("\x0F\x11\x4C\x24\x38\x0F\x85\x00\x00\x00\x00", "xxxxxxx????") - 0x33);
-		get_operand_value = reinterpret_cast<get_operand_value_t>(sigscan::get().scan("\x40\x55\x48\x83\xEC\x30\x83\x3A\x00", "xxxxxxxxx"));
+	    available = false;
+	    try
+	    {
+	        const uintptr_t walker = sigscan::get().scan(
+	            "\xBE\x02\x20\x00\x3B\x48\x8D\x2D\x00\x00\x00\x00\x41\x8B\x00\x83\xF8\x02\x74\x55",
+	            "xxxxxxxx????xxxxxxxx");
+	        instruction_sizes = static_cast<short*>(get_rip_relative(walker + 8));
+	        get_operand_value = reinterpret_cast<get_operand_value_t>(sigscan::get().scan(
+	            "\x41\x56\x48\x83\xEC\x30\x83\x3A\x00\x4C\x8B\xF1\x75\x0A\x8B\x42\x04\x48\x83\xC4\x30",
+	            "xxxxxxxxxxxxxxxxxxxxx"));
+	        available = instruction_sizes && get_operand_value &&
+	                    instruction_sizes[0] == 0x24 && instruction_sizes[1] == 4 && instruction_sizes[2] == 0x28;
+	    }
+	    catch (...) { available = false; }
+	}
+
+	bool scriptReaderAvailable() { return available; }
+
+	namespace {
+	    constexpr int kMaxSteps = 2048;  // no state script is anywhere near this long
+	    // Size of the instruction at p, or 0 if it doesn't look like one.
+	    int instructionSize(const char* p)
+	    {
+	        const unsigned int op = *reinterpret_cast<const unsigned int*>(p);
+	        if (op >= static_cast<unsigned int>(opcode::MAX)) return 0;
+	        const int size = instruction_sizes[op];
+	        return (size > 0 && size % 4 == 0) ? size : 0;
+	    }
 	}
 
 	void code_pointer::read_script()
 	{
 	    state_remaining_time = 0;
-        opcode* value = reinterpret_cast<opcode*>(ptr);
-	    while (*value != opcode::end_state && *value != opcode::exit_state)
+	    ok = false;
+	    if (!available || !ptr || !owner) return;
+	    for (int step = 0; step < kMaxSteps; step++)
 	    {
+	        const int op = *reinterpret_cast<int*>(ptr);
+	        if (op == static_cast<int>(opcode::end_state) || op == static_cast<int>(opcode::exit_state)) { ok = true; return; }
 	        bool is_begin = false;
 	        for (const auto BeginEndPair : BeginEndPairs)
 	        {
-	            if (*reinterpret_cast<int*>(value) == BeginEndPair[0])
-	            {
-	                get_skip_begin_end_addr();
-	                value = reinterpret_cast<opcode*>(ptr);
-	                is_begin = true;
-	                break;
-	            }
+	            if (op == BeginEndPair[0]) { is_begin = true; break; }
 	        }
 	        if (is_begin)
+	        {
+	            if (!get_skip_begin_end_addr()) return;
 	            continue;
-	        execute_instruction(*reinterpret_cast<int*>(value));
-	        ptr += instruction_sizes[*reinterpret_cast<unsigned int*>(ptr)];
-	        value = reinterpret_cast<opcode*>(ptr);
-	        if (nandemo) return;
+	        }
+	        const int size = instructionSize(ptr);
+	        if (!size) return;
+	        execute_instruction(op);
+	        ptr += size;
+	        if (nandemo) { ok = true; return; }
 	    }
 	}
 
@@ -63,7 +88,8 @@ namespace bbscript {
 			}
 		case static_cast<int>(opcode::call_subroutine):
 			{
-				char* subroutine_name = ptr + 4;
+				char subroutine_name[33] = {};
+				memcpy(subroutine_name, ptr + 4, 32);
 				if (strstr(subroutine_name, "Nandemo") != nullptr)
 				{
 					nandemo = true;
@@ -99,15 +125,18 @@ namespace bbscript {
         }
 	}
 
-    void code_pointer::get_skip_begin_end_addr()
+    bool code_pointer::get_skip_begin_end_addr()
 	{
 	    unsigned int indent = 0;
+	    int step = 0;
 	    do
 	    {
+	        if (++step > kMaxSteps) return false;
+	        const int op = *reinterpret_cast<int*>(ptr);
 	        bool begin = true;
 	        for (const auto BeginEndPair : BeginEndPairs)
 	        {
-	            if (*reinterpret_cast<int*>(ptr) == BeginEndPair[0])
+	            if (op == BeginEndPair[0])
 	            {
 	                begin = false;
 	            }
@@ -118,27 +147,19 @@ namespace bbscript {
 	        bool end = true;
 	        for (const auto BeginEndPair : BeginEndPairs)
 	        {
-	            if (*reinterpret_cast<int*>(ptr) == BeginEndPair[1])
+	            if (op == BeginEndPair[1])
 	            {
 	                end = false;
 	            }
 	        }
-	        const unsigned int opcode_size = instruction_sizes[*reinterpret_cast<unsigned int*>(ptr)];
+	        const int opcode_size = instructionSize(ptr);
+	        if (!opcode_size) return false;
 	        indent = temp_indent - 1;
 	        if (!end)
 	            indent = temp_indent;
 	        ptr += opcode_size;
 	    }
 	    while (indent);
+	    return true;
 	}
-    
-    char* code_pointer::get_func_addr_base(char* bbs_file, char* func_name)
-	{
-	    return get_func_addr(bbs_file, &func_name, (char*)*bbs_file + 48);
-	}
-    
-    char* code_pointer::get_action_addr_base(char* obj, char* action_name, int* out_index)
-	{
-        return get_action_addr(obj, &action_name, out_index);
-	}
-} // bbscript
+}  // bbscript

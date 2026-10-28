@@ -29,7 +29,8 @@ enum ModifierType {
   MT_SegmentEnd = 0x4,
   MT_CrossUp = 0x8,
   MT_CleanHit = 0x10,
-  MT_Perfect = 0x20  // a move that started on the first frame it could
+  MT_Perfect = 0x20,  // a move that started on the first frame it could
+  MT_Connect = 0x40   // the active frame on which the move connected (hit or block)
 };
 inline ModifierType operator|(ModifierType a, ModifierType b) { return (ModifierType)((int)a | (int)b);}
 inline ModifierType operator&(ModifierType a, ModifierType b) { return (ModifierType)((int)a & (int)b);}
@@ -78,6 +79,9 @@ public:
   bool can_cancel = false;
   bool show_crossup = false;
   bool cut_short = false;  // a burst or a Roman Cancel: cuts stun or recovery short
+  int left = -1;           // countdown: frames of stun or recovery left, -1 if unknown
+  int rec_left = -1;       // in recovery: frames of it still to come after this one, -1 if unknown
+  int stun = 0;            // the player's own stun timer; jumps up when a new hit lands
 
   // -2 means our x < other x
   // -1 means our x = other x but we just came from -2
@@ -105,11 +109,16 @@ struct FrameInfo {
   // One block: how many last frames of this cell's stretch stay as cells, as set
   // when the stretch (or its fold) began.
   uint8_t keep = 0;
+  // Gaps: on the last neutral frame between two stuns, how many frames the side in
+  // stun could act before the next one began.
+  int gap = 0;
 };
 
 struct MoveStats {
   int startup = 0;
   std::vector<std::pair<int, int>> actives{{0, 0}};
+  int hit_on = 0;  // which active frame connected first (0 = none)
+  bool hit_timed = false;  // that hit left stun of a set length (not an OTG or launch)
   void update(const PlayerState &current);
 };
 
@@ -119,6 +128,7 @@ struct PlayerData {
   MoveStats displayed_stats;
   PlayerState previous_state;
   PlayerState current_state;
+  PlayerStateType pre_idle = PST_None;  // what came before the current neutral stretch
 
   void resetFrames();
   void initSegment(int curr_idx);

@@ -18,6 +18,7 @@ namespace select_memory { void init(const std::filesystem::path& dir); void save
 #include "timeline.h"
 #include "tension_overlay.h"
 #include "combo_log.h"
+#include "combo_trials.h"
 #include <chrono>
 #include <filesystem>
 #include <thread>
@@ -336,6 +337,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (!game_state.checkMode())
     {
         g_training_pending = 0;
+        combo_trials::update(false);  // a trial's settings never go into other modes
         orig_UpdateBattle(GameState, DeltaTime);
         return;
     }
@@ -355,6 +357,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (keybindings.takeAction(binds::TRAINING_RECORD)) pressed |= kFakeRecord;
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
     if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
+    combo_trials::update(game_state.checkModeTraining());
     if (game_state.checkModeTraining() && orig_KeyJustPressed) g_training_pending |= pressed;
     else g_training_pending = 0;
 
@@ -474,6 +477,7 @@ void hook_UpdateSystem(uintptr_t System)
     // still held from a pause.
     if (!g_battle_ran) g_training_press = g_training_pending = 0;
     g_battle_ran = false;
+    combo_trials::latchVersion(GetTickCount64() - g_last_battle_update < 250);
     dropKeysOutsideFight();
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.
@@ -611,7 +615,7 @@ public:
         catch (...) {}
 
         ASWInitFunctions();
-        //    bbscript::BBSInitializeFunctions();
+        bbscript::BBSInitializeFunctions();  // frame bar countdown; turns itself off if not found
         keybindings.loadButtons();
 
         // Initialize logging
@@ -619,6 +623,8 @@ public:
         ComboLog::instance().init(working_dir);
         COMBO_LOG("StriveLabs loaded");
         if (!training_hook) COMBO_LOG("training binds: button config lookup not found");
+        COMBO_LOG(bbscript::scriptReaderAvailable() ? "countdown: script reader ready" : "countdown: script reader not found, recovery countdown off");
+        combo_trials::init(working_dir);
         crash_log::install(working_dir);  // first hard fault -> combo_log.txt + StriveLabs_crash.dmp, for user reports
         select_memory::init(working_dir);
         imgui_overlay::install();

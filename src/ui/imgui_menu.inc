@@ -603,17 +603,46 @@ namespace menu_ui {
             }
             dl->AddConcavePolyFilled(p, 10, RGBA(0, 0, 0));
           }
+          if (fb.hits && (c.mods & 0x40)) {
+            // Where the move connected: a white notch at the top of that active cell.
+            const float hw = seg_w * 0.45f, th = std::min(hw * 1.4f, sh * 0.4f);
+            dl->AddTriangleFilled(ImVec2(left + seg_w * 0.5f - hw, sy), ImVec2(left + seg_w * 0.5f + hw, sy),
+                                  ImVec2(left + seg_w * 0.5f, sy + th), RGBA(255, 255, 255));
+          }
           if (fb.delim && (c.mods & 4)) dl->AddRectFilled(ImVec2(left + seg_w, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), RGBA(255, 255, 255));
           if (fb.cancels && (c.mods & 1)) dl->AddRectFilled(ImVec2(left, sy + sh * 2 / 3), ImVec2(left + seg_w, sy + sh), RGBA(255, 255, 255));
           if (fb.crossups && (c.mods & 8)) dl->AddRectFilled(ImVec2(left + seg_w - bt, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), RED);
         }
         for (int i = 0; i < 120; i++) {  // numbers on top of the cells
           const auto& c = fb.rows[row][i];
-          if (!c.on || c.trunc <= 0) continue;
-          const std::string n = std::to_string(c.trunc);
+          if (!c.on) continue;
+          // Gaps: the free frames between two stuns, in yellow, instead of a count.
+          const bool gap = fb.gaps && c.gap > 0;
+          if (!gap && c.trunc <= 0) continue;
+          const std::string n = std::to_string(gap ? c.gap : c.trunc);
           const float tx = x0 + cell * (i + 1) - text_w(f_framebar, n);
           const float ty = sy + (sh - f_framebar->FontSize) * 0.5f;
-          text_outlined(dl, f_framebar, ImVec2(tx, ty), TEXT, n);
+          text_outlined(dl, f_framebar, ImVec2(tx, ty), gap ? RGBA(255, 214, 0) : TEXT, n);
+        }
+        if (fb.left[row] > 0) {
+          // The rest of the stun or recovery, drawn ahead as outlined cells in its color,
+          // with a blue line where it ends. The line stays put as the real cells fill in.
+          const int n = std::min(fb.left[row], 119);
+          const ImU32 col = (fb.rows[row][fb.newest].color & 0x00FFFFFF) | (170u << 24);
+          const float th = std::max(1.0f, bt * 0.7f);
+          for (int k = 1; k <= n; k++) {
+            const float l = x0 + cell * ((fb.newest + k) % 120) + sp;
+            dl->AddRect(ImVec2(l + th * 0.5f, sy + th * 0.5f), ImVec2(l + seg_w - th * 0.5f, sy + sh - th * 0.5f), col, 0, 0, th);
+          }
+          const int e = (fb.newest + n) % 120;
+          const float lx = x0 + cell * (e + 1) + sp * 0.5f, lw = std::max(2.0f, bt * 1.5f);
+          dl->AddRectFilled(ImVec2(lx - lw * 0.5f, sy - bt * 2), ImVec2(lx + lw * 0.5f, sy + sh + bt * 2), RGBA(120, 200, 255));
+          if (fb.both) {
+            const std::string a = (fb.adv[row] > 0 ? "+" : "") + std::to_string(fb.adv[row]);
+            float tx = lx + lw + sp;
+            if (tx + text_w(f_framebar, a) > x1) tx = lx - lw - sp - text_w(f_framebar, a);
+            text_outlined(dl, f_framebar, ImVec2(tx, sy + (sh - f_framebar->FontSize) * 0.5f), RGBA(120, 200, 255), a);
+          }
         }
       };
       // Input row: arrow for the direction, P K S H D letters (bright = new

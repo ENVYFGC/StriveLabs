@@ -191,6 +191,9 @@ public:
   int unfoldFrames() const;   // last frames of a folded stretch shown as cells, 0 = off
   bool barBlocks() const;     // long stretches drawn as one block
   bool markPerfect() const;   // frame perfect moves marked on the bar
+  bool markHits() const;      // the active frame a move connected on, and what a later one would give
+  bool markGaps() const;      // free frames between two stuns numbered
+  bool countdown() const;     // frames of stun and recovery left, while both sides are stuck
   bool statusLineEnabled() const;
   float statusLineOpacity() const;  // black background behind the status line, 0..1
   float statusLineSize() const;     // status line text size, 1 = normal

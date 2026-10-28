@@ -18,6 +18,7 @@ namespace imgui_overlay {
       unsigned char dir = 0;                         // input bar: numpad, 0 = no data
       unsigned short held = 0, pressed = 0;          // input bar: RECFLG button bits
       unsigned char keep = 0;                        // one block: last frames of the stretch kept as cells
+      int gap = 0;                                   // gaps: free frames between two stuns, on the last of them
     };
     Cell rows[2][120];
     std::wstring info[2];
@@ -27,6 +28,12 @@ namespace imgui_overlay {
     bool show_inputs[2] = {false, false}; // input rows shown (only under a shown bar)
     bool blocks = false;   // stretches drawn as one block, but their last few cells
     bool perfect = false;  // mark frame perfect moves
+    bool hits = false;     // mark the active frame a move connected on
+    bool gaps = false;     // number the free frames between two stuns
+    int newest = 0;              // index of the newest cell
+    int left[2] = {-1, -1};      // frames of stun or recovery still to come per row, -1 = not shown
+    bool both = false;           // both rows stuck: adv holds who gets out first
+    int adv[2] = {0, 0};
   };
   void setFrameBar(const FrameBarView& view);
 

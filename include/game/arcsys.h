@@ -694,6 +694,7 @@ public:
   FIELD(0x1039C, int, afroH);
 
   int calc_advantage();
+  int script_frames_left();  // frames until the current state script ends, -1 if unknown
   bool is_in_hitstun() const;
   bool is_in_blockstun() const;
   bool can_act() const;

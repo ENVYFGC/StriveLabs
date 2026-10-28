@@ -36,6 +36,7 @@ public:
     struct Status
     {
         bool replay = false;
+        bool training = false;
         bool rewindPoint = false;
         int takeover = 0;             // 1 or 2 while taking over that side
         double assistSeconds = 0.0;   // the setting, 0 = off

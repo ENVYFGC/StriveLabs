@@ -28,6 +28,7 @@ target(projectName)
     add_files("src/ui/imgui_overlay.cpp")
     add_files("src/core/crash_log.cpp")
     add_files("src/core/select_memory.cpp")
+    add_files("src/core/combo_trials.cpp")
 
     -- Dear ImGui (MIT, third_party/imgui/LICENSE.txt), drawn through a DirectX 11 Present hook
     add_includedirs("third_party/imgui")

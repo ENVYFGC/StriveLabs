@@ -140,6 +140,18 @@ void asw_entity::get_pushbox(int* left, int* top, int* right, int* bottom) const
   asw_entity_get_pushbox(this, left, top, right, bottom);
 }
 
+int asw_player::script_frames_left() {
+  if (!bbscript::scriptReaderAvailable()) return -1;
+  bbscript::code_pointer pointer;
+  pointer.owner = reinterpret_cast<char*>(this);
+  pointer.base_ptr = script_base;
+  pointer.ptr = next_script_cmd;
+  pointer.read_script();
+  if (!pointer.ok) return -1;
+  const int left = pointer.state_remaining_time + (sprite_total_duration - sprite_duration);
+  return left >= 0 ? left : -1;
+}
+
 int asw_player::calc_advantage() {
   int opponent_disadvantage = 0;
   int knockdown_time = 11;

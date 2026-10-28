@@ -20,6 +20,7 @@ namespace {
   constexpr int COMBO_NUM_TIME = 9;    // minimum time of unchanging states to display state length
   constexpr int COMBO_TRUNC_TIME = 10; // max segments for unchanging state, after which the segments are truncated
   constexpr double COLOR_DECAY = 0.9f;
+  constexpr int kNoSetLength = 1000;  // stun timers this big have no set end (airborne, OTG)
 
   /* Draw-Space Settings */
   constexpr int FADE_DISTANCE = 5;
@@ -73,7 +74,8 @@ std::wstring convertToWide(const std::string_view &str) {
   return wstrTo;
 }
 
-std::wstring makeStatsText(const MoveStats &stats, int advantage) {
+std::wstring makeStatsText(const MoveStats &stats, int advantage, bool hits) {
+  // (kNoSetLength: stun timers at or above this have no set end, see PlayerState)
   std::wstringstream builder;
   builder << L"Startup: " << stats.startup << ", Active: ";
   if (stats.actives.empty()) {
@@ -88,6 +90,16 @@ std::wstring makeStatsText(const MoveStats &stats, int advantage) {
   }
   auto &last = stats.actives.back();
   builder << last.first << ", Recovery: " << last.second << L", Advantage: " << advantage;
+  // Stun starts when the move connects, recovery when its active frames end: hitting
+  // on a later active frame moves the stun later and the advantage up by the same.
+  if (hits && stats.hit_on > 0 && stats.actives.size() == 1 && last.first > 0) {
+    builder << L", Hit on active " << stats.hit_on << L"/" << last.first;
+    // Only when the stun has a set length; after an OTG or a launch it has none.
+    if (stats.hit_on < last.first && stats.hit_timed) {
+      const int best = advantage + (last.first - stats.hit_on);
+      builder << L" (advantage " << (best > 0 ? L"+" : L"") << best << L" on " << last.first << L")";
+    }
+  }
   return builder.str();
 }
 
@@ -273,6 +285,7 @@ void MoveStats::update(const PlayerState &current) {
 }
 
 void PlayerData::resetFrames() {
+  pre_idle = PST_None;
   current_state.state_time = 1;
   previous_state.state_time = 1;
   working_stats = MoveStats();
@@ -285,6 +298,7 @@ void PlayerData::resetFrames() {
 // PlayerData
 
 void PlayerData::shift(const PlayerState &next) {
+  if (next.type == PST_Idle && current_state.type != PST_Idle) pre_idle = current_state.type;
   previous_state = current_state;
   current_state = next;
 }
@@ -325,12 +339,21 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
       previous.trunc = previous_state.state_time;
     }
 
+    // Stun again after some neutral frames that followed stun: a gap the side in stun
+    // could have acted in.
+    if (current_state.isStunned() && previous_state.type == PST_Idle &&
+        (pre_idle == PST_BlockStunned || pre_idle == PST_HitStunned)) {
+      previous.gap = previous_state.state_time;
+    }
+
     // A move that started right as stun or recovery ended, with no neutral frame
     // between. Bursts and Roman Cancels never count: they cut stun or recovery short,
-    // so their timing says nothing.
+    // so their timing says nothing. Nor do gatlings and other cancels out of recovery,
+    // seen as recovery frames still left when the new move began.
     const auto was = previous_state.type;
+    const bool recovery_ran_out = was != PST_Recovering || previous_state.rec_left <= 0;
     if ((current_state.type == PST_Busy || current_state.type == PST_Attacking) && current_state.time <= 1 && !current_state.cut_short &&
-        (was == PST_BlockStunned || was == PST_HitStunned || was == PST_Recovering)) {
+        recovery_ran_out && (was == PST_BlockStunned || was == PST_HitStunned || was == PST_Recovering)) {
       active.mods |= MT_Perfect;
     }
   } else {
@@ -376,6 +399,7 @@ void PlayerData::fadeSegment(int fade_idx) {
   fade_segment.mods = MT_None;
   fade_segment.input_dir = 0;
   fade_segment.input_held = fade_segment.input_pressed = 0;
+  fade_segment.gap = 0;
 }
 
 // ############################################################
@@ -437,6 +461,24 @@ PlayerState::PlayerState(asw_player &player, asw_player &opp, const PlayerState 
     type = PST_Recovering;
   else
     type = PST_Busy;
+
+  stun = (std::max)(player.hitstun, player.blockstun);
+
+  // Frames left after this one: stun counts down in the player itself (a huge value
+  // means it has no set length, e.g. airborne or OTG); recovery is what's left of the
+  // move's script, which counts this frame too.
+  // Also tells a cancel out of recovery (frames still left) from a move that came out
+  // once recovery had run out, for the frame perfect mark.
+  if (type == PST_Recovering) {
+    const int s = player.script_frames_left();
+    rec_left = s >= 0 ? s - 1 : -1;
+  }
+  if (ModMenu::instance().countdown()) {
+    if (type == PST_HitStunned && hit_stunned) left = player.hitstun;
+    else if (type == PST_BlockStunned && player.is_in_blockstun()) left = player.blockstun;
+    else if (type == PST_Recovering) left = rec_left;
+    if (left >= kNoSetLength) left = -1;
+  }
 
   // Quick hotfix for gio/leo dashes
   if (type == PST_Idle && is_dash && ModMenu::instance().dashEnabled()) {
@@ -698,7 +740,7 @@ void FrameBar::Data::addFrame() {
         auto* s = pd[p]->segments;
         for (int k = 0; k + 1 < fold_tail_n; k++) s[tail(k)].trunc = 0;
         s[idx].state = s[prev_idx].state;
-        s[idx].mods = static_cast<ModifierType>(s[prev_idx].mods & ~(MT_SegmentEnd | MT_Perfect | MT_Projectile));
+        s[idx].mods = static_cast<ModifierType>(s[prev_idx].mods & ~(MT_SegmentEnd | MT_Perfect | MT_Projectile | MT_Connect));
         if (pd[p]->current_state.anyProjectiles()) s[idx].mods |= MT_Projectile;
         s[idx].decay = s[prev_idx].decay;
         s[idx].keep = s[prev_idx].keep;
@@ -719,6 +761,27 @@ void FrameBar::Data::addFrame() {
     }
 
     doBoth(&PlayerData::updateSegment, prev_idx, current_segment_idx);
+
+    // The other side's stun just began, or its stun timer jumped up (a hit on someone
+    // already in hitstun or knockdown, like a meaty on wakeup): the move connected on
+    // the frame before, since the stun only shows once the hit has been dealt with
+    // (after hitstop). That frame may have been the last active one, with recovery
+    // already started now.
+    PlayerData* pd[2] = {&data.first, &data.second};
+    for (int p = 0; p < 2; p++) {
+      PlayerData& me = *pd[p];
+      const PlayerState& opp = pd[1 - p]->current_state;
+      const bool new_stun = opp.isStunned() && (opp.state_time == 1 || opp.stun > pd[1 - p]->previous_state.stun);
+      if (me.previous_state.type == PST_Attacking && new_stun) {
+        me.segments[prev_idx].mods |= MT_Connect;
+        if (me.working_stats.hit_on == 0 && me.working_stats.actives.size() == 1) {
+          me.working_stats.hit_on = me.previous_state.state_time;
+          me.working_stats.hit_timed = opp.stun > 0 && opp.stun < kNoSetLength;
+          me.displayed_stats.hit_on = me.working_stats.hit_on;
+          me.displayed_stats.hit_timed = me.working_stats.hit_timed;
+        }
+      }
+    }
   } else {
     DEBUG_PRINT(STR("Was not Active\n"));
 
@@ -758,8 +821,9 @@ void FrameBar::Data::draw() {
   auto options = menu.getScheme();
   bool fade = menu.fadeEnabled();
 
-  auto player_one_info = makeStatsText(data.first.displayed_stats, advantage);
-  auto player_two_info = makeStatsText(data.second.displayed_stats, -advantage);
+  const bool hits = ModMenu::instance().markHits();
+  auto player_one_info = makeStatsText(data.first.displayed_stats, advantage, hits);
+  auto player_two_info = makeStatsText(data.second.displayed_stats, -advantage, hits);
 
   // With ImGui running, the frame bar is its own window: hand over the cells.
   if (imgui_overlay::running()) {
@@ -787,6 +851,17 @@ void FrameBar::Data::draw() {
     view.inputs = view.show_inputs[0] || view.show_inputs[1];
     view.blocks = menu.barBlocks();
     view.perfect = menu.markPerfect();
+    view.hits = menu.markHits();
+    view.gaps = menu.markGaps();
+    // Countdown for each side while it's in stun or recovery, next to the newest cell.
+    view.newest = (current_segment_idx + fold_tail_n - 1 + FRAME_SEGMENTS) % FRAME_SEGMENTS;
+    view.left[0] = combo_active ? data.first.current_state.left : -1;
+    view.left[1] = combo_active ? data.second.current_state.left : -1;
+    // Both stuck: who gets out first and by how much. Both count down together, so
+    // it holds still until one of them is free.
+    view.both = view.left[0] >= 0 && view.left[1] >= 0;
+    view.adv[0] = view.both ? view.left[1] - view.left[0] : 0;
+    view.adv[1] = -view.adv[0];
     const PlayerData* rows[2] = {&data.first, &data.second};
     for (int r = 0; r < 2; r++) {
       for (int i = 0; i < FRAME_SEGMENTS && i < 120; i++) {
@@ -800,6 +875,7 @@ void FrameBar::Data::draw() {
         out.mods = static_cast<unsigned char>(in.mods);
         out.trunc = in.trunc;
         out.keep = in.keep;
+        out.gap = in.gap;
         out.dir = in.input_dir;
         out.held = in.input_held;
         out.pressed = in.input_pressed;

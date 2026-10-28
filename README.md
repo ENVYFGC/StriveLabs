@@ -8,12 +8,13 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 
 ## What it does
 
-- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show one side only, draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could.
+- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show one side only, draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could. It can also show which active frame a move hit on, the gaps between stuns, and how many frames of stun and recovery are left.
 - Hitboxes and hurtboxes.
 - Meters for tension gain, burst, tension pulse, tension penalty and wall damage.
 - Replay takeover, so you can jump into either side of a replay and play it out yourself. Replay Assist can start you a moment early, so you're already in the flow when control is handed to you.
 - Recordings. Save your training slots as .txt files you can edit, share and load back in, or record a player straight from a replay.
 - A timeline with rewind, pause, frame step and record.
+- Combo Trials. Pick any combo you've saved or downloaded in Combo Maker and try it in training: it starts where the combo starts, and the game lights up each move as it lands. Training can also run on an older battle version.
 - A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size.
 - Character select remembers your last character, color, stage and music after a restart.
 

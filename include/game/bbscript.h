@@ -112,6 +112,7 @@ namespace bbscript {
 	};
 
 	void BBSInitializeFunctions();
+	bool scriptReaderAvailable();
 	
 	class code_pointer {
 	public:
@@ -131,6 +132,7 @@ namespace bbscript {
 	    int state_remaining_time;
 	    int last_sprite_time;
 	    bool nandemo;
+	    bool ok = false;  // read_script() reached the end of the state cleanly
 
 		opcode next_op() const
 		{
@@ -139,9 +141,7 @@ namespace bbscript {
 	    
 		void read_script();
 		void execute_instruction(int code);
-	    void get_skip_begin_end_addr();
-		static char* get_func_addr_base(char* bbs_file, char* func_name);
-	    static char* get_action_addr_base(char* obj, char* action_name, int* out_index);
+	    bool get_skip_begin_end_addr();
 	};
 
 } // bbscript
