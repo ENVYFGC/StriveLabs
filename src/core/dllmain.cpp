@@ -477,7 +477,9 @@ void hook_UpdateSystem(uintptr_t System)
     // still held from a pause.
     if (!g_battle_ran) g_training_press = g_training_pending = 0;
     g_battle_ran = false;
-    combo_trials::latchVersion(GetTickCount64() - g_last_battle_update < 250);
+    const bool battle_running = GetTickCount64() - g_last_battle_update < 250;
+    combo_trials::latchVersion(battle_running);
+    if (!battle_running) combo_trials::idle();  // left training: the trial doesn't carry on
     dropKeysOutsideFight();
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.

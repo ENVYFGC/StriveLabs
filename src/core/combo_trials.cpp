@@ -6,6 +6,7 @@
 #include <polyhook2/Detour/x64Detour.hpp>
 #include <atomic>
 #include <fstream>
+#include <memory>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -82,12 +83,32 @@ namespace {
     std::ofstream f(g_backup_file, std::ios::binary | std::ios::trunc);
     f.write(reinterpret_cast<const char*>(&g_bk), sizeof(g_bk));
   }
+  constexpr int kMaxChara = 64;  // well past the roster; only guards a damaged file
   uintptr_t dummyBlock(int chara) { return *g_save_root + kDummyBlocks + static_cast<size_t>(chara) * kDummySize; }
+  bool dummyValid(int chara) { return chara >= 0 && chara < kMaxChara; }
+
+  // Puts back the player's value for each setting the trial changed, if it still holds
+  // the trial's value (one changed since is the player's own choice and stays), and the
+  // same for the dummy's block. Returns how many were put back.
+  int putBack(const Backup& b) {
+    const uintptr_t settings = *g_save_root + kSettings;
+    int n = 0;
+    for (int id = 0; id < 128; id++) {
+      if (kept(id) || b.applied_settings[id] == b.settings[id]) continue;
+      if (at<int32_t>(settings + id * 4) != b.applied_settings[id]) continue;
+      at<int32_t>(settings + id * 4) = b.settings[id];
+      n++;
+    }
+    if (dummyValid(b.dummy_chara) && std::memcmp(b.applied_dummy, b.dummy, kDummySize) != 0 &&
+        std::memcmp(reinterpret_cast<void*>(dummyBlock(b.dummy_chara)), b.applied_dummy, kDummySize) == 0) {
+      std::memcpy(reinterpret_cast<void*>(dummyBlock(b.dummy_chara)), b.dummy, kDummySize);
+      n++;
+    }
+    return n;
+  }
   void restoreSettings() {
     if (!g_save_root || !*g_save_root) return;
-    std::memcpy(reinterpret_cast<void*>(*g_save_root + kSettings), g_bk.settings, sizeof(g_bk.settings));
-    if (g_bk.dummy_chara >= 0)
-      std::memcpy(reinterpret_cast<void*>(dummyBlock(g_bk.dummy_chara)), g_bk.dummy, kDummySize);
+    putBack(g_bk);
     g_applied = false;
     COMBO_LOG("combo trials: training settings put back");
   }
@@ -221,30 +242,24 @@ void update(bool in_training) {
     // still holds the trial's, then drop the file once none are left.
     g_checked_file = true;
     std::ifstream f(g_backup_file, std::ios::binary);
-    Backup b;
-    if (f && f.read(reinterpret_cast<char*>(&b), sizeof(b)) && b.magic == Backup{}.magic) {
-      const uintptr_t settings = *g_save_root + kSettings;
-      bool stuck = true, restored = false;
-      for (int id = 0; id < 128 && stuck; id++)
-        if (!kept(id) && at<int32_t>(settings + id * 4) != b.applied_settings[id]) stuck = false;
-      if (stuck) {
-        std::memcpy(reinterpret_cast<void*>(settings), b.settings, sizeof(b.settings));
-        restored = true;
-      }
-      if (b.dummy_chara >= 0 && std::memcmp(reinterpret_cast<void*>(dummyBlock(b.dummy_chara)), b.applied_dummy, kDummySize) == 0) {
-        std::memcpy(reinterpret_cast<void*>(dummyBlock(b.dummy_chara)), b.dummy, kDummySize);
-        restored = true;
-      }
-      if (restored) COMBO_LOG("combo trials: training settings from the last session put back");
+    auto b = std::make_unique<Backup>();
+    if (f && f.read(reinterpret_cast<char*>(b.get()), sizeof(Backup)) && b->magic == Backup{}.magic) {
+      if (!dummyValid(b->dummy_chara)) b->dummy_chara = -1;
+      if (putBack(*b)) COMBO_LOG("combo trials: training settings from the last session put back");
       else { f.close(); std::error_code ec; std::filesystem::remove(g_backup_file, ec); }
     }
   }
-  if (g_applied && !in_training) {
-    restoreSettings();
-    const uintptr_t r = g_recipe;  // and no trial left behind for the next session
-    for (size_t off : {rMatchName, rMatchCond, rShowName, rProgress, rFlag, rShowCond}) at<TArr>(r + off).num = 0;
-    at<uint8_t>(r + rDone) = 0;
-  }
+  if (!in_training) idle();
+}
+
+// Out of training (main menu, character select, another mode): the trial ends, its
+// settings go and the recipe is emptied, so nothing carries into the next session.
+void idle() {
+  if (!g_applied || !g_save_root || !*g_save_root) return;
+  restoreSettings();
+  const uintptr_t r = g_recipe;
+  for (size_t off : {rMatchName, rMatchCond, rShowName, rProgress, rFlag, rShowCond}) at<TArr>(r + off).num = 0;
+  at<uint8_t>(r + rDone) = 0;
 }
 
 bool available() { return g_recipe && g_save_root && g_chara_owner && g_chara_base && g_refresh && g_pos_side; }
@@ -330,6 +345,9 @@ std::wstring load(const Entry& e) {
     }
     std::memcpy(reinterpret_cast<void*>(dummyBlock(dummy)), reinterpret_cast<void*>(b + kComboDummy), kDummySize);
     std::memcpy(g_bk.applied_dummy, reinterpret_cast<void*>(b + kComboDummy), kDummySize);
+  } else if (g_bk.dummy_chara >= 0) {
+    std::memcpy(reinterpret_cast<void*>(dummyBlock(g_bk.dummy_chara)), g_bk.dummy, kDummySize);
+    g_bk.dummy_chara = -1;
   }
   saveBackupFile();
   placeAsSet();

@@ -29,6 +29,8 @@ namespace combo_trials {
   // Game thread, every battle update: puts settings back when training is left, or
   // after a crash or quit during a trial (from the file).
   void update(bool in_training);
+  // Game thread, when no battle has run for a moment: a trial still on ends there.
+  void idle();
 
   // Battle version for training, as the game counts them (39 = 5.03), 0 = the
   // current one. Takes effect the next time training loads; both sides get it.

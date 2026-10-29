@@ -443,13 +443,23 @@ namespace {
   // Row 0 refreshes the list; each combo after it loads into training's recipe.
   std::vector<combo_trials::Entry> g_trials;
   std::wstring g_trials_status;
-  int g_trials_version = 0;  // choice: 0 = current, k = battle version 39 - k
+  // Battle versions offered: the current one, and those this character's saved combos
+  // were made on (so the game surely has that version of the character).
+  std::vector<int> g_version_choices{0};
+  MenuPage g_trials_last_shown = MenuPage::Root;
+  int g_trials_version = 0;  // the picked battle version, 0 = current
   std::wstring versionName(int index);
   constexpr int kNewestVersion = 39;
   void refreshTrials() {
     if (!combo_trials::available()) { g_trials.clear(); g_trials_status = L"Not available in this game version"; return; }
     if (!ReplayManager::instance().status().training) { g_trials.clear(); g_trials_status = L"Open this in training mode"; return; }
     g_trials = combo_trials::list();
+    g_version_choices = {0};
+    for (const auto& e : g_trials)
+      if (e.version > 0 && e.version < kNewestVersion &&
+          std::find(g_version_choices.begin(), g_version_choices.end(), e.version) == g_version_choices.end())
+        g_version_choices.push_back(e.version);
+    std::sort(g_version_choices.begin() + 1, g_version_choices.end(), std::greater<int>());
     g_trials_status = g_trials.empty()
         ? L"No Combo Maker combos for this character. Save or download some in Combo Maker first."
         : std::to_wstring(g_trials.size()) + L" combos. Pick one to try it here.";
@@ -1287,8 +1297,10 @@ void ModMenu::updateInner(PressedKeys data) {
     if (!(data.rotate_left || data.rotate_right)) return;
     if (local_idx == 0) refreshTrials();
     else if (local_idx == 1) {
-      g_trials_version = static_cast<int>(rotateVal(static_cast<size_t>(g_trials_version), data.rotate_right, kNewestVersion));
-      combo_trials::setTrainingVersion(g_trials_version ? kNewestVersion - g_trials_version : 0);
+      const auto it = std::find(g_version_choices.begin(), g_version_choices.end(), g_trials_version);
+      const size_t idx = it == g_version_choices.end() ? 0 : static_cast<size_t>(it - g_version_choices.begin());
+      g_trials_version = g_version_choices[rotateVal(idx, data.rotate_right, g_version_choices.size())];
+      combo_trials::setTrainingVersion(g_trials_version);
     } else if (local_idx == 2) {
       if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
       combo_trials::stop();
@@ -1783,8 +1795,8 @@ void ModMenu::applyClick(const MenuClick& c) {
   // SetChoice: jump straight to that option
   if (page == MenuPage::ComboTrials) {
     if (c.a == 2) {
-      g_trials_version = std::clamp(c.b, 0, kNewestVersion - 1);
-      combo_trials::setTrainingVersion(g_trials_version ? kNewestVersion - g_trials_version : 0);
+      g_trials_version = g_version_choices[static_cast<size_t>(std::clamp(c.b, 0, static_cast<int>(g_version_choices.size()) - 1))];
+      combo_trials::setTrainingVersion(g_trials_version);
     }
     return;
   }
@@ -1891,9 +1903,12 @@ void ModMenu::buildView() {
   } else if (shown == MenuPage::ComboTrials) {
     row(MenuRowView::Kind::Action, "Combo Maker combos for this character", "Refresh");
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Battle version (next time training loads)";
-      r.choices.push_back("Current");
-      for (int k = 1; k < kNewestVersion; k++) r.choices.push_back(utf8(versionName(kNewestVersion - k)));
-      r.choice = g_trials_version; out.push_back(r); }
+      int sel = 0;
+      for (size_t k = 0; k < g_version_choices.size(); k++) {
+        r.choices.push_back(k == 0 ? std::string("Current") : utf8(versionName(g_version_choices[k])));
+        if (g_version_choices[k] == g_trials_version) sel = static_cast<int>(k);
+      }
+      r.choice = sel; out.push_back(r); }
     row(MenuRowView::Kind::Action, combo_trials::active() ? "Stop the trial (your settings come back)" : "Stop the trial", "Stop");
     for (const auto& e : g_trials) row(MenuRowView::Kind::Action, utf8(trialLabel(e)), "Try");
     status = utf8(g_trials_status);
@@ -1911,9 +1926,9 @@ void ModMenu::buildView() {
     for (size_t i = 0; i < out.size(); i++) out[i].section = utf8(sectionForRow(shown, i));
   };
   // The list is read when the page comes up (mouse or keys), not every frame.
-  static MenuPage last_shown = MenuPage::Root;
-  if (shown == MenuPage::ComboTrials && last_shown != MenuPage::ComboTrials) refreshTrials();
-  last_shown = shown;
+  if (!is_showing) g_trials_last_shown = MenuPage::Root;  // reopening the menu reads the list again
+  if (is_showing && shown == MenuPage::ComboTrials && g_trials_last_shown != MenuPage::ComboTrials) refreshTrials();
+  g_trials_last_shown = is_showing ? shown : MenuPage::Root;
   buildRows(shown, v.rows, v.status);
   v.page = static_cast<int>(shown);
   v.tension_page = shown == MenuPage::Tension;
