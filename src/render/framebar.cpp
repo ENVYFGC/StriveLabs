@@ -18,7 +18,6 @@ namespace {
   /* Combo Triger Settings */
   constexpr int COMBO_ENDED_TIME = 20; // time idle before combo is considered over
   constexpr int COMBO_NUM_TIME = 9;    // minimum time of unchanging states to display state length
-  constexpr int COMBO_TRUNC_TIME = 10; // max segments for unchanging state, after which the segments are truncated
   constexpr double COLOR_DECAY = 0.9f;
   constexpr int kNoSetLength = 1000;  // stun timers this big have no set end (airborne, OTG)
 
@@ -313,6 +312,20 @@ void PlayerData::updateMove() {
   }
 }
 
+namespace {
+  // The last frames of a stretch kept as cells, for a stretch in these states: none
+  // when they're only wanted on recovery and neither side is recovering.
+  int keepFor(PlayerStateType a, PlayerStateType b) {
+    if (ModMenu::instance().unfoldOnlyRecovery() && a != PST_Recovering && b != PST_Recovering) return 0;
+    return ModMenu::instance().unfoldFrames();
+  }
+  // Stretches longer than this fold: one cell, plus the last frames kept as cells, so
+  // a stretch only folds once it's longer than those kept frames.
+  int foldAfter(int keep) { return (std::max)(ModMenu::instance().foldAfter(), keep + 1); }
+  // Stretches longer than this get their length written at their end.
+  int numberAfter() { return (std::min)(COMBO_NUM_TIME, ModMenu::instance().foldAfter()); }
+}
+
 void PlayerData::updateSegment(int prev_idx, int curr_idx) {
   // previous section has ended
   auto &previous = segments[prev_idx];
@@ -320,6 +333,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
   previous.trunc = 0;
 
   active.state = current_state.type;
+  active.frames = 1;
   active.mods = MT_None;
   if(current_state.can_cancel){
     active.mods |= MT_Cancellable;
@@ -331,10 +345,10 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     // don't delim starts of cancel frames
     previous.mods |= MT_SegmentEnd;
     active.decay = 1.0;
-    active.keep = static_cast<uint8_t>(ModMenu::instance().unfoldFrames());
+    active.keep = static_cast<uint8_t>(keepFor(current_state.type, current_state.type));
 
     // ... and was long enough that we want trucated
-    if (previous_state.state_time > COMBO_NUM_TIME) {
+    if (previous_state.state_time > numberAfter()) {
       DEBUG_PRINT(STR("Last section requires truncating\n"));
       previous.trunc = previous_state.state_time;
     }
@@ -358,7 +372,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     }
   } else {
     DEBUG_PRINT(STR("Same Section for One\n"));
-    if(previous_state.can_cancel != current_state.can_cancel && previous_state.trunc_time > COMBO_NUM_TIME){
+    if(previous_state.can_cancel != current_state.can_cancel && previous_state.trunc_time > numberAfter()){
       previous.trunc = previous_state.state_time;
     }
     // we are drawing this section, fade its color slightly
@@ -379,7 +393,8 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
 void PlayerData::initSegment(int curr_idx) {
   auto &active = segments[curr_idx];
   active.state = current_state.type;
-  active.keep = static_cast<uint8_t>(ModMenu::instance().unfoldFrames());
+  active.frames = 1;
+  active.keep = static_cast<uint8_t>(keepFor(current_state.type, current_state.type));
   active.mods = MT_None;
   if(current_state.anyProjectiles()){
     active.mods |= MT_Projectile;
@@ -400,6 +415,7 @@ void PlayerData::fadeSegment(int fade_idx) {
   fade_segment.input_dir = 0;
   fade_segment.input_held = fade_segment.input_pressed = 0;
   fade_segment.gap = 0;
+  fade_segment.frames = 0;
 }
 
 // ############################################################
@@ -706,17 +722,24 @@ void FrameBar::Data::addFrame() {
     DEBUG_PRINT(STR("Is Active\n"));
     int prev_idx = (current_segment_idx + FRAME_SEGMENTS - 1) % FRAME_SEGMENTS;
 
-    // we are truncating, update truncated
-    if (data.first.current_state.trunc_time > COMBO_TRUNC_TIME && data.second.current_state.trunc_time > COMBO_TRUNC_TIME) {
-      doBoth(&PlayerData::truncSegment, prev_idx);
+    // we are truncating, update truncated. Active frames never fold: where a move
+    // connects and how long it stays out is what the bar is read for.
+    const int keep_now = (std::min)(keepFor(data.first.current_state.type, data.second.current_state.type), MAX_UNFOLD);
+    const int fold_after = foldAfter(keep_now);
+    if (data.first.current_state.trunc_time > fold_after && data.second.current_state.trunc_time > fold_after &&
+        data.first.current_state.type != PST_Attacking && data.second.current_state.type != PST_Attacking) {
       if (!folding) {
         folding = true;
-        fold_keep = (std::min)(ModMenu::instance().unfoldFrames(), MAX_UNFOLD);
+        fold_keep = keep_now;
+        prev_idx = foldFromStart(prev_idx, fold_keep);
         data.first.segments[prev_idx].keep = data.second.segments[prev_idx].keep = static_cast<uint8_t>(fold_keep);
       }
+      doBoth(&PlayerData::truncSegment, prev_idx);
       const int keep = fold_keep;
       if (keep <= 0) {
         store_inputs(prev_idx, true);
+        data.first.segments[prev_idx].frames++;
+        data.second.segments[prev_idx].frames++;
         return;
       }
       // The last `keep` frames of the fold keep cells of their own, right after the
@@ -731,6 +754,7 @@ void FrameBar::Data::addFrame() {
           s[prev_idx].input_dir = s[tail(0)].input_dir;
           s[prev_idx].input_held = s[tail(0)].input_held;
           s[prev_idx].input_pressed = static_cast<uint16_t>(s[prev_idx].input_pressed | s[tail(0)].input_pressed);
+          s[prev_idx].frames = static_cast<uint16_t>(s[prev_idx].frames + s[tail(0)].frames);
           for (int k = 1; k < fold_tail_n; k++) s[tail(k - 1)] = s[tail(k)];
         }
         fold_tail_n--;
@@ -744,6 +768,7 @@ void FrameBar::Data::addFrame() {
         if (pd[p]->current_state.anyProjectiles()) s[idx].mods |= MT_Projectile;
         s[idx].decay = s[prev_idx].decay;
         s[idx].keep = s[prev_idx].keep;
+        s[idx].frames = 1;
         s[idx].trunc = s[prev_idx].trunc;
         s[prev_idx].trunc = 0;
       }
@@ -801,6 +826,47 @@ void FrameBar::Data::addFrame() {
 
   combo_active = true;
 }
+// A fold is starting: the stretch's cells drawn so far go into the folded cell, except
+// the ones the kept last frames need, so the stretch folds from its start rather than
+// after its first cells. Only cells where both rows are in this same stretch count, so
+// the two rows stay lined up. Returns the folded cell; the bar goes on right after it.
+int FrameBar::Data::foldFromStart(int prev_idx, int keep) {
+  auto at = [](int i) { return ((i % FRAME_SEGMENTS) + FRAME_SEGMENTS) % FRAME_SEGMENTS; };
+  PlayerData* pd[2] = {&data.first, &data.second};
+  // Cell `a` (older) is in the same stretch as the newest one, on both rows.
+  auto same = [&](int a) {
+    for (auto* p : pd) {
+      const FrameInfo &x = p->segments[a], &y = p->segments[prev_idx];
+      if (x.state == PST_None || x.state != y.state || (x.mods & MT_SegmentEnd) || ((x.mods ^ y.mods) & MT_Cancellable)) return false;
+    }
+    return true;
+  };
+  int n = 1;  // the stretch's cells so far, the newest at prev_idx
+  while (n < FRAME_SEGMENTS - FADE_DISTANCE - MAX_UNFOLD && same(at(prev_idx - n))) n++;
+  const int tail = keep > 0 ? keep - 1 : 0;  // cells after the folded one; this frame makes the last
+  const int merged = n - 1 - tail;           // cells going into the folded one
+  if (merged < 1) return prev_idx;
+  const int start = at(prev_idx - n + 1);
+  for (auto* p : pd) {
+    FrameInfo* s = p->segments;
+    for (int k = 1; k <= merged; k++) {  // the folded cell ends with the inputs of its last frame
+      const FrameInfo& c = s[at(start + k)];
+      s[start].input_dir = c.input_dir;
+      s[start].input_held = c.input_held;
+      s[start].input_pressed = static_cast<uint16_t>(s[start].input_pressed | c.input_pressed);
+    }
+    for (int k = 1; k <= merged; k++) s[start].frames = static_cast<uint16_t>(s[start].frames + s[at(start + k)].frames);
+    for (int k = 1; k <= tail; k++) s[at(start + k)] = s[at(start + merged + k)];
+    for (int k = tail + 1; k < n; k++) {
+      p->fadeSegment(at(start + k));
+      s[at(start + k)].trunc = 0;
+    }
+  }
+  current_segment_idx = at(start + 1);
+  fold_tail_n = tail;
+  return start;
+}
+
 void FrameBar::Data::reset() {
   last_game_frame = -1;
   pending_press[0] = pending_press[1] = 0;
@@ -850,6 +916,7 @@ void FrameBar::Data::draw() {
     }
     view.inputs = view.show_inputs[0] || view.show_inputs[1];
     view.blocks = menu.barBlocks();
+    view.compact = menu.compactBar();
     view.perfect = menu.markPerfect();
     view.hits = menu.markHits();
     view.gaps = menu.markGaps();
@@ -868,11 +935,15 @@ void FrameBar::Data::draw() {
         const FrameInfo& in = rows[r]->segments[i];
         auto& out = view.rows[r][i];
         out.on = in.state != PST_None;
+        out.frames = out.on ? in.frames : 0;
         if (!out.on) continue;
         auto color = options.palette.state_colors[in.state];
         if (options.show_fade) color = color * static_cast<float>(in.decay);
         out.color = pack(color);
         out.mods = static_cast<unsigned char>(in.mods);
+        out.free = in.state == PST_Idle || in.state == PST_Dash;
+        out.stun = in.state == PST_BlockStunned || in.state == PST_HitStunned;
+        out.recovering = in.state == PST_Recovering;
         out.trunc = in.trunc;
         out.keep = in.keep;
         out.gap = in.gap;

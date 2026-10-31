@@ -111,12 +111,36 @@ namespace menu_ui {
       if (!f) f = add(file, px, s);
       return f ? f : fallback(px, s);
     };
+    // Japanese for the menu text (player names and comments from Combo Maker): merged
+    // into the menu fonts from a Japanese font Windows ships, if there is one. Only the
+    // menu's: every font would make the atlas far too big.
+    std::string jp_path;
+    for (const char* f : {"YuGothM.ttc", "meiryo.ttc", "msgothic.ttc"}) {
+      char win[MAX_PATH] = {};
+      if (!GetWindowsDirectoryA(win, MAX_PATH)) break;
+      const std::string p = std::string(win) + "\\Fonts\\" + f;
+      if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) { jp_path = p; break; }
+    }
+    bool jp = true;  // off for the timeline's set, which never shows Combo Maker text
+    auto merge_jp = [&](ImFont* into, float px, float s) {
+      // ponytail: size cap instead of measuring the atlas; ~3000 glyphs per font at 48 px
+      // keeps it far under the 16384 rows a texture can have.
+      if (!jp || !into || jp_path.empty() || px * s > 48.0f) return;
+      ImFontConfig cfg;
+      cfg.MergeMode = true;
+      cfg.OversampleH = 1;
+      cfg.PixelSnapH = true;
+      io.Fonts->AddFontFromFileTTF(jp_path.c_str(), px * s, &cfg, io.Fonts->GetGlyphRangesJapanese());
+    };
     auto menu_set = [&](float s) {
       FontSet fs;
       fs.body = add("Barlow-Medium.ttf", 17.0f, s);
+      merge_jp(fs.body, 17.0f, s);
       fs.bold = add("Barlow-SemiBold.ttf", 17.0f, s);
+      merge_jp(fs.bold, 17.0f, s);
       fs.title = add("BarlowCondensed-Bold.ttf", 24.0f, s);
       fs.small_ = add("Barlow-Medium.ttf", 14.0f, s);
+      merge_jp(fs.small_, 14.0f, s);
       if (!fs.body || !fs.bold || !fs.title || !fs.small_) {
         fs.body = fs.bold = fs.title = fs.small_ = fallback(14.0f, s);
         COMBO_LOG("imgui: StriveLabs_fonts not found, using the default font");
@@ -124,6 +148,7 @@ namespace menu_ui {
       return fs;
     };
     fs_menu = menu_set(SE[E_MENU]);
+    jp = false;
     fs_timeline = std::fabs(SE[E_TIMELINE] - SE[E_MENU]) < 0.001f ? fs_menu : menu_set(SE[E_TIMELINE]);
     f_framebar = add_ov("Barlow-Medium.ttf", 20.0f, SE[E_BAR]);
     f_framebar_stats = add_ov("Barlow-Medium.ttf", 24.0f, SE[E_BAR]);
@@ -219,7 +244,8 @@ namespace menu_ui {
 
   // Rows of one page between top and bottom, scrolled with the wheel and kept on
   // the selected row. cursor = -1 when nothing is selected.
-  void draw_rows(ImDrawList* dl, const std::vector<MenuRowView>& rows, int cursor, const std::string& key,
+  // Returns where the rows end on screen.
+  float draw_rows(ImDrawList* dl, const std::vector<MenuRowView>& rows, int cursor, const std::string& key,
                  float px, float x1, float top, float bottom, ScrollState& st,
                  const std::function<void(MenuClick)>& sendf) {
     ImGuiIO& io = ImGui::GetIO();
@@ -354,6 +380,70 @@ namespace menu_ui {
 
     // Square scrollbar, only when the page is longer than the pane
     draw_scrollbar(dl, x1, top, bottom, rows_h, scroll);
+    return top - scroll + rows_h;
+  }
+
+  // Frame Bar page: what the bar's colors and marks mean, in the room under the settings.
+  void draw_bar_legend(ImDrawList* dl, float x0, float x1, float y, float bottom, const MenuView& v) {
+    const float fs = f_small->FontSize, sw = fs * 0.9f, gx = 18 * S, line = fs + 9 * S;
+    if (y + line * 3 > bottom) return;  // no room: the settings fill the page
+    text(dl, f_small, ImVec2(x0, y), MUTED, "LEGEND");
+    y += line;
+    float x = x0;
+    // Room for an item of width w on this line, or the next one; where it goes.
+    auto place = [&](float w) {
+      if (x > x0 && x + w > x1) { x = x0; y += line; }
+      const float at = x;
+      x += w + gx;
+      return at;
+    };
+    auto label = [&](float at, const char* s) { text(dl, f_small, ImVec2(at, y), LABEL, s); };
+    struct Swatch { int state; const char* name; };
+    static const Swatch SW[] = {{0, "Neutral"}, {3, "Startup"}, {4, "Active"}, {5, "Projectile active"},
+                                {6, "Recovery"}, {1, "Blockstun"}, {2, "Hitstun"}};
+    for (const auto& s : SW) {
+      const float at = place(sw + 6 * S + text_w(f_small, s.name));
+      if (y + fs > bottom) return;
+      dl->AddRectFilled(ImVec2(at, y + (fs - sw) * 0.5f), ImVec2(at + sw, y + (fs + sw) * 0.5f), v.bar_colors[s.state]);
+      label(at + sw + 6 * S, s.name);
+    }
+    x = x0; y += line;
+    // A glyph, then its meaning.
+    auto mark = [&](float gw, const char* s, const std::function<void(float, float)>& glyph) {
+      const float at = place(gw + 6 * S + text_w(f_small, s));
+      if (y + fs > bottom) return;
+      glyph(at, y);
+      label(at + gw + 6 * S, s);
+    };
+    auto sample = [&](const char* n, ImU32 col, const char* s) {
+      mark(text_w(f_small, n), s, [&](float at, float ty) { text_outlined(dl, f_small, ImVec2(at, ty), col, n); });
+    };
+    mark(sw, "Where the move hit", [&](float at, float ty) {
+      dl->AddTriangleFilled(ImVec2(at, ty + fs * 0.2f), ImVec2(at + sw, ty + fs * 0.2f), ImVec2(at + sw * 0.5f, ty + fs * 0.8f), TEXT);
+    });
+    mark(sw, "Frame perfect move", [&](float at, float ty) {
+      ImVec2 p[10];
+      const float cx = at + sw * 0.5f, cy = ty + fs * 0.5f, r = sw * 0.55f;
+      for (int k = 0; k < 10; k++) {
+        const float a = -IM_PI / 2 + k * IM_PI / 5, rr = (k & 1) ? r * 0.4f : r;
+        p[k] = ImVec2(cx + std::cos(a) * rr, cy + std::sin(a) * rr);
+      }
+      dl->AddConcavePolyFilled(p, 10, TEXT);
+    });
+    sample("12", TEXT, v.bar_compact ? "Frames in the cell" : "Frames in a stretch or fold");
+    sample("3", RGBA(255, 214, 0), "Gap between two stuns");
+    if (v.bar_compact) {
+      sample("6", RGBA(124, 255, 107), "Punish window: free while the other recovers");
+      mark(sw * 1.6f, "Length of a stretch over several cells", [&](float at, float ty) {
+        const float ly = ty + fs * 0.75f, w = sw * 1.6f, t = std::max(1.0f, S * 1.2f);
+        dl->AddRectFilled(ImVec2(at, ly - t), ImVec2(at + w, ly), TEXT);
+        dl->AddRectFilled(ImVec2(at, ly - t * 4), ImVec2(at + t, ly), TEXT);
+        dl->AddRectFilled(ImVec2(at + w - t, ly - t * 4), ImVec2(at + w, ly), TEXT);
+      });
+    }
+    mark(sw * 0.4f, "Where stun or recovery ends (countdown)", [&](float at, float ty) {
+      dl->AddRectFilled(ImVec2(at, ty), ImVec2(at + sw * 0.4f, ty + fs), RGBA(120, 200, 255));
+    });
   }
 
   // ---- Window chrome: title strip, minimize, close, resize --------------------
@@ -394,8 +484,8 @@ namespace menu_ui {
       if (ws.open_h > 0 && existing) {  // just restored: back to the height it had
         ImGui::SetNextWindowSize(ImVec2(existing->Size.x, ws.open_h), ImGuiCond_Always);
         ws.open_h = 0;
-      } else {
-        ImGui::SetNextWindowSize(def_size, reset ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+      } else if (!(ImGui::GetCurrentContext()->NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasSize)) {
+        ImGui::SetNextWindowSize(def_size, reset ? ImGuiCond_Always : ImGuiCond_FirstUseEver);  // unless the caller set it
       }
       ImGui::SetNextWindowSizeConstraints(min_size, ImVec2(FLT_MAX, FLT_MAX));
     }
@@ -494,6 +584,19 @@ namespace menu_ui {
   std::mutex t_mutex;
   std::vector<std::string> t_lines;
   unsigned long long t_time = 0;
+  // The game's training damage panel, per side, from the game thread.
+  std::mutex d_mutex;
+  std::vector<imgui_overlay::DamageRow> d_rows[2];
+  // The game's own pause menu is open: the overlays step out of its way.
+  std::atomic<bool> g_game_menu_open{false};
+  // The online version window, opened by its own key outside fights.
+  std::atomic<bool> g_online_picker{false};
+  std::atomic<int> g_online_pick_step{0};
+  // The battle version's name, from the game thread.
+  std::mutex bv_mutex;
+  std::string bv_text;
+  unsigned long long bv_time = 0;
+  unsigned long long d_time = 0;
 
   void draw_panel(const MenuPanelView& pv) {
     const std::string id = pv.title + "##sl_panel" + std::to_string(pv.page);
@@ -551,7 +654,8 @@ namespace menu_ui {
       // lanes (direction, buttons, macro) sharing the height with the bars.
       const int nbars = int(fb.show[0]) + int(fb.show[1]);
       const int nin = int(fb.show_inputs[0]) + int(fb.show_inputs[1]);
-      const float avail = std::max(0.0f, f.o.y + f.h - 4 * S - y - nbars * lh - (nbars > 1 ? gap : 0.0f));
+      const float br_h = fb.compact ? f_framebar_stats->FontSize + 8 * S : 0.0f;  // compact: a row's brackets
+      const float avail = std::max(0.0f, f.o.y + f.h - 4 * S - y - nbars * (lh + br_h) - (nbars > 1 ? gap : 0.0f));
       const float in_h = nin ? std::min((x1 - x0) / 120.0f * 8.0f, avail * (nin > 1 ? 0.35f : 0.5f)) : 0.0f;
       const float bar_h = std::max((avail - nin * (in_h + gap)) / static_cast<float>(std::max(nbars, 1)), 6 * S);
       // Like the HUD bar, fit 120 cells plus a trailing gap into the background.
@@ -560,6 +664,18 @@ namespace menu_ui {
       const float sp = std::min(desired_sp, (x1 - x0) / (120 * 2.0f + 1.0f));
       const float cell = (x1 - x0 - sp) / 120.0f;
       const float seg_w = cell - sp;
+      // Folded cells are two frames wide, so their count fits. Folds are in the same
+      // columns on both rows, so the rows stay lined up. If that runs past the bar,
+      // every column narrows to fit.
+      float xs[121];
+      {
+        float units[120], total = 0;
+        for (int i = 0; i < 120; i++) total += units[i] = (fb.rows[0][i].frames > 1 || fb.rows[1][i].frames > 1) ? 2.0f : 1.0f;
+        const float k = cell * std::min(1.0f, 120.0f / total);
+        xs[0] = x0;
+        for (int i = 0; i < 120; i++) xs[i + 1] = xs[i] + units[i] * k;
+      }
+      auto segw = [&](int i) { return xs[i + 1] - xs[i] - sp; };
       const float vsp = bar_h * (4.0f / 44.0f);
       auto stats = [&](const std::string& s, float ty) {
         const float outline = std::max(S, 1.0f);
@@ -583,14 +699,22 @@ namespace menu_ui {
             for (int j = s; j < (wraps ? e : e - fb.rows[row][e].keep); j++) join[j] = true;
             s = e + 1;
           }
+          // Where the other side gets free while this one is still stuck, the block keeps
+          // a border: the frames from there on are the other side's window to act (a
+          // punish, or the advantage), with their own count.
+          const auto& other = fb.rows[1 - row];
+          for (int j = 0; j < 120; j++) {
+            const int n = (j + 1) % 120;
+            if (join[j] && !fb.rows[row][j].free && (other[j].mods & 4) && other[n].on && other[n].free) join[j] = false;
+          }
         }
         for (int i = 0; i < 120; i++) {
           const auto& c = fb.rows[row][i];
           if (!c.on) continue;
-          const float left = x0 + cell * i + sp;
+          const float left = xs[i] + sp, seg_w = segw(i);
           if (c.mods & 2) dl->AddRectFilled(ImVec2(left - bt, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), fb.bg);
           dl->AddRectFilled(ImVec2(left, sy), ImVec2(left + seg_w, sy + sh), c.color);
-          if (join[i]) dl->AddRectFilled(ImVec2(left + seg_w, sy), ImVec2(left + cell, sy + sh), c.color);
+          if (join[i]) dl->AddRectFilled(ImVec2(left + seg_w, sy), ImVec2(xs[i + 1] + sp, sy + sh), c.color);
           if (fb.perfect && (c.mods & 0x20)) {
             // White outline, and a white cap on top with a black star.
             dl->AddRect(ImVec2(left - bt * 0.5f, sy - bt * 0.5f), ImVec2(left + seg_w + bt * 0.5f, sy + sh + bt * 0.5f), RGBA(255, 255, 255), 0, 0, bt);
@@ -613,16 +737,106 @@ namespace menu_ui {
           if (fb.cancels && (c.mods & 1)) dl->AddRectFilled(ImVec2(left, sy + sh * 2 / 3), ImVec2(left + seg_w, sy + sh), RGBA(255, 255, 255));
           if (fb.crossups && (c.mods & 8)) dl->AddRectFilled(ImVec2(left + seg_w - bt, sy - bt), ImVec2(left + seg_w + bt, sy + sh + bt), RED);
         }
-        for (int i = 0; i < 120; i++) {  // numbers on top of the cells
+        if (fb.compact) {
+          // Folded compact mode: one number per cell at most. A folded cell shows how many
+          // frames it holds (not in stun: only where stun ends matters, and its bracket
+          // says that); a stretch in one cell shows its length; a stretch over several
+          // cells gets a bracket beside the bar with its length, P1's above, P2's below.
+          // In green, a punish window: how long this side was free while the other was
+          // still recovering. Gaps keep their yellow count.
+          const auto& me = fb.rows[row];
+          const auto& other = fb.rows[1 - row];
+          auto free_vs_recovery = [&](int i) { return me[i].on && other[i].on && me[i].free && other[i].recovering; };
+          int window[120] = {};  // on a punish window's last cell: its length
+          for (int i = 0, n = 0; i < 120; i++) {
+            n = free_vs_recovery(i) ? n + me[i].frames : 0;
+            if (n && (i == 119 || !free_vs_recovery(i + 1))) window[i] = n;
+          }
+          // Numbers go where they don't touch another one: the punish windows and gaps
+          // first, then single-cell stretches, then folded counts. One with no room is left
+          // out (narrow cells side by side would pile them up).
+          struct Num { int i, n, prio; ImU32 col; };
+          std::vector<Num> nums;
+          auto num = [&](int i, int n, ImU32 col, int prio) { nums.push_back({i, n, prio, col}); };
+          struct Label { float x, y; std::string t; };
+          std::vector<Label> labels;  // bracket totals, left to right
+          auto fits = [&](std::vector<std::pair<float, float>>& taken, float a, float b) {
+            for (const auto& [l, r] : taken)
+              if (a < r + 3 * S && b + 3 * S > l) return false;
+            taken.emplace_back(a, b);
+            return true;
+          };
+          const float bfs = f_framebar_stats->FontSize, line = std::max(1.0f, S * 1.2f), tick = 5 * S;
+          for (int s = 0; s < 120;) {
+            if (!me[s].on) { s++; continue; }
+            int e = s, total = me[s].frames;
+            while (!(me[e].mods & 4) && e < 119 && me[e + 1].on) total += me[++e].frames;
+            for (int i = s; i <= e; i++) {
+              const auto& c = me[i];
+              if (fb.gaps && c.gap > 0) num(i, c.gap, RGBA(255, 214, 0), 2);
+              else if (window[i]) num(i, window[i], RGBA(124, 255, 107), 2);
+              else if (s == e) { if (total > 2) num(i, total, TEXT, 1); }
+              else if (c.frames > 1 && !c.stun) num(i, c.frames, TEXT, 0);
+            }
+            if (e > s && total > 2) {
+              const float bx0 = xs[s] + sp + 1 * S, bx1 = xs[e + 1] - 1 * S;
+              const std::string t = std::to_string(total);
+              const float tx = (bx0 + bx1 - text_w(f_framebar_stats, t)) * 0.5f;
+              if (row == 0) {  // above the bar, ticks down
+                const float ly = top - 3 * S;
+                dl->AddRectFilled(ImVec2(bx0, ly - line), ImVec2(bx1, ly), TEXT);
+                dl->AddRectFilled(ImVec2(bx0, ly - line), ImVec2(bx0 + line, ly - line + tick), TEXT);
+                dl->AddRectFilled(ImVec2(bx1 - line, ly - line), ImVec2(bx1, ly - line + tick), TEXT);
+                labels.push_back({tx, ly - line - bfs - 1 * S, t});
+              } else {  // below the bar, ticks up
+                const float ly = top + bar_h + 3 * S;
+                dl->AddRectFilled(ImVec2(bx0, ly), ImVec2(bx1, ly + line), TEXT);
+                dl->AddRectFilled(ImVec2(bx0, ly + line - tick), ImVec2(bx0 + line, ly + line), TEXT);
+                dl->AddRectFilled(ImVec2(bx1 - line, ly + line - tick), ImVec2(bx1, ly + line), TEXT);
+                labels.push_back({tx, ly + line + 1 * S, t});
+              }
+            }
+            s = e + 1;
+          }
+          std::stable_sort(nums.begin(), nums.end(), [](const Num& a, const Num& b) { return a.prio > b.prio; });
+          std::vector<std::pair<float, float>> taken;
+          for (const Num& n : nums) {
+            // Smaller (down to 65%) where it's wider than its own cell.
+            const std::string t = std::to_string(n.n);
+            float fs = f_framebar->FontSize, w = text_w(f_framebar, t);
+            if (const float room = xs[n.i + 1] - xs[n.i]; w > room) {
+              fs = std::max(fs * 0.65f, fs * room / w);
+              w = f_framebar->CalcTextSizeA(fs, FLT_MAX, 0.0f, t.c_str()).x;
+            }
+            const float x = xs[n.i + 1] - w;
+            if (fits(taken, x, x + w)) text_outlined(dl, f_framebar, ImVec2(x, sy + (sh - fs) * 0.5f), n.col, t, fs);
+          }
+          taken.clear();
+          for (const Label& l : labels)
+            if (fits(taken, l.x, l.x + text_w(f_framebar_stats, l.t))) text_outlined(dl, f_framebar_stats, ImVec2(l.x, l.y), TEXT, l.t);
+        }
+        for (int i = 0; i < 120 && !fb.compact; i++) {  // numbers on top of the cells
           const auto& c = fb.rows[row][i];
           if (!c.on) continue;
+          // A folded cell's own length, small at its top, so no folded cell is a guess.
+          // Not when it holds its whole stretch: the total below says the same.
+          const bool own = c.frames > 1 && c.frames != c.trunc;
+          if (own) {
+            const std::string n = std::to_string(c.frames);
+            const float fs = std::min(f_framebar->FontSize * 0.62f, sh * 0.42f);
+            const float tw = f_framebar->CalcTextSizeA(fs, FLT_MAX, 0.0f, n.c_str()).x;
+            text_outlined(dl, f_framebar, ImVec2(xs[i + 1] - tw - sp, sy), RGBA(200, 200, 200), n, fs);
+          }
           // Gaps: the free frames between two stuns, in yellow, instead of a count.
+          // Otherwise the stretch's total length, at its end; under a cell's own length
+          // when it has one.
           const bool gap = fb.gaps && c.gap > 0;
           if (!gap && c.trunc <= 0) continue;
           const std::string n = std::to_string(gap ? c.gap : c.trunc);
-          const float tx = x0 + cell * (i + 1) - text_w(f_framebar, n);
-          const float ty = sy + (sh - f_framebar->FontSize) * 0.5f;
-          text_outlined(dl, f_framebar, ImVec2(tx, ty), gap ? RGBA(255, 214, 0) : TEXT, n);
+          const float fs = own ? std::min(f_framebar->FontSize, sh * 0.58f) : f_framebar->FontSize;
+          const float tx = xs[i + 1] - f_framebar->CalcTextSizeA(fs, FLT_MAX, 0.0f, n.c_str()).x;
+          const float ty = own ? sy + sh - fs : sy + (sh - fs) * 0.5f;
+          text_outlined(dl, f_framebar, ImVec2(tx, ty), gap ? RGBA(255, 214, 0) : TEXT, n, fs);
         }
         if (fb.left[row] > 0) {
           // The rest of the stun or recovery, drawn ahead as outlined cells in its color,
@@ -631,11 +845,12 @@ namespace menu_ui {
           const ImU32 col = (fb.rows[row][fb.newest].color & 0x00FFFFFF) | (170u << 24);
           const float th = std::max(1.0f, bt * 0.7f);
           for (int k = 1; k <= n; k++) {
-            const float l = x0 + cell * ((fb.newest + k) % 120) + sp;
-            dl->AddRect(ImVec2(l + th * 0.5f, sy + th * 0.5f), ImVec2(l + seg_w - th * 0.5f, sy + sh - th * 0.5f), col, 0, 0, th);
+            const int ci = (fb.newest + k) % 120;
+            const float l = xs[ci] + sp, w = segw(ci);
+            dl->AddRect(ImVec2(l + th * 0.5f, sy + th * 0.5f), ImVec2(l + w - th * 0.5f, sy + sh - th * 0.5f), col, 0, 0, th);
           }
           const int e = (fb.newest + n) % 120;
-          const float lx = x0 + cell * (e + 1) + sp * 0.5f, lw = std::max(2.0f, bt * 1.5f);
+          const float lx = xs[e + 1] + sp * 0.5f, lw = std::max(2.0f, bt * 1.5f);
           dl->AddRectFilled(ImVec2(lx - lw * 0.5f, sy - bt * 2), ImVec2(lx + lw * 0.5f, sy + sh + bt * 2), RGBA(120, 200, 255));
           if (fb.both) {
             const std::string a = (fb.adv[row] > 0 ? "+" : "") + std::to_string(fb.adv[row]);
@@ -666,8 +881,9 @@ namespace menu_ui {
         const float sym = std::min(u * 0.9f, cell * 2.6f);
         const float fs = std::min(f_input->FontSize, sym * 1.1f);
         const float thin = std::max(1.0f, u * 0.08f);
+        float cur_w = seg_w;  // the width of the cell being drawn
         auto hold_line = [&](float left, float ly, ImU32 col) {
-          dl->AddRectFilled(ImVec2(left - sp, ly - thin), ImVec2(left + seg_w, ly + thin), col);
+          dl->AddRectFilled(ImVec2(left - sp, ly - thin), ImVec2(left + cur_w, ly + thin), col);
         };
         int prev_dir = -1;
         unsigned short prev_macro = 0;
@@ -678,7 +894,7 @@ namespace menu_ui {
             prev_dir = -1; prev_macro = 0;
             continue;
           }
-          const float left = x0 + cell * i + sp, cx = left + seg_w * 0.5f;
+          const float seg_w = cur_w = segw(i), left = xs[i] + sp, cx = left + seg_w * 0.5f;
           if (interactive && ImGui::IsMouseHoveringRect(ImVec2(left, top), ImVec2(left + seg_w, top + in_h), false)) hovered = i;
           // Direction
           const float ay = top + u * 0.5f;
@@ -739,18 +955,18 @@ namespace menu_ui {
           std::string t = std::string(row == 0 ? "P1" : "P2") + ", direction " + std::to_string(c.dir);
           if (!pressed.empty()) t += "\nPressed: " + pressed;
           if (!held.empty()) t += "\nHeld: " + held;
-          if (c.trunc > 0) t += "\nCovers " + std::to_string(c.trunc) + " frames";
+          if (c.frames > 1) t += "\nCovers " + std::to_string(c.frames) + " frames";
           ImGui::SetTooltip("%s", t.c_str());
         }
       };
       if (fb.show[0]) {
-        stats(info[0], y);          y += lh;
+        stats(info[0], y);          y += lh + br_h;
         bar(0, y);                  y += bar_h;
         if (fb.show_inputs[0]) { y += gap; inputs(0, y); y += in_h; }
       }
       if (fb.show[1]) {
         if (fb.show[0]) y += gap;
-        bar(1, y);                  y += bar_h;
+        bar(1, y);                  y += bar_h + br_h;
         if (fb.show_inputs[1]) { y += gap; inputs(1, y); y += in_h; }
         stats(info[1], y + 1 * S);
       }
@@ -760,61 +976,74 @@ namespace menu_ui {
 
   // The meters overlay as its own window. Always on screen while enabled; it can
   // be moved, resized or minimized only while the F5 menu is open.
-  void draw_meters(bool interactive, bool right_side, bool snap, bool hide_decorations) {
-    use(E_METERS);
-    std::vector<std::string> lines;
-    {
-      std::lock_guard<std::mutex> lock(t_mutex);
-      if (GetTickCount64() - t_time > 300) return;  // overlay hidden (loading screen, disabled)
-      lines = t_lines;
-    }
-    if (lines.empty()) return;
+  // One meters window. Its own scroll, snap and side state, kept by id.
+  // Where each of our windows ended up this frame, so another can be pinned to it.
+  struct PlacedRect { ImVec4 r; int frame = -1; };
+  std::map<std::string, PlacedRect> g_placed;
+  const ImVec4* placedThisFrame(const char* id) {
+    auto it = g_placed.find(id);
+    return it != g_placed.end() && it->second.frame == ImGui::GetFrameCount() ? &it->second.r : nullptr;
+  }
+
+  // under: sit right below that window (pinned). fill: take exactly that spot and size.
+  void draw_meters_window(const char* id, const char* title, const std::vector<std::string>& lines, ImVec2 def_pos,
+                          bool interactive, bool right_side, bool snap, bool hide_decorations, int panel_mode,
+                          const ImVec4* under = nullptr, const ImVec4* fill = nullptr, int title_mode = -1) {
     ImGuiIO& io = ImGui::GetIO();
     // Line pitch 1.4x the font size, like the game's own training text (Damage, Combo Damage)
     const float lh = std::max(f_meters->FontSize, f_meters_bold->FontSize) * 1.4f, pad = 12 * S;
     const float def_h = HEAD * S + lh * static_cast<float>(lines.size()) + pad;
-    // Snapped: sit right on top of the frame bar, on the Overlay Side edge. While the
+    struct State { bool held = false; int last_side = -1; float scroll = 0; };
+    static std::map<std::string, State> states;
+    State& st = states[id];
+    // Snapped: sit right on top of the frame bar, on this window's edge. While the
     // mouse is held on the window (resizing or dragging it), the snap waits, so it
     // doesn't fight the resize; on release it snaps back at the new size.
-    static bool held = false;
     {
       ImGuiContext& g = *ImGui::GetCurrentContext();
-      const ImGuiWindow* mw = ImGui::FindWindowByName("Meters##sl_tension");
-      if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && mw && g.HoveredWindow == mw) held = true;
-      if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) held = false;
+      const ImGuiWindow* mw = ImGui::FindWindowByName(id);
+      if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && mw && g.HoveredWindow == mw) st.held = true;
+      if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) st.held = false;
     }
-    if (snap && !held && bar_frame == ImGui::GetFrameCount()) {
-      if (const ImGuiWindow* win = ImGui::FindWindowByName("Meters##sl_tension")) {
+    if (fill) {
+      ImGui::SetNextWindowPos(ImVec2(fill->x, fill->y), ImGuiCond_Always);
+      ImGui::SetNextWindowSize(ImVec2(fill->z, fill->w), ImGuiCond_Always);
+    } else if (under && !st.held) {
+      ImGui::SetNextWindowPos(ImVec2(under->x, under->y + under->w + 4 * S), ImGuiCond_Always);
+      if (const ImGuiWindow* win = ImGui::FindWindowByName(id))
+        ImGui::SetNextWindowSize(ImVec2(under->z, win->Size.y), ImGuiCond_Always);  // same width, own height
+    } else if (snap && !st.held && bar_frame == ImGui::GetFrameCount()) {
+      if (const ImGuiWindow* win = ImGui::FindWindowByName(id)) {
         const float x = right_side ? bar_rect.x + bar_rect.z - win->Size.x : bar_rect.x;
         ImGui::SetNextWindowPos(ImVec2(x, bar_rect.y - win->Size.y - 4 * S), ImGuiCond_Always);
       }
     }
     // Overlay Side: when it changes, jump to that side of the screen at the same height.
-    static int last_side = -1;
     const int side = right_side ? 1 : 0;
-    if (!snap && last_side != -1 && side != last_side) {
-      if (const ImGuiWindow* win = ImGui::FindWindowByName("Meters##sl_tension")) {
+    if (!snap && !under && !fill && st.last_side != -1 && side != st.last_side) {
+      if (const ImGuiWindow* win = ImGui::FindWindowByName(id)) {
         const float x = right_side ? io.DisplaySize.x - win->Size.x - 40 * S : 40 * S;
         ImGui::SetNextWindowPos(ImVec2(x, win->Pos.y), ImGuiCond_Always);
       }
     }
-    last_side = side;
-    Frame f = begin_window("Meters##sl_tension", "Meters", ImVec2(40 * S, io.DisplaySize.y * 0.40f),
-                           ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive, OVERLAY_BG, hide_decorations, f_meters_title);
+    st.last_side = side;
+    Frame f = begin_window(id, title, def_pos, ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive,
+                           OVERLAY_BG, hide_decorations, f_meters_title, title_mode, panel_mode);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, 0, 0});
+    g_placed[id] = PlacedRect{ImVec4(f.o.x, f.o.y, f.w, f.h), ImGui::GetFrameCount()};
     if (!f.collapsed) {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
-      static float scroll = 0;
       const float content = lh * static_cast<float>(lines.size());
       const float view_h = std::max(bottom - top, 0.0f);
       const float max_scroll = std::max(0.0f, content - view_h);
-      if (interactive && ImGui::IsMouseHoveringRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), false)) scroll -= io.MouseWheel * lh;
-      scroll = std::clamp(scroll, 0.0f, max_scroll);
+      if (interactive && ImGui::IsMouseHoveringRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), false)) st.scroll -= io.MouseWheel * lh;
+      st.scroll = std::clamp(st.scroll, 0.0f, max_scroll);
       // Reserve the same space even when the menu is closed, so text stays put.
       const float rx = f.o.x + f.w - pad - (max_scroll > 0 ? 6 * S : 0);
       ImGui::PushClipRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), true);
-      float y = top - scroll;
+      float y = top - st.scroll;
       for (const auto& line : lines) {
+        if (line.empty()) { y += lh * 0.35f; continue; }  // a small gap between groups
         const auto cut = line.find(": ");
         const std::string label = cut == std::string::npos ? line : line.substr(0, cut);
         const std::string value = cut == std::string::npos ? std::string() : line.substr(cut + 2);
@@ -827,11 +1056,155 @@ namespace menu_ui {
         y += lh;
       }
       ImGui::PopClipRect();
-      if (interactive) draw_scrollbar(f.dl, f.o.x + f.w, top, bottom, content, scroll);
+      if (interactive) draw_scrollbar(f.dl, f.o.x + f.w, top, bottom, content, st.scroll);
     }
     end_window();
   }
 
+  void draw_meters(bool interactive, bool right_side, bool snap, bool hide_decorations, int panel_mode, bool split, bool under_damage,
+                   int title_mode) {
+    use(E_METERS);
+    std::vector<std::string> lines;
+    {
+      std::lock_guard<std::mutex> lock(t_mutex);
+      if (GetTickCount64() - t_time > 300) return;  // overlay hidden (loading screen, disabled)
+      lines = t_lines;
+    }
+    if (lines.empty()) return;
+    ImGuiIO& io = ImGui::GetIO();
+    if (!split) {
+      draw_meters_window("Meters##sl_tension", "Meters", lines, ImVec2(40 * S, io.DisplaySize.y * 0.40f),
+                         interactive, right_side, snap, hide_decorations, panel_mode,
+                         under_damage ? placedThisFrame("P1 Damage##sl_damage_p1") : nullptr, nullptr, title_mode);
+      return;
+    }
+    // A window per side, like the game's own 1P and 2P training panels. "P1 "/"P2 "
+    // come off each line, since the window title says it; lines for both sides (tension
+    // advantage, seen from P1) stay with P1.
+    std::vector<std::string> p1, p2;
+    for (const auto& l : lines) {
+      if (l.rfind("P2 ", 0) == 0) p2.push_back(l.substr(3));
+      else p1.push_back(l.rfind("P1 ", 0) == 0 ? l.substr(3) : l);
+    }
+    if (!p1.empty())
+      draw_meters_window("P1 Meters##sl_tension_p1", "P1 Meters", p1, ImVec2(40 * S, io.DisplaySize.y * 0.40f),
+                         interactive, false, snap, hide_decorations, panel_mode,
+                         under_damage ? placedThisFrame("P1 Damage##sl_damage_p1") : nullptr, nullptr, title_mode);
+    if (!p2.empty())
+      draw_meters_window("P2 Meters##sl_tension_p2", "P2 Meters", p2, ImVec2(io.DisplaySize.x - 340 * S, io.DisplaySize.y * 0.40f),
+                         interactive, true, snap, hide_decorations, panel_mode,
+                         under_damage ? placedThisFrame("P2 Damage##sl_damage_p2") : nullptr, nullptr, title_mode);
+  }
+
+
+  // The game's training damage panel in our own windows, one per side.
+  // The game's own panel is used as is: just note where it is on screen, so meters
+  // pinned under the damage panel sit under it.
+  bool game_bounds(const std::vector<imgui_overlay::DamageRow>& rows, ImVec2& lo, ImVec2& hi);
+  bool note_game_panel(const char* id, const std::vector<imgui_overlay::DamageRow>& rows) {
+    ImVec2 lo, hi;
+    if (!game_bounds(rows, lo, hi)) return false;
+    const float pad = 10 * S;
+    g_placed[id] = PlacedRect{ImVec4(lo.x - pad, lo.y - pad, hi.x - lo.x + 2 * pad, hi.y - lo.y + 2 * pad), ImGui::GetFrameCount()};
+    return true;
+  }
+
+  // The game's rows' screen rects, all of them, or none when the game hasn't laid them out.
+  bool game_bounds(const std::vector<imgui_overlay::DamageRow>& rows, ImVec2& lo, ImVec2& hi) {
+    lo = ImVec2(FLT_MAX, FLT_MAX); hi = ImVec2(-FLT_MAX, -FLT_MAX);
+    for (const auto& r : rows) {
+      if (r.label.empty()) continue;
+      if (!r.placed) return false;
+      for (const float* q : {r.label_rect, r.value_rect}) {
+        lo = ImVec2(std::min(lo.x, q[0]), std::min(lo.y, q[1]));
+        hi = ImVec2(std::max(hi.x, q[0] + q[2]), std::max(hi.y, q[1] + q[3]));
+      }
+    }
+    return lo.x < hi.x && lo.y < hi.y;
+  }
+
+  // The online version window: pick it from anywhere outside a fight (main menu, Park,
+  // private lobby) without going to training. Arrows or the menu's Left / Right change it.
+  void draw_online_picker() {
+    use(E_MENU);
+    ImGuiIO& io = ImGui::GetIO();
+    const float pad = PAD * S, lh = f_body->FontSize + 8 * S;
+    const ImVec2 size(440 * S, HEAD * S + f_bold->FontSize + lh * 3 + pad * 3);
+    Frame f = begin_window("Online version##sl_online", "Online version", ImVec2((io.DisplaySize.x - size.x) * 0.5f, io.DisplaySize.y * 0.3f),
+                           size, ImVec2(360 * S, size.y), true);
+    if (f.closed) g_online_picker = false;
+    if (!f.collapsed) {
+      const int ver = combo_trials::onlineVersion();
+      const std::string name = ver ? battleVersionName(ver) : std::string("Off");
+      const float cy = f.o.y + f.head + pad, bw = 34 * S, bh = f_bold->FontSize + 10 * S;
+      const ImVec2 la(f.o.x + pad, cy), lb(la.x + bw, cy + bh), ra(f.o.x + f.w - pad - bw, cy), rb(ra.x + bw, cy + bh);
+      ImGui::PushID("sl_online");
+      if (clicked_rect("prev", la, lb)) g_online_pick_step = -1;
+      if (clicked_rect("next", ra, rb)) g_online_pick_step = 1;
+      ImGui::PopID();
+      for (const auto& [a, b, s] : {std::tuple{la, lb, "<"}, std::tuple{ra, rb, ">"}}) {
+        f.dl->AddRectFilled(a, b, CHIP);
+        text(f.dl, f_bold, ImVec2((a.x + b.x - text_w(f_bold, s)) * 0.5f, a.y + 5 * S), TEXT, s);
+      }
+      text(f.dl, f_bold, ImVec2(f.o.x + (f.w - text_w(f_bold, name)) * 0.5f, cy + 5 * S), ver ? RED_TEXT : TEXT, name);
+      float y = cy + bh + pad;
+      std::string close_key;
+      for (const wchar_t c : binds::keyName(binds::key[binds::ONLINE_VERSION])) close_key += c < 0x80 ? static_cast<char>(c) : '?';
+      for (const char* line : {"Pick the same version as your opponent.", "Park and private rooms only, never ranked."}) {
+        text(f.dl, f_body, ImVec2(f.o.x + pad, y), MUTED, line);
+        y += lh;
+      }
+      text(f.dl, f_body, ImVec2(f.o.x + pad, y), DIM, close_key + " to close    Left / Right to change");
+    }
+    end_window();
+  }
+
+  // A small window with the battle version the fight runs on: its own spot, moved like
+  // the other windows while the menu is open.
+  void draw_version(bool interactive, bool hide_decorations, int panel_mode, int title_mode, float bg_alpha) {
+    use(E_METERS);
+    std::string t;
+    {
+      std::lock_guard<std::mutex> lock(bv_mutex);
+      if (GetTickCount64() - bv_time > 300) return;  // no battle running
+      t = bv_text;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    const float pad = 10 * S, tw = text_w(f_meters_bold, t), th = f_meters_bold->FontSize;
+    const ImVec2 size(tw + 2 * pad, HEAD * S + th + 2 * pad);
+    Frame f = begin_window("Battle version##sl_version", "Battle version", ImVec2((io.DisplaySize.x - size.x) * 0.5f, 4 * S),
+                           size, ImVec2(60 * S, HEAD * S + th), interactive,
+                           (OVERLAY_BG & 0x00FFFFFF) | (static_cast<ImU32>(std::clamp(bg_alpha, 0.0f, 1.0f) * 255.0f) << 24),
+                           hide_decorations, f_meters_title, title_mode, panel_mode);
+    if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::VersionWindow, 0, 0});
+    if (!f.collapsed)
+      text_outlined(f.dl, f_meters_bold, ImVec2(f.o.x + (f.w - tw) * 0.5f, f.o.y + f.head + (f.h - f.head - th) * 0.5f), TEXT, t);
+    end_window();
+  }
+
+  void draw_damage(bool interactive, bool hide_decorations, int panel_mode, bool at_game, int title_mode) {
+    use(E_METERS);
+    std::vector<imgui_overlay::DamageRow> rows[2];
+    {
+      std::lock_guard<std::mutex> lock(d_mutex);
+      if (GetTickCount64() - d_time > 300) return;  // not in training, or turned off
+      rows[0] = d_rows[0];
+      rows[1] = d_rows[1];
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+    const char* ids[2] = {"P1 Damage##sl_damage_p1", "P2 Damage##sl_damage_p2"};
+    const char* titles[2] = {"P1 Damage", "P2 Damage"};
+    for (int side = 0; side < 2; side++) {
+      if (rows[side].empty()) continue;
+      if (at_game) { note_game_panel(ids[side], rows[side]); continue; }
+      const ImVec2 def_pos(side ? W - 340 * S : 40 * S, H * 0.22f);
+      std::vector<std::string> lines;
+      for (const auto& r : rows[side]) lines.push_back(r.label.empty() ? std::string() : r.label + ": " + r.value);
+      draw_meters_window(ids[side], titles[side], lines, def_pos,
+                         interactive, side == 1, false, hide_decorations, panel_mode, nullptr, nullptr, title_mode);
+    }
+  }
 
   // ---- Timeline window: rewind, set point, play / pause, step, record ---------
   std::atomic<bool> g_timeline_visible{false};  // mouse goes to ImGui while it's up
@@ -971,8 +1344,9 @@ namespace menu_ui {
     PANEL = RGBA(4, 6, 14, a(240));
     NAV_BG = RGBA(9, 11, 20, a(250));
     SECTION = RGBA(18, 26, 44, a(235));
-    OVERLAY_BG = RGBA(4, 6, 14, a(215));
-    BAR_BG = RGBA(4, 6, 14, a(200));
+    // The meters' and the frame bar's backgrounds, each with its own opacity setting.
+    OVERLAY_BG = RGBA(4, 6, 14, static_cast<int>(std::clamp(v.overlay_bg, 0.0f, 1.0f) * 255.0f));
+    BAR_BG = RGBA(4, 6, 14, static_cast<int>(std::clamp(v.bar_bg, 0.0f, 1.0f) * 255.0f));
   }
 
   // Custom accent color picker, opened from Appearance > Custom color.
@@ -1112,11 +1486,25 @@ namespace menu_ui {
 
   void draw() {
     // Outside a training or replay fight (menus, loading, character select): show nothing
-    if (!modScreenActive()) { g_timeline_visible = false; return; }
+    if (!modScreenActive() && !onlineVersionScreen() && !g_online_picker) { g_timeline_visible = false; return; }
     const MenuView v = ModMenu::instance().view();
     apply_theme(v);
+    if (!modScreenActive()) {  // outside the mod's fights: the online version window, or an online fight on it
+      g_timeline_visible = false;
+      if (g_online_picker) { draw_online_picker(); return; }
+      if (v.version_shown) draw_version(false, v.hide_window_decorations, v.version_panel - 1, v.version_title - 1, v.version_bg);
+      return;
+    }
+    // The game's pause menu draws under us, so while it's open the overlays stay out of its
+    // way, unless our own menu is open (to move them).
+    const bool behind_game_menu = g_game_menu_open && !v.showing;
+    if (!behind_game_menu) {
     draw_framebar(v.showing, v.hide_window_decorations, v.bar_title - 1, v.bar_panel - 1);
-    draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations);
+    draw_damage(v.showing, v.hide_window_decorations, v.damage_panel_bg - 1, v.damage_at_game, v.damage_title - 1);
+    if (v.version_shown) draw_version(v.showing, v.hide_window_decorations, v.version_panel - 1, v.version_title - 1, v.version_bg);
+    draw_meters(v.showing, v.meters_right, v.meters_snap, v.hide_window_decorations, v.meters_panel - 1, v.meters_split,
+                v.meters_under_damage, v.meters_title - 1);
+    }
     draw_timeline(v);
     use(E_MENU);
     draw_replay_status(v);
@@ -1234,8 +1622,9 @@ namespace menu_ui {
       static ScrollState main_scroll;
       const float footer_h = 44 * S;
       const float top = body_top + 42 * S, bottom = o.y + h - footer_h;
-      draw_rows(dl, v.rows, v.nav_focus ? -1 : v.cursor, v.title, px, o.x + w - 1, top, bottom, main_scroll,
-                [&v](MenuClick c) { send(v, c); });
+      const float rows_end = draw_rows(dl, v.rows, v.nav_focus ? -1 : v.cursor, v.title, px, o.x + w - 1, top, bottom, main_scroll,
+                                       [&v](MenuClick c) { send(v, c); });
+      if (v.bar_legend) draw_bar_legend(dl, px + pad, o.x + w - pad, rows_end + 16 * S, bottom - 4 * S, v);
       const float lx = px + pad;
       dl->AddLine(ImVec2(lx, bottom + 2 * S), ImVec2(o.x + w - pad, bottom + 2 * S), DIVIDER);
       if (!v.status.empty()) text(dl, f_small, ImVec2(lx, bottom + 6 * S), MUTED, v.status);

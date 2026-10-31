@@ -7,6 +7,8 @@
 #include <Unreal/UObjectGlobals.hpp>
 
 #include <algorithm>
+#include <string>
+#include <vector>
 #include <cstdio>
 
 using namespace RC;
@@ -80,6 +82,18 @@ bool GameState::checkMode()
         { char b[64]; snprintf(b, sizeof(b), "mode: %d (%s)", current_mode,
             (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.end()) ? "mod active" : "mod idle");
           COMBO_LOG(b); }
+        if (current_mode == GAME_MODE_NETWORK) {
+          // Online fights share one mode; what else is loaded tells Park and rooms from
+          // ranked. Only the classes are logged, nothing about the players.
+          std::string s = "online fight:";
+          for (const auto* cls : {STR("REDGameState_Lobby"), STR("LobbyPlayerState"), STR("REDLobbyCharacter"),
+                                  STR("REDGameState_Battle")}) {
+            std::vector<UObject*> found;
+            UObjectGlobals::FindAllOf(cls, found);
+            s += " " + std::string(cls, cls + std::char_traits<TCHAR>::length(cls)) + "=" + std::to_string(found.size());
+          }
+          COMBO_LOG(s);
+        }
         in_allowed_mode = (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.
             end());
     }

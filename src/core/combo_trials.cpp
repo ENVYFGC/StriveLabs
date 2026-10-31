@@ -4,10 +4,13 @@
 
 #include <Unreal/FMemory.hpp>
 #include <polyhook2/Detour/x64Detour.hpp>
+#include "arcsys.h"  // after polyhook: the game structs' macros upset it
 #include <atomic>
 #include <fstream>
 #include <memory>
 #include <algorithm>
+#include <vector>
+#include <Windows.h>
 #include <cstdint>
 #include <cstring>
 
@@ -77,6 +80,17 @@ namespace {
   };
   Backup g_bk;
   bool g_applied = false, g_checked_file = false;
+  // The loaded combo's recording, at block +0x14C8 like a training slot: chara, facing
+  // (1 = left), frame count, start, then one input word per frame from the reset on,
+  // screen directions. The system keys (training's reset/record/playback) are left out.
+  constexpr size_t kRecDir = 0x14CC, kRecFrames = 0x14D0, kRecFlags = 0x14D8;
+  constexpr int kRecMax = 2700;
+  std::vector<uint16_t> g_demo;
+  bool g_demo_left = false, g_watch_flip = false;
+  int g_trial_version = 0;
+  std::wstring g_trial_name;
+  enum class Watch { Off, Armed, On } g_watch = Watch::Off;
+  size_t g_watch_pos = 0;
   std::filesystem::path g_backup_file;
 
   void saveBackupFile() {
@@ -110,6 +124,7 @@ namespace {
     if (!g_save_root || !*g_save_root) return;
     putBack(g_bk);
     g_applied = false;
+    g_watch = Watch::Off;
     COMBO_LOG("combo trials: training settings put back");
   }
 
@@ -122,6 +137,19 @@ namespace {
   // Picked in the menu, and the one in use: it only changes while no battle runs, so a
   // fight never mixes one version's loaded scripts with another's rules.
   std::atomic<int> g_training_version{0}, g_version_in_use{0};
+  // Online lobbies, as the game's common object has them: its lobby field is 3 in the Park,
+  // 2 in a private room and 5 out of them (the main menu, where ranked is queued), and the
+  // online lobby flag next to it is set in both lobbies (not while ranked is queued).
+  std::atomic<int> g_online_version{0}, g_online_in_use{0};
+  bool g_was_in_lobby = false;
+  unsigned long long g_lobby_since = 0;  // when the lobby was first seen, 0 = not in one
+  uint8_t gameMode() { return g_common && *g_common ? at<uint8_t>(*g_common + 0x2F0) : 0; }
+  int lobbyField() { return g_common && *g_common ? at<int32_t>(*g_common + 0xAD8) : 0; }
+  bool inOnlineLobby() {
+    const int t = lobbyField();
+    return (t == 2 || t == 3) && at<int32_t>(*g_common + 0xB68) == 1;
+  }
+
   int hook_GetVersion() {
     const int v = orig_GetVersion();
     const int o = g_version_in_use.load(std::memory_order_relaxed);
@@ -130,7 +158,29 @@ namespace {
       if (logged != o) { logged = o; COMBO_LOG("combo trials: training runs on battle version " + std::to_string(o)); }
       return o;
     }
+    // Online: what was taken up in a Park or room lobby between fights. Never in training
+    // (mode 8) or replays (23), which have their own.
+    if (const int on = g_online_in_use.load(std::memory_order_relaxed); on > 0) {
+      const uint8_t m = gameMode();
+      if (m != 8 && m != 23) return on;
+    }
     return v;
+  }
+
+  // Scripts ask the game for spots by number. Up to 2.04, 163-165 were a spot in front
+  // of the character, one behind it, and the screen's center; since 2.05 those are
+  // 166-168, and 163-165 are points on the character's skeleton. The game doesn't map
+  // the old numbers, so 2.04 and older scripts (Nagoriyuki, Leo, a common effect) would
+  // get the wrong spot, in training, replays and Combo Maker alike.
+  using Position_t = int (*)(void*, int, void*, void*, void*);
+  Position_t orig_Position = nullptr;
+  constexpr int kLastOldPositions = 15;  // battle version 2.04
+  int hook_Position(void* self, int id, void* a, void* b, void* c) {
+    if (id >= 163 && id <= 165 && orig_GetVersion) {
+      const int v = hook_GetVersion();
+      if (v > 0 && v <= kLastOldPositions) id += 3;
+    }
+    return orig_Position(self, id, a, b, c);
   }
 
   std::wstring wide(uintptr_t p, size_t max_chars) {
@@ -145,9 +195,11 @@ namespace {
 
   // The player's character, or the other side's (the dummy in training).
   int charaAt(bool other_side) {
+    // The fight's engine. The game's own getter (g_chara_base) is the same lookup but
+    // reads through null when no fight is there, so it's done here with the check.
     if (!g_chara_owner || !*g_chara_owner || !g_chara_base) return -1;
     const uint8_t side = at<uint8_t>(*g_chara_owner + 0x2F4) ^ (other_side ? 1 : 0);
-    const uintptr_t b = g_chara_base();
+    const uintptr_t b = reinterpret_cast<uintptr_t>(asw_engine::get());
     if (!b) return -1;
     return at<uint8_t>(b + side * 0xADB80 + 0x274DDE);
   }
@@ -206,11 +258,106 @@ void init(const std::filesystem::path& dir) {
     orig_GetVersion = nullptr;
   }
   if (!orig_GetVersion) COMBO_LOG("combo trials: battle version hook not found, older versions off");
+  try {
+    const uintptr_t p = sigscan::get().scan(
+        "\x48\x8B\xC4\x55\x53\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8D\x68\xB8\x48\x81\xEC\x08\x01\x00\x00\x0F\x29\x70\xA8\x0F\x29\x78\x98\x44\x0F\x29\x40\x88\x48\x8B\x05\x00\x00\x00\x00\x48\x33\xC4\x48\x89\x45\xC8\x48\x8B\x45\x70\x4C\x8D\x6C\x24\x78",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxxx");
+    auto* d = new PLH::x64Detour(p, reinterpret_cast<uint64_t>(&hook_Position), reinterpret_cast<uint64_t*>(&orig_Position));
+    if (!d->hook()) orig_Position = nullptr;
+  } catch (...) {
+    orig_Position = nullptr;
+  }
+  if (!orig_Position) COMBO_LOG("combo trials: position lookup not found, old versions keep the game's own numbering");
 }
 
 void setTrainingVersion(int version) { g_training_version = orig_GetVersion ? version : 0; }
-void latchVersion(bool battle_running) { if (!battle_running) g_version_in_use = g_training_version.load(); }
+void latchVersion(bool battle_running) {
+  if (battle_running) return;
+  int v = g_training_version.load();
+  // Characters picked since then that weren't in the game on it: the current version.
+  // Only once they're known (a fight is there); until then the pick stands.
+  if (v > 0) {
+    const int oldest = oldestVersion();
+    if (oldest > 0 && v < oldest) v = 0;
+  }
+  if (g_version_in_use.exchange(v) != v && v == 0 && g_training_version.load() > 0)
+    COMBO_LOG("combo trials: a character wasn't in the game on the picked version, training runs on the current one");
+}
 int trainingVersion() { return g_training_version; }
+
+void setOnlineVersion(int version) {
+  g_online_version = orig_GetVersion ? version : 0;
+  COMBO_LOG("online version: " + (g_online_version ? std::to_string(g_online_version.load()) : std::string("off")));
+}
+int onlineVersion() { return g_online_version; }
+void stepOnlineVersion(int dir) {
+  // Off, then 38 (5.02) down to 1 (1.00); the current version needs no pick.
+  const int v = g_online_version;
+  int idx = v == 0 ? 0 : 39 - v;  // position in that list
+  idx = ((idx + (dir > 0 ? 1 : -1)) % 39 + 39) % 39;
+  setOnlineVersion(idx == 0 ? 0 : 39 - idx);
+}
+int onlineVersionUsed() { return g_online_in_use; }
+uintptr_t saveRoot() { return g_save_root && *g_save_root ? *g_save_root : 0; }
+uintptr_t trainingManager() { return g_recipe; }
+int playerChara() { return charaPlayed(); }
+bool inTraining() { return gameMode() == 8; }
+int localSide() { return g_chara_owner && *g_chara_owner ? at<uint8_t>(*g_chara_owner + 0x2F4) & 1 : 0; }
+bool onlineVersionInUse() {
+  const uint8_t m = gameMode();
+  return orig_GetVersion && g_online_in_use > 0 && m != 8 && m != 23;
+}
+
+void updateOnline(bool any_battle_running) {
+  if (!orig_GetVersion) return;
+  auto off = [](const char* why) {
+    if (g_online_version) { g_online_version = 0; COMBO_LOG(std::string("online version off: ") + why); }
+  };
+  if (any_battle_running) return;  // never changes mid-fight
+  auto use = [](int v) {
+    if (g_online_in_use.exchange(v) != v)
+      COMBO_LOG(v ? "online version taken up: " + std::to_string(v) + " (lobby " + std::to_string(lobbyField()) + ")"
+                  : std::string("online version dropped"));
+  };
+  if (inOnlineLobby()) {
+    // In a lobby only after two seconds there, so a passing state on the way somewhere
+    // else never counts.
+    if (!g_lobby_since) g_lobby_since = GetTickCount64();
+    if (GetTickCount64() - g_lobby_since >= 2000) g_was_in_lobby = true;
+  } else {
+    g_lobby_since = 0;
+    // The main menu: clearly out of a lobby. Not training: the Park has its own, to wait
+    // in (the online version never applies in training anyway).
+    if (lobbyField() == 5) {
+      if (g_was_in_lobby) { g_was_in_lobby = false; off("back from the lobby"); }
+      use(0);
+      return;
+    }
+  }
+  // From the lobby on (rematches at the station too), a new pick counts from the next fight.
+  if (g_was_in_lobby) use(g_online_version.load());
+}
+int battleVersion() { return orig_GetVersion ? hook_GetVersion() : 0; }
+
+int oldestVersion() {
+  // Each character's first battle version, by the game's character number (its own
+  // list runs SOL, KYK, MAY, AXL, ... USG): the first version folder in that
+  // character's Chara/<code>/Common/Data. Before it, the game has no data for them.
+  static const uint8_t kFirst[] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,  // SOL .. GIO
+                                   2, 2,                                     // ANJ, INO: from 1.01
+                                   4, 5, 7, 8, 10,                           // GLD, JKO, COS, BKN, TST
+                                   13, 14, 16, 17,                           // BGT, SIN, BED, ASK
+                                   18, 20, 22, 23,                           // JHN, ELP, ABA, SLY
+                                   26, 29, 31, 33,                           // DZY, VEN, UNI, LUC
+                                   36};                                      // USG
+  int v = 1;
+  for (const bool other : {false, true}) {
+    const int c = charaAt(other);
+    if (c < 0 || c >= static_cast<int>(std::size(kFirst))) return 0;
+    v = (std::max)(v, static_cast<int>(kFirst[c]));
+  }
+  return v;
+}
 
 void stop() {
   if (available()) {
@@ -226,6 +373,32 @@ void stop() {
 }
 
 bool active() { return g_applied; }
+int trialVersion() { return g_applied ? g_trial_version : 0; }
+std::wstring trialName() { return g_applied ? g_trial_name : std::wstring(); }
+
+bool watch() {
+  if (!g_applied || g_demo.empty()) return false;
+  g_watch = Watch::Armed;
+  placeAsSet();  // it plays from the reset, where its maker started
+  return true;
+}
+void stopWatching() { g_watch = Watch::Off; }
+bool watching() { return g_watch != Watch::Off; }
+
+void onRoundStart() {  // every reset starts it over, like a stream to the dummy
+  if (g_watch == Watch::Off) return;
+  g_watch = Watch::On;
+  g_watch_pos = 0;
+}
+
+bool watchNext(bool facing_left, uint16_t& flags) {
+  if (g_watch != Watch::On) return false;
+  if (g_watch_pos >= g_demo.size()) { g_watch = Watch::Off; return false; }
+  if (g_watch_pos == 0) g_watch_flip = facing_left != g_demo_left;
+  flags = g_demo[g_watch_pos++] & 0x0FFF;
+  if (g_watch_flip) flags = static_cast<uint16_t>((flags & ~0xC) | ((flags & 0x4) << 1) | ((flags & 0x8) >> 1));
+  return true;
+}
 
 // Takes Starting Position, Player Side and Starting Range from the settings as they
 // are now, and resets positions next frame, as the game does when Combo Maker loads a
@@ -293,11 +466,26 @@ std::vector<Entry> list() {
   return out;
 }
 
+namespace { std::wstring loadBlock(uintptr_t b); }
+
 std::wstring load(const Entry& e) {
   if (!available() || !*g_save_root) return L"Combo trials aren't available in this game version";
   if (e.list < 0 || e.list >= static_cast<int>(std::size(kLists)) || e.slot < 0 || e.slot >= kLists[e.list].slots)
     return L"That combo is gone, refresh the list";
-  const uintptr_t b = *g_save_root + kLists[e.list].offset + e.slot * kBlock;
+  return loadBlock(*g_save_root + kLists[e.list].offset + e.slot * kBlock);
+}
+
+std::wstring loadData(const void* block, size_t size) {
+  if (!available() || !*g_save_root) return L"Combo trials aren't available in this game version";
+  // A download decodes to the block plus a trailing zero byte.
+  if (size < kBlock) return L"That combo's data doesn't look right";
+  static std::vector<uint8_t> held;  // the trial's own copy
+  held.assign(static_cast<const uint8_t*>(block), static_cast<const uint8_t*>(block) + kBlock);
+  return loadBlock(reinterpret_cast<uintptr_t>(held.data()));
+}
+
+namespace {
+std::wstring loadBlock(uintptr_t b) {
   const int n = stepsIn(b);
   if (!n) return L"That combo is gone, refresh the list";
   if (at<uint32_t>(b + kChara) != static_cast<uint32_t>(charaPlayed())) return L"That combo is for another character";
@@ -349,9 +537,18 @@ std::wstring load(const Entry& e) {
     std::memcpy(reinterpret_cast<void*>(dummyBlock(g_bk.dummy_chara)), g_bk.dummy, kDummySize);
     g_bk.dummy_chara = -1;
   }
+  const int frames = std::clamp(at<int32_t>(b + kRecFrames), 0, kRecMax);
+  const auto* rec = reinterpret_cast<const uint16_t*>(b + kRecFlags);
+  g_demo.assign(rec, rec + frames);
+  g_demo_left = at<int32_t>(b + kRecDir) == 1;
+  g_trial_version = static_cast<int>(at<uint32_t>(b + kVersion));
+  g_trial_name = wide(b + kTitle, 53);
+  if (g_trial_name.empty()) g_trial_name = at<uint32_t>(b + kNumber) ? L"No." + std::to_wstring(at<uint32_t>(b + kNumber)) : L"Your combo";
+  g_watch = Watch::Off;
   saveBackupFile();
   placeAsSet();
-  COMBO_LOG("combo trials: loaded " + std::to_string(e.number) + ", " + std::to_string(n) + " steps");
+  COMBO_LOG("combo trials: loaded " + std::to_string(at<uint32_t>(b + kNumber)) + ", " + std::to_string(n) + " steps");
   return {};
 }
+}  // namespace
 }  // namespace combo_trials

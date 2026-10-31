@@ -8,14 +8,16 @@
 namespace binds {
   const char* const NAMES[COUNT] = {"framebar", "hitboxes", "pause", "advance", "menu", "save",
                                     "takeover_1p", "takeover_2p", "load", "up", "down", "left", "right",
-                                    "training_record", "training_playback", "training_reset"};
+                                    "training_record", "training_playback", "training_reset", "online_version"};
   const wchar_t* const LABELS[COUNT] = {L"Toggle Frame Bar", L"Toggle Hitboxes", L"Pause", L"Advance Frame",
                                         L"Toggle Menu", L"Rewind Point + Takeover", L"Takeover 1P", L"Takeover 2P",
                                         L"Rewind", L"Menu Up", L"Menu Down", L"Menu Left", L"Menu Right",
-                                        L"Training Record", L"Training Playback", L"Training Reset Position"};
-  int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0};
+                                        L"Training Record", L"Training Playback", L"Training Reset Position",
+                                        L"Online Version Window"};
+  int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0,
+                    BindWatcherI::KEY_CTRL | 'O'};
   unsigned short pad[COUNT] = {0, 0, 0, 0, XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START, 0, 0, 0, 0,
-                               XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, 0, 0, 0};
+                               XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, 0, 0, 0, 0};
 
   const char* const G_NAMES[G_COUNT] = {"up", "down", "left", "right", "p", "k", "s", "hs", "d", "dash", "rc", "fd", "respect"};
   const wchar_t* const G_LABELS[G_COUNT] = {L"Up", L"Down", L"Left", L"Right", L"Punch", L"Kick", L"Slash",
@@ -74,7 +76,7 @@ namespace binds {
     int i;
     try {
       if (k == "takeover_use_mod_binds") { use_mod_binds = std::stoi(v) ? 1 : 0; return true; }
-      if ((i = indexOf(k, "bind_", NAMES, COUNT)) >= 0) { key[i] = std::stoi(v) & 0xFF; BindWatcherI::addToFilter(key[i]); return true; }
+      if ((i = indexOf(k, "bind_", NAMES, COUNT)) >= 0) { key[i] = std::stoi(v) & 0x7FF; BindWatcherI::addToFilter(key[i]); return true; }
       if ((i = indexOf(k, "pad_", NAMES, COUNT)) >= 0)  { pad[i] = static_cast<unsigned short>(std::stoi(v)); return true; }
       if ((i = indexOf(k, "gbind_", G_NAMES, G_COUNT)) >= 0) { gkey[i] = std::stoi(v) & 0xFF; return true; }
       if ((i = indexOf(k, "gpad_", G_NAMES, G_COUNT)) >= 0)  { gpad[i] = static_cast<unsigned short>(std::stoi(v)); return true; }
@@ -90,7 +92,16 @@ namespace binds {
     for (int i = 0; i < G_COUNT; i++) out << "gpad_" << G_NAMES[i] << "=" << gpad[i] << "\n";
   }
 
-  std::wstring keyName(int vk) {
+  static std::wstring plainKeyName(int vk);
+  std::wstring keyName(int code) {
+    if (code == 0) return L"none";
+    std::wstring mods;
+    if (code & BindWatcherI::KEY_CTRL) mods += L"Ctrl+";
+    if (code & BindWatcherI::KEY_SHIFT) mods += L"Shift+";
+    if (code & BindWatcherI::KEY_ALT) mods += L"Alt+";
+    return mods + plainKeyName(code & 0xFF);
+  }
+  static std::wstring plainKeyName(int vk) {
     if (vk == 0) return L"none";
     UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
     switch (vk) {  // extended keys need the extended bit for a correct name
@@ -128,16 +139,22 @@ namespace binds {
   // The first 300 ms are ignored so the confirm key's own repeat does not get captured.
   static bool tooEarly() { return GetTickCount64() - capture_start < 300; }
 
-  void offerKey(int vk) {
+  void offerKey(int code) {
     if (capturing < 0 || tooEarly()) return;
+    const int vk = code & 0xFF;
+    switch (vk) {  // a modifier alone: wait for the key it goes with
+      case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL: case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+      case VK_MENU: case VK_LMENU: case VK_RMENU: return;
+      default: break;
+    }
     if (vk == VK_ESCAPE) { cancelCapture(); return; }
     if (vk == VK_BACK) {  // clear both binds of this row
       if (capturing >= GAME_BASE) { gkey[capturing - GAME_BASE] = 0; gpad[capturing - GAME_BASE] = 0; }
       else { key[capturing] = 0; pad[capturing] = 0; }
       dirty = true; cancelCapture(); return;
     }
-    if (capturing >= GAME_BASE) gkey[capturing - GAME_BASE] = vk;
-    else { key[capturing] = vk; BindWatcherI::addToFilter(vk); }
+    if (capturing >= GAME_BASE) gkey[capturing - GAME_BASE] = vk;  // takeover keys: the key alone
+    else { key[capturing] = code & 0x7FF; BindWatcherI::addToFilter(vk); }
     dirty = true;
     cancelCapture();
   }

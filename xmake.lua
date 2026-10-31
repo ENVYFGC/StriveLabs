@@ -29,6 +29,10 @@ target(projectName)
     add_files("src/core/crash_log.cpp")
     add_files("src/core/select_memory.cpp")
     add_files("src/core/combo_trials.cpp")
+    add_files("src/core/damage_panel.cpp")
+    add_files("src/core/game_menu.cpp")
+    add_files("src/core/handshake.cpp")
+    add_files("src/core/combo_online.cpp")
 
     -- Dear ImGui (MIT, third_party/imgui/LICENSE.txt), drawn through a DirectX 11 Present hook
     add_includedirs("third_party/imgui")

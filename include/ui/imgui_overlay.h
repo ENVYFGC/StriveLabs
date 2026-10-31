@@ -10,6 +10,24 @@ namespace imgui_overlay {
   bool running();   // true once ImGui has drawn its first frame
   // Game thread: the tension overlay's lines for this frame ("P1 Burst: 1.07"...).
   void setTensionLines(const std::vector<std::wstring>& lines);
+  // Game thread: the game's training damage panel for one side (0 = P1). A row with no
+  // label is the gap between its two parts. Rects are where the game draws that text, in
+  // screen pixels (x, y, w, h), when placed.
+  struct DamageRow {
+    std::string label, value;
+    float label_rect[4] = {}, value_rect[4] = {};
+    bool placed = false;
+  };
+  void setDamageRows(int side, const std::vector<DamageRow>& rows);
+  // Game thread, every battle frame: the battle version's name, for its small window.
+  void setBattleVersion(const std::string& name);
+  // Game thread: the game's own pause menu is open (the overlay steps out of its way).
+  void setGameMenuOpen(bool open);
+  // The online version window (outside fights): open or closed, and arrow clicks in it
+  // for the game thread to apply (-1, +1, 0 = none).
+  void setOnlinePicker(bool open);
+  bool onlinePickerOpen();
+  int takeOnlinePickStep();
 
   // Game thread: the frame bar's cells and stats lines for this frame.
   struct FrameBarView {
@@ -19,6 +37,9 @@ namespace imgui_overlay {
       unsigned short held = 0, pressed = 0;          // input bar: RECFLG button bits
       unsigned char keep = 0;                        // one block: last frames of the stretch kept as cells
       int gap = 0;                                   // gaps: free frames between two stuns, on the last of them
+      unsigned short frames = 0;                     // frames the cell holds; more than 1 = folded, drawn wider
+      bool free = false;                             // the player could act (neutral or dash)
+      bool stun = false, recovering = false;         // in blockstun or hitstun; in a move's recovery
     };
     Cell rows[2][120];
     std::wstring info[2];
@@ -26,6 +47,7 @@ namespace imgui_overlay {
     bool delim = false, cancels = false, crossups = false, inputs = false;
     bool show[2] = {true, true};          // frame bar rows shown
     bool show_inputs[2] = {false, false}; // input rows shown (only under a shown bar)
+    bool compact = false;  // folded compact mode: one number per cell, brackets, punish window
     bool blocks = false;   // stretches drawn as one block, but their last few cells
     bool perfect = false;  // mark frame perfect moves
     bool hits = false;     // mark the active frame a move connected on

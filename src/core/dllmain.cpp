@@ -19,6 +19,10 @@ namespace select_memory { void init(const std::filesystem::path& dir); void save
 #include "tension_overlay.h"
 #include "combo_log.h"
 #include "combo_trials.h"
+#include "damage_panel.h"
+#include "game_menu.h"
+#include "handshake.h"
+#include "combo_online.h"
 #include <chrono>
 #include <filesystem>
 #include <thread>
@@ -246,6 +250,9 @@ static bool g_overlays_visible = true;
 // Loading screens (e.g. changing character from the training menu) keep the mode at
 // training but stop the battle update, so also require a battle update in the last 300 ms.
 static std::atomic<unsigned long long> g_last_battle_update{0};
+static std::atomic<unsigned long long> g_any_battle_update{0};  // any fight, also in modes the mod leaves alone
+// An online fight on the online version: only the battle version window shows.
+bool onlineVersionScreen() { return GetTickCount64() - g_any_battle_update < 300 && combo_trials::onlineVersionInUse(); }
 
 // Render thread: true while a training or replay fight is on screen (not menus,
 // loading screens or character select). StriveLabs windows hide otherwise.
@@ -334,6 +341,10 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     // One frame per press: last frame's is over, also when this mode isn't handled.
     g_training_press = 0;
     g_battle_ran = true;
+    g_any_battle_update = GetTickCount64();
+    handshake::update(GameState);
+    if (const int bv = combo_trials::battleVersion(); bv > 0)  // paused and online too
+      imgui_overlay::setBattleVersion(battleVersionName(bv) + (combo_trials::onlineVersionInUse() ? " (online)" : ""));
     if (!game_state.checkMode())
     {
         g_training_pending = 0;
@@ -358,6 +369,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
     if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
     combo_trials::update(game_state.checkModeTraining());
+    game_menu::update();
     if (game_state.checkModeTraining() && orig_KeyJustPressed) g_training_pending |= pressed;
     else g_training_pending = 0;
 
@@ -379,6 +391,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
     game_state.checkRound();
 
+    const bool round_started = game_state.roundJustStarted;
     if (game_state.roundJustStarted)
     {
         game_state.roundJustStarted = false;
@@ -387,6 +400,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         // re-begins on every reset, so the dummy's inputs line up with the
         // round rather than with when the user opened the menu.
         recordings::streamOnRoundStart();
+        combo_trials::onRoundStart();
         ReplayManager::instance().onRoundStart();
     }
     if (game_state.resetting)
@@ -395,6 +409,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         tension_overlay.reset();
     }
 
+    if (game_state.checkModeTraining()) damage_panel::update(round_started);
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
     if (g_training_pending)
     {
@@ -421,14 +436,34 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
 void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 {
+    handshake::onBattleInput(Analyzer, static_cast<uint32_t>(recFlag));
     // Menu open: swallow pad/keyboard so the D-pad drives the menu, not the character.
     // In a replay only the side being taken over is the player's; every other side
     // is fed from the replay itself, and zeroing it froze both characters and
     // desynced the replay.
-    if (ModMenu::instance().isShowing() &&
+    if (ModMenu::instance().isShowing() && game_state.checkMode() &&
         (!game_state.checkModeReplay() || (!ReplayManager::instance().playbackEnabled()
             && ReplayManager::instance().isTakeoverInput(Analyzer))))
         recFlag = static_cast<RECFLG_ENUM>(0);
+
+    // Combo Trials "Watch": the combo's own recording drives your character.
+    if (combo_trials::watching())
+    {
+        if (auto* engine = asw_engine::get())
+        {
+            const int side = combo_trials::localSide();
+            if (Analyzer == &engine->inputs[side * 3])
+            {
+                const auto* me = engine->players[side].entity;
+                uint16_t flags = 0;
+                if (me && combo_trials::watchNext(me->facing == direction::left, flags))
+                {
+                    orig_UpdateBattleInput(Analyzer, static_cast<RECFLG_ENUM>(flags));
+                    return;
+                }
+            }
+        }
+    }
 
     // Live stream: feed our own per-frame flags to the P2 (dummy) analyzer.
     // asw_engine::inputs[0..2] belong to P1 and [3..5] to P2, so [3] is the
@@ -464,7 +499,25 @@ static void dropKeysOutsideFight()
     if (GetTickCount64() - g_last_battle_update > 250)
     {
         keybindings.checkBinds(false);
+        // Outside every fight, the online version window takes its own key, and the
+        // menu's Left / Right while it's open; the rest is dropped.
+        if (GetTickCount64() - g_any_battle_update > 250)
+        {
+            if (keybindings.takeAction(binds::ONLINE_VERSION))
+                imgui_overlay::setOnlinePicker(!imgui_overlay::onlinePickerOpen());
+            if (imgui_overlay::onlinePickerOpen())
+            {
+                if (keybindings.takeAction(binds::LEFT)) combo_trials::stepOnlineVersion(-1);
+                if (keybindings.takeAction(binds::RIGHT)) combo_trials::stepOnlineVersion(1);
+                if (const int step = imgui_overlay::takeOnlinePickStep()) combo_trials::stepOnlineVersion(step);
+            }
+        }
+        else imgui_overlay::setOnlinePicker(false);  // a fight started: out of its way
         keybindings.resetButtons();
+        // Only when the overlay draws out here (an online fight, the online version
+        // window): never while the game is still starting up.
+        if (GetTickCount64() - g_any_battle_update < 250 || imgui_overlay::onlinePickerOpen())
+            ModMenu::instance().refreshView();
     }
 }
 
@@ -479,7 +532,12 @@ void hook_UpdateSystem(uintptr_t System)
     g_battle_ran = false;
     const bool battle_running = GetTickCount64() - g_last_battle_update < 250;
     combo_trials::latchVersion(battle_running);
-    if (!battle_running) combo_trials::idle();  // left training: the trial doesn't carry on
+    combo_trials::updateOnline(GetTickCount64() - g_any_battle_update < 250);
+    if (!battle_running) {
+        combo_trials::idle();     // left training: the trial doesn't carry on
+        damage_panel::release();  // the game's panel goes with the fight
+        game_menu::release();
+    }
     dropKeysOutsideFight();
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.
@@ -627,6 +685,8 @@ public:
         if (!training_hook) COMBO_LOG("training binds: button config lookup not found");
         COMBO_LOG(bbscript::scriptReaderAvailable() ? "countdown: script reader ready" : "countdown: script reader not found, recovery countdown off");
         combo_trials::init(working_dir);
+        handshake::install();
+        combo_online::init();
         crash_log::install(working_dir);  // first hard fault -> combo_log.txt + StriveLabs_crash.dmp, for user reports
         select_memory::init(working_dir);
         imgui_overlay::install();

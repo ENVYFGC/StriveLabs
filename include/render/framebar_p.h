@@ -112,6 +112,7 @@ struct FrameInfo {
   // Gaps: on the last neutral frame between two stuns, how many frames the side in
   // stun could act before the next one began.
   int gap = 0;
+  uint16_t frames = 0;  // frames this cell holds: 1, more when folded (drawn wider, with its count)
 };
 
 struct MoveStats {
@@ -177,6 +178,7 @@ struct FrameBar::Data {
 
   void drawFrame(const CurrentOptions& scheme,  const FrameInfo &info, int top, int left);
   void resetFrames();
+  int foldFromStart(int prev_idx, int keep);
 
   Data();
   void addFrame();

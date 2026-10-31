@@ -57,6 +57,7 @@ AREDGameState_Battle* getGameState() {
     Class = RC::UObjectGlobals::StaticFindObject<RC::UClass*>(nullptr, nullptr, STR("/Script/RED.REDGameState_Battle"));
   }
 
+  if (!UWorld::GWorld || !*UWorld::GWorld) return nullptr;  // between maps
   auto GameState = reinterpret_cast<AREDGameState_Battle*>((*UWorld::GWorld)->GameState);
 
   if (GameState == nullptr || !GameState->IsA(Class)) return nullptr;

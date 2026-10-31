@@ -9,10 +9,10 @@
 
 namespace binds {
   enum Action { FRAMEBAR, HITBOXES, PAUSE, ADVANCE, MENU, SAVE, TAKEOVER_P1, TAKEOVER_P2, LOAD, UP, DOWN, LEFT, RIGHT,
-                TRAINING_RECORD, TRAINING_PLAYBACK, TRAINING_RESET, COUNT };
+                TRAINING_RECORD, TRAINING_PLAYBACK, TRAINING_RESET, ONLINE_VERSION, COUNT };
   extern const char* const NAMES[COUNT];      // config ids
   extern const wchar_t* const LABELS[COUNT];  // menu labels
-  extern int key[COUNT];                      // VK code, 0 = none
+  extern int key[COUNT];                      // VK code (+ BindWatcherI::KEY_* for Ctrl/Shift/Alt), 0 = none
   extern unsigned short pad[COUNT];           // XINPUT_GAMEPAD_* mask, 0 = none
 
   // Takeover (game) inputs. Pad masks may include the pseudo bits PAD_LT / PAD_RT.

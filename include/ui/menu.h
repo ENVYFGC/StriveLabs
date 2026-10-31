@@ -85,7 +85,7 @@ struct PressedKeys {
 // update and copied under a lock by the render thread, so ImGui never touches
 // live menu state. Strings are UTF-8.
 struct MenuRowView {
-  enum class Kind { Back, Open, Choice, Action, Number, Bind } kind = Kind::Open;
+  enum class Kind { Back, Open, Choice, Action, Number, Bind, Text } kind = Kind::Open;  // Text: a line to read, no control
   std::string label;
   std::string section;               // heading before this row; not a selectable row
   std::string value;                 // Action/Number/Bind/Open text
@@ -110,15 +110,28 @@ struct MenuView {
   bool tension_on = false;   // Tension Overlay setting
   bool meters_right = false; // Overlay Side setting: put the meters window on the right
   bool meters_snap = false;  // Layout: keep the meters window on top of the frame bar
+  bool bar_legend = false;   // Frame Bar page: the legend under the settings
+  bool version_shown = false;  // the battle version's small window
+  // Each window's own look while the menu is closed, as bar_title / bar_panel.
+  int meters_title = 0, damage_title = 0, damage_panel_bg = 0, version_title = 0, version_panel = 0;
+  float version_bg = 0.84f;  // battle version background alpha
+  bool bar_compact = false;  // folded compact mode is on (its marks go in the legend)
+  unsigned bar_colors[8] = {};  // the frame bar's state colors, IM_COL32 layout
+  bool meters_under_damage = false;  // or right under the damage panel (each side under its own)
+  bool damage_at_game = false;       // damage windows where the game draws its own panel
   // Appearance
   bool hide_window_decorations = false; // hide passive overlay chrome while the menu is closed
   // Frame bar's own look while the menu is closed, 0 = like the other windows.
   int bar_title = 0;  // 1 shown, 2 only the accent line, 3 hidden
   int bar_panel = 0;  // 1 shown, 2 hidden
+  int meters_panel = 0;  // the same for the meters
+  bool meters_split = false;  // a meters window for each side
   ReplayManager::Status replay;  // takeover state for the status line and the prompt
   unsigned accent_rgb = 0xFF0000;  // 0xRRGGBB
   unsigned custom_rgb = 0xFF0000;
   float opacity = 0.94f;           // panel background alpha
+  float overlay_bg = 0.84f;        // meters (and damage panel) background alpha
+  float bar_bg = 0.84f;            // frame bar background alpha
   int picker_seq = 0;              // changes when the custom color picker should open
   // Timeline window
   int mode = 0;              // 0 = other, 1 = training, 2 = replay
@@ -144,7 +157,7 @@ struct MenuView {
 // Mouse actions from the ImGui menu, applied on the game thread in update().
 struct MenuClick {
   enum class Type { OpenNav, Row, SetChoice, Move, TensionWindow, CloseMenu,
-                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
+                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor, VersionWindow } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
   int a = 0;          // nav index or row index
   int b = 0;          // Row: 1 = right / activate, 0 = left; SetChoice: choice index
   int page = -1;      // Row / SetChoice in a popped-out window: that window's page
@@ -179,6 +192,9 @@ public:
   bool isShowing() const { return is_showing; }
   void hide();                           // game thread: close the menu (left training / replay)
   MenuView view() const;                 // render thread: copy of the latest snapshot
+  // Game thread, outside the mod's fights: the snapshot from the current settings, so
+  // what the overlay shows there (online) follows them without a training fight first.
+  void refreshView() { buildView(); }
   void click(const MenuClick& click);    // render thread: queue a mouse action
   void setPopped(unsigned mask);         // render thread: bit per MenuPage shown in its own window
   static std::filesystem::path dataDir(); // ue4ss folder (fonts, logo, config)
@@ -189,10 +205,15 @@ public:
   int inputBarRows() const;   // bits: 1 = P1's input row, 2 = P2's
   int barRows() const;        // bits: 1 = P1's frame bar row, 2 = P2's
   int unfoldFrames() const;   // last frames of a folded stretch shown as cells, 0 = off
+  int foldAfter() const;      // stretches longer than this many frames fold
+  bool compactBar() const;    // folded compact mode: one number per cell, brackets, punish window
+  bool unfoldOnlyRecovery() const;  // the last frames kept unfolded only on recovery
   bool barBlocks() const;     // long stretches drawn as one block
   bool markPerfect() const;   // frame perfect moves marked on the bar
   bool markHits() const;      // the active frame a move connected on, and what a later one would give
   bool markGaps() const;      // free frames between two stuns numbered
+  int damagePanel() const;           // sides with the game's training damage panel in our windows: bit 1 = 1P, 2 = 2P
+  bool hideGameDamagePanel() const;  // and the game's own one hidden
   bool countdown() const;     // frames of stun and recovery left, while both sides are stuck
   bool statusLineEnabled() const;
   float statusLineOpacity() const;  // black background behind the status line, 0..1
@@ -212,3 +233,6 @@ public:
 
   CurrentOptions getScheme() const;
 };
+
+// A battle version as the game counts them (39 = 5.03), as "Ver. 5.03".
+std::string battleVersionName(int index);

@@ -5,10 +5,14 @@
 int Keybinds::getButtonIndex(int input)
 {
     if (input == 0) return -1;
-    for (int i = 0; i < BUTTON_COUNT; i++)
+    for (int i = 0; i < BUTTON_COUNT; i++)  // the key with exactly these modifiers (Ctrl+O)
     {
         if (binds::key[i] == input) return i;
     }
+    const int vk = input & 0xFF;  // a bind without modifiers still works with one held
+    if (vk != input)
+        for (int i = 0; i < BUTTON_COUNT; i++)
+            if (binds::key[i] == vk) return i;
     return -1;
 }
 

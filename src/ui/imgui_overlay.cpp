@@ -3,6 +3,8 @@
 #include "replay_manager.h"
 #include "combo_log.h"
 #include "keybinds.h"
+#include "combo_trials.h"
+#include <tuple>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -31,6 +33,7 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 bool modScreenActive();  // dllmain.cpp
+bool onlineVersionScreen();  // dllmain.cpp
 
 #include "imgui_menu.inc"
 
@@ -71,7 +74,8 @@ namespace {
 
   // Mouse and keyboard go to ImGui only while the F5 menu is open.
   LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (g_running && modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible)) {
+    if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible)) ||
+                      (!modScreenActive() && menu_ui::g_online_picker))) {
       ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp);
       const ImGuiIO& io = ImGui::GetIO();
       const bool mouse = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST;
@@ -157,7 +161,7 @@ namespace {
   }
 
   HRESULT __stdcall hook_present(IDXGISwapChain* swap, UINT sync, UINT flags) {
-    if (g_running && !modScreenActive()) return g_present(swap, sync, flags);
+    if (g_running && !modScreenActive() && !onlineVersionScreen() && !menu_ui::g_online_picker) return g_present(swap, sync, flags);
     if (!g_running && !g_init_failed) {
       std::lock_guard<std::mutex> once(g_frame_mutex);  // two threads must not both set up
       if (!g_running && !g_init_failed) {
@@ -189,7 +193,8 @@ namespace {
       ImGui_ImplDX11_NewFrame();
       ImGui_ImplWin32_NewFrame();
       ImGui::NewFrame();
-      ImGui::GetIO().MouseDrawCursor = modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible);
+      ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible)) ||
+                                       (!modScreenActive() && menu_ui::g_online_picker);
       draw_ui();
       ImGui::Render();
       g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
@@ -227,6 +232,24 @@ namespace imgui_overlay {
   }
 
   void resetWindows() { menu_ui::g_layout_gen++; }
+
+  void setGameMenuOpen(bool open) { menu_ui::g_game_menu_open = open; }
+  void setOnlinePicker(bool open) { menu_ui::g_online_picker = open; }
+  bool onlinePickerOpen() { return menu_ui::g_online_picker; }
+  int takeOnlinePickStep() { return menu_ui::g_online_pick_step.exchange(0); }
+
+  void setBattleVersion(const std::string& name) {
+    std::lock_guard<std::mutex> lock(menu_ui::bv_mutex);
+    menu_ui::bv_text = name;
+    menu_ui::bv_time = GetTickCount64();
+  }
+
+  void setDamageRows(int side, const std::vector<DamageRow>& rows) {
+    if (side < 0 || side > 1) return;
+    std::lock_guard<std::mutex> lock(menu_ui::d_mutex);
+    menu_ui::d_rows[side] = rows;
+    menu_ui::d_time = GetTickCount64();
+  }
 
   void setTensionLines(const std::vector<std::wstring>& lines) {
     std::vector<std::string> out;

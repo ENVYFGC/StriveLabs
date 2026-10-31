@@ -28,7 +28,7 @@ void Timeline::onPreTick(const std::function<void()>& callback)
 
     callback();
 
-    if (!gameState->checkMode())
+    if (!gameState || !gameState->checkMode())
     {
         paused = false;
         pendingSteps = 0;
@@ -72,5 +72,6 @@ void Timeline::pressHotkey(int action)
 
 int Timeline::mode() const
 {
+    if (!gameState) return 0;  // asked before the hooks are set up (the game still starting)
     return !gameState->checkMode() ? 0 : gameState->checkModeReplay() ? 2 : 1;
 }

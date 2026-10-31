@@ -124,7 +124,12 @@ public:
           else if (!repeat) esc_pressed.store(true);
           return 1;  // not for the game while the prompt is up
         }
-        if (markKey(repeat ? (vk | BindWatcherI::REPEAT) : vk)) await_con.notify_all();
+        int code = static_cast<int>(vk);
+        if (GetAsyncKeyState(VK_CONTROL) & 0x8000) code |= BindWatcherI::KEY_CTRL;
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) code |= BindWatcherI::KEY_SHIFT;
+        if (GetAsyncKeyState(VK_MENU) & 0x8000) code |= BindWatcherI::KEY_ALT;
+        if (repeat) code |= BindWatcherI::REPEAT;
+        if (markKey(static_cast<DWORD>(code))) await_con.notify_all();
       }
     }
     return worker.callNext(nCode, wParam, lParam);
