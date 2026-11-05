@@ -10,7 +10,7 @@
 #include "imgui_overlay.h"
 namespace crash_log { void install(const std::filesystem::path& dir); }
 namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
-namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); }
+namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); }
 #include "menu.h"
 #include "recordings.h"
 #include "replay_manager.h"
@@ -109,6 +109,11 @@ static void pollGamepad();
 static uint32_t g_training_press = 0;    // made-up buttons pressed this frame
 static uint32_t g_training_pending = 0;  // pressed while the fight is held (mod pause, timeline pause)
 static bool g_battle_ran = false;        // a battle update ran since the last system update
+static bool g_mode_battle_ran = false;   // one this mod handles (training, replay...) ran since the last system update
+// The system updates in a row with no battle update (any, or a handled one). With the time since one, they say
+// whether a fight is over: a single slow frame is never the end of one.
+static int g_no_battle_updates = 2, g_no_mode_battle_updates = 2;  // (none yet: no fight at startup)
+static bool g_any_fight = false, g_mode_fight = false;  // set at the start of each system update
 constexpr uint32_t kFakeReset = 0x1000000, kFakeRecord = 0x2000000, kFakePlayback = 0x4000000;
 
 using funcKeyConfigLookup_t = uint32_t (*)(int pad, int entry);
@@ -359,6 +364,9 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         return;
     }
     g_last_battle_update = GetTickCount64();
+    g_mode_battle_ran = true;
+    // Stamped again on the way out: the work in here (the mod's and the game's) is no gap between battle updates
+    struct Restamp { ~Restamp() { g_any_battle_update = g_last_battle_update = GetTickCount64(); } } restamp;
     if (!game_state.mode_battle_logged) { game_state.mode_battle_logged = true; COMBO_LOG("battle code running in this mode"); }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
@@ -382,8 +390,9 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (game_state.checkModeReplay()) ReplayManager::instance().update();
 
     const int style = pauseStyle();
+    const bool scan_hold = game_state.checkModeTraining() && recolor_test::holdsFight();  // the editor's scan: the fighter mustn't move
     if ((style == 0 && pause_manager.advancing()) ||
-        (style == 1 && pause_manager.cinematicShouldAdvance()))
+        (style == 1 && pause_manager.cinematicShouldAdvance()) || scan_hold)
     {
         if (game_state.checkModeTraining()) { recolor_test::update(false); recolor_test::afterBattleUpdate(); }  // paused here too
         return;
@@ -510,12 +519,12 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 // select, loading), or they would all fire on the first fight frame.
 static void dropKeysOutsideFight()
 {
-    if (GetTickCount64() - g_last_battle_update > 250)
+    if (!g_mode_fight)
     {
         keybindings.checkBinds(false);
         // Outside every fight, the online version window takes its own key, and the
         // menu's Left / Right while it's open; the rest is dropped.
-        if (GetTickCount64() - g_any_battle_update > 250)
+        if (!g_any_fight)
         {
             if (keybindings.takeAction(binds::ONLINE_VERSION))
                 imgui_overlay::setOnlinePicker(!imgui_overlay::onlinePickerOpen());
@@ -531,7 +540,7 @@ static void dropKeysOutsideFight()
         keybindings.resetButtons();
         // Only when the overlay draws out here (an online fight, the online version
         // window): never while the game is still starting up.
-        if (GetTickCount64() - g_any_battle_update < 250 || imgui_overlay::onlinePickerOpen())
+        if (g_any_fight || imgui_overlay::onlinePickerOpen())
             ModMenu::instance().refreshView();
     }
 }
@@ -554,19 +563,26 @@ void hook_UpdateSystem(uintptr_t System)
     // press at the start of the next battle update, so clear it here, and drop one
     // still held from a pause.
     if (!g_battle_ran) g_training_press = g_training_pending = 0;
-    g_battle_ran = false;
-    const bool battle_running = GetTickCount64() - g_last_battle_update < 250;
+    g_no_battle_updates = g_battle_ran ? 0 : g_no_battle_updates + 1;
+    g_no_mode_battle_updates = g_mode_battle_ran ? 0 : g_no_mode_battle_updates + 1;
+    g_battle_ran = g_mode_battle_ran = false;
+    {  // A slow frame isn't the end of a fight; a long gap always is, even with one system update in it (a blocking load)
+      const ULONGLONG now = GetTickCount64(), any_gap = now - g_any_battle_update, mode_gap = now - g_last_battle_update;
+      g_any_fight = any_gap < 250 || (g_no_battle_updates < 2 && any_gap < 1000);
+      g_mode_fight = mode_gap < 250 || (g_no_mode_battle_updates < 2 && mode_gap < 1000);
+    }
+    const bool battle_running = g_mode_fight;
     combo_trials::latchVersion(battle_running);
-    combo_trials::updateOnline(GetTickCount64() - g_any_battle_update < 250);
-    recolor_share::update(GetTickCount64() - g_any_battle_update < 250);
+    combo_trials::updateOnline(g_any_fight);
+    recolor_share::update(g_any_fight);
     if (!battle_running) {
         combo_trials::idle();     // left training: the trial doesn't carry on
         damage_panel::release();  // the game's panel goes with the fight
         game_menu::release();
     }
-    if (GetTickCount64() - g_any_battle_update >= 250) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
+    if (!g_any_fight) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
     // Saved recolors on the menus' models (character select), only with no fight at all.
-    if (GetTickCount64() - g_any_battle_update > 250) recolor_test::menuUpdate(false);
+    if (!g_any_fight) recolor_test::menuUpdate(false);
     else if (!game_state.checkModeTraining()) recolor_test::menuUpdate(true);  // any other fight gets the saved recolors on the fighters
     else recolor_test::menuRelease();
     dropKeysOutsideFight();
@@ -595,6 +611,11 @@ void hook_UpdateReplay(BattleReplayManager* Manager)
 
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
 {
+    {  // After a blocking load the last system update's flags are old, so a long gap is no fight here
+      const ULONGLONG now = GetTickCount64();
+      if (now - g_last_battle_update >= 1000) g_mode_fight = false;
+      if (now - g_any_battle_update >= 1000) g_any_fight = false;
+    }
     dropKeysOutsideFight();  // first tick after a load: what was pressed during it
     keybindings.checkBinds(false);
     // Rewind needs the queued Timeline hotkeys and can request Pause/Step.

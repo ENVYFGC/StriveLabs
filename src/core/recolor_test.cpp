@@ -5839,7 +5839,25 @@ namespace {
     g_scan_groups = groups;
     return true;
   }
+  std::vector<Kept> g_scan_hidden;  // what a scan hid (the other fighter, effects), shown again when it ends
+  void scanHideOthers(const Target& t) {
+    if (!g_scan_hidden.empty()) return;  // (hidden already)
+    for (UObject* c : fighterParts())
+      if (c && c->GetOuterPrivate() != t.pawn && keep(c).alive() && isVisible(c)) { g_scan_hidden.push_back(keep(c)); setVisible(c, false); }
+    std::vector<UObject*> fx;
+    UObjectGlobals::FindAllOf(STR("ParticleSystemComponent"), fx);
+    for (UObject* c : fx)  // (never a template: every effect made from it would start hidden)
+      if (c && keep(c).alive() && c->GetFullName().find(STR("Default__")) == StringType::npos && isVisible(c)) {
+        g_scan_hidden.push_back(keep(c));
+        setVisible(c, false);
+      }
+  }
+  void scanShowOthers() {
+    for (const Kept& k : g_scan_hidden) if (k.alive()) setVisible(k.obj, true);
+    g_scan_hidden.clear();
+  }
   void scanRun(Target& t) {  // Puts frame 0 up, and the render thread takes it from there
+    scanHideOthers(t);
     show(t, g_scan_tex[0], true);
     g_scan_on = true;
     std::lock_guard<std::mutex> lk(g_scan_m);
@@ -5887,6 +5905,7 @@ namespace {
     }
     if (g_scan_on && t && asw_engine::get() == g_fight) show(*t, edited(*t));
     g_scan_on = false;
+    scanShowOthers();
     if (!keep) {
       for (Shown& s : g_scan_tex) unroot(s);
       g_scan_tex.clear();
@@ -6869,6 +6888,10 @@ namespace {
 
 View view() { std::lock_guard<std::mutex> lock(g_m); return g_view; }
 bool isOpen() { std::lock_guard<std::mutex> lock(g_m); return g_view.open; }
+// Game thread. While the editor maps or scans the fighter, the fight is held (as the pause holds it with the
+// editor open): a scan compares frames, and a fighter moving through its idle animation reads as a picture that
+// kept changing, so most first scans failed unless the fight was frozen by hand.
+bool holdsFight() { return g_open && (g_mapping || g_scan_on || g_pick_scanning); }
 void toggle() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kToggle, -1, 0}); }
 void setLit(int region, uint32_t rgb) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kLit, region, rgb}); }
 void setShadow(int region, uint32_t rgb) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kShadow, region, rgb}); }
@@ -7067,6 +7090,7 @@ void resetCapturedColor(int i, uint32_t gen) { std::lock_guard<std::mutex> lock(
 void menuUpdate(bool in_fight) { menuUpdateNow(in_fight); }
 void menuRelease() { menuRelease_(); }
 void battleGone() {
+  scanShowOthers();  // Left the fight during a scan: what it hid is shown again while it's still there
   for (RxPart& p : g_rx.parts) {  // The fight's over. Only its file is kept, for saving, and unfinished textures are dropped when done
     unroot(p.shown); p.shown = Shown{}; p.failed = true;
     if (p.job.valid()) g_png_orphans.push_back(std::move(p.job));

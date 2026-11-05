@@ -98,6 +98,7 @@ namespace recolor_test {
   struct Pick { int region = -1; uint32_t lit = 0; int shadow_mode = 0; uint32_t shadow = 0; };  // shadow_mode 3 goes back to the game's color (no edit)
   View view();  // safe from any thread, returns a copy
   bool isOpen();
+  bool holdsFight();  // game thread: the editor is scanning the fighter, so the fight is held
   // Called from the UI (any thread), done on the game thread.
   void toggle();
   void setLit(int region, uint32_t rgb);

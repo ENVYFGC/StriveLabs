@@ -329,6 +329,8 @@ namespace {
       const int l0 = lum(0, i), span = lum(1, i) - l0;
       if (span < least) continue;  // Doesn't light up. Not the fighter's, or too faint to read.
       fighter++;
+      // One region (Sol's DI wing flare, whose flame flickers by itself): whatever lights up is it, moving or not
+      if (groups == 1) { code[i] = 1; clear_px++; continue; }
       if (std::abs(lum(last, i) - l0) * 4 > span) { moved++; continue; }  // Changed between the dark frames, so it moved
       int c = 0;
       bool clear = true;
@@ -339,7 +341,9 @@ namespace {
       }
       if (clear && c > 0 && c <= groups) { code[i] = static_cast<uint16_t>(c); clear_px++; }
     }
-    if (fighter >= 64 && clear_px * 2 < fighter) {  // Most of the fighter is unreadable, so refuse rather than guess
+    // Most of the fighter is unreadable, so refuse rather than guess. Only when enough of it is in view: a side that
+    // shows next to nothing of it (hidden behind something) is read as it is, so a few stray pixels can't stop a mapping
+    if (fighter >= (std::max)(static_cast<size_t>(64), n / 400) && clear_px * 2 < fighter) {
       COMBO_LOG("color editor: scan " + std::to_string(id) + ": " + std::to_string(clear_px) + " of " + std::to_string(fighter) + " pixels read cleanly, " +
                 std::to_string(moved) + " moved");
       recolor_test::scanFailed(id, moved * 4 > fighter ? std::string("the picture kept changing during it (an overlay, or the fighter moving).")
