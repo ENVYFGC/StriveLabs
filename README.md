@@ -8,13 +8,18 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 
 ## What it does
 
-- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show one side only, draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could. It can also show which active frame a move hit on, the gaps between stuns, and how many frames of stun and recovery are left.
+- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show both players or just P1 or P2, for the frame bar and the input row separately. It can draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could. It can also show which active frame a move hit on, the gaps between stuns, and a countdown of the stun and recovery frames left, and fold long stretches after 2 to 10 frames.
 - Hitboxes and hurtboxes.
 - Meters for tension gain, burst, tension pulse, tension penalty and wall damage.
 - Replay takeover, so you can jump into either side of a replay and play it out yourself. Replay Assist can start you a moment early, so you're already in the flow when control is handed to you.
 - Recordings. Save your training slots as .txt files you can edit, share and load back in, or record a player straight from a replay.
 - A timeline with rewind, pause, frame step and record.
 - Combo Trials. Pick any combo you've saved or downloaded in Combo Maker and try it in training: it starts where the combo starts, and the game lights up each move as it lands. Training can also run on an older battle version.
+- Combo Search. Find Combo Maker combos online for your character, sorted and filtered, and download them straight into Combo Trials.
+- A damage panel window for P1, P2 or both, which can hide the game's own.
+- A color editor. Recolor any character's outfit, weapon and effects live in training, save named palettes, and see your recolors in character select, versus and online.
+- Recolor sharing (off by default). Two StriveLabs players in a Park or room match see each other's recolors.
+- StriveLabs Online (Ctrl+O). Pick the battle version for Park and room matches, so two players on StriveLabs can play an older version together.
 - A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size.
 - Character select remembers your last character, color, stage and music after a restart.
 
@@ -61,6 +66,22 @@ In a replay, F7 or F8 pauses on the current frame and asks before taking over. P
 With Replay Assist on (Takeover page, in seconds), F9 goes back a little before your rewind point and lets the replay play both sides. A bar counts down, and at the exact frame you picked, control is handed to you.
 
 A small status line shows what's going on: replay or training, the rewind point, Replay Assist and who you're taking over. Drag it anywhere while the menu is open, or turn it off on the Takeover page.
+
+## Color editor
+
+In training, press Ctrl+Alt+E with the character and color you want to recolor. The fight pauses and the camera is yours. The buttons at the top are the parts of the outfit (Body, Weapon, DI and so on). Regions lists the part's colors: the left swatch is the lit color, the right one is the shadow. Material colors covers outlines and glows, and Effects covers the fire and the other effects. Save with Ctrl+S.
+
+Your recolor goes on whenever that character and color is picked, in training, character select, versus and online (only you see it, unless recolor sharing is on). Palettes save a recolor with a title, your name as the author, and a note. A palette keeps exactly how it looked, so it looks the same when someone else loads it, even with a skin mod. Parts you didn't recolor are left alone. Effects you recolor with Capture effects, and decal line colors, show in training only for now. Everything else shows everywhere.
+
+Your work is kept in `RED/Binaries/Win64/ue4ss/StriveLabs_colors/` (on Xbox, `Content/RED/Binaries/WinGDK/ue4ss/StriveLabs_colors/`). Saves are in `saved/`, palettes and exports in `recolors/`. A palette you delete or replace, and the recolor a Load or Reset replaces, go to `recolors/palettes/<character>/.trash`.
+
+## Recolor sharing
+
+Open StriveLabs Online (Ctrl+O) and turn Recolor sharing on. In a Park or room match against another StriveLabs player with sharing on, each side's saved recolor for the picked character and color shows on their fighter during round 1, and you can save theirs into one of your slots. Let the round 1 intro play, since the games find each other there. Turning it on lets the opponent's game know your Steam account. It's Steam only, and it never cancels a match.
+
+## Update notifier
+
+From now on, StriveLabs tells you when a new update is out. The first time you open the menu each launch, it asks GitHub (api.github.com) for the latest release. If there's a newer one, the menu's title says "Update available", and clicking it opens the Releases page. Nothing is downloaded or installed.
 
 ## Recordings
 

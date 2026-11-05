@@ -1,4 +1,4 @@
-local projectName = "StriveLabs_apr10"
+local projectName = "StriveLabs"
 
 target(projectName)
     add_rules("ue4ss.mod")
@@ -33,6 +33,10 @@ target(projectName)
     add_files("src/core/game_menu.cpp")
     add_files("src/core/handshake.cpp")
     add_files("src/core/combo_online.cpp")
+    add_files("src/core/recolor_test.cpp")  -- (the color editor)
+    add_files("src/core/recolor_share.cpp")  -- (sharing recolors in online matches)
+    add_files("src/core/paint_layer.cpp")  -- (the color editor's painting)
+    add_files("src/core/update_check.cpp")  -- (says when a newer release is out)
 
     -- Dear ImGui (MIT, third_party/imgui/LICENSE.txt), drawn through a DirectX 11 Present hook
     add_includedirs("third_party/imgui")
@@ -41,7 +45,7 @@ target(projectName)
               "third_party/imgui/backends/imgui_impl_dx11.cpp", "third_party/imgui/backends/imgui_impl_win32.cpp")
     add_syslinks("d3d11", "dxgi", "d3dcompiler", "windowscodecs")
 
-    add_syslinks("ole32", "user32", "comdlg32")
+    add_syslinks("ole32", "user32", "comdlg32", "winhttp")
 
     -- Keep local folder paths out of the release DLL: the debug record only names
     -- the .pdb file, and no_source_paths.h compiles out the asserts that embed

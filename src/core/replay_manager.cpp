@@ -1345,7 +1345,7 @@ public:
         if (cur.m_Cursor < g_cap_start.m_Cursor ||
             (cur.m_Cursor == g_cap_start.m_Cursor && cur.m_Count < g_cap_start.m_Count))
         {
-            err = L"The replay went back before the capture started";
+            err = L"Replay rewound, capture stopped";
             return out;
         }
         out = captureReplayInputs(g_cap_peer, g_cap_start.m_Cursor, cur.m_Cursor - g_cap_start.m_Cursor, cur.m_Count);

@@ -1,10 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 class sigscan
 {
 	uintptr_t start, end;
+	std::vector<std::pair<uintptr_t, uintptr_t>> code;  // (executable sections, scanned first)
 
 public:
 	sigscan(const char *name);

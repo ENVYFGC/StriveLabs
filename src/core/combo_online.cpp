@@ -222,15 +222,15 @@ namespace {
   }
 
   std::wstring notReady(uintptr_t mgr) {
-    if (!at<uint8_t>(mgr + kHasSession)) return L"Not connected to the game's network: open an online menu once (like Combo Maker), then try again";
-    if (at<int>(mgr + kCurrentApi)) return L"The game is busy with another online request, try again in a moment";
+    if (!at<uint8_t>(mgr + kHasSession)) return L"Offline. Open an online menu once, then retry.";
+    if (at<int>(mgr + kCurrentApi)) return L"Game busy, try again.";
     return {};
   }
 
   std::wstring failed(int status) {
-    if (status == 2 || status == 10) return L"The game's network session ran out: open an online menu once, then try again";
-    if (status < 0) return L"No answer from the server (offline, or maintenance)";
-    return L"The server said no (error " + std::to_wstring(status) + L")";
+    if (status == 2 || status == 10) return L"Session expired. Open an online menu, then retry.";
+    if (status < 0) return L"No answer from the server";
+    return L"Server error " + std::to_wstring(status);
   }
 }
 
@@ -292,7 +292,7 @@ const std::vector<Result>& results() { return g_results; }
 
 std::wstring search(const Filter& f, int sort, int page) {
   if (!available()) return L"The online search isn't available in this game version";
-  if (busy()) return L"Still waiting for the last request";
+  if (busy()) return L"Still waiting...";
   const uintptr_t mgr = g_mgr();
   if (auto why = notReady(mgr); !why.empty()) return why;
   // The search screen's parameters (0x70 bytes): page, sort and order, count, then the
@@ -327,7 +327,7 @@ std::wstring search(const Filter& f, int sort, int page) {
   }
   at<int>(reinterpret_cast<uintptr_t>(p) + 0x68) = 6;
   alignas(8) uint8_t delegate[16] = {};  // no callback: the reply is polled
-  if (!g_get_combo(mgr, p, delegate)) return L"The game didn't take the request (busy or offline)";
+  if (!g_get_combo(mgr, p, delegate)) return L"Request failed, try again.";
   g_job = Job::Search;
   g_started = GetTickCount64();
   COMBO_LOG("combo online: search, character " + std::to_string(f.chara) + " vs " + std::to_string(f.vs) + ", " +
@@ -340,16 +340,16 @@ namespace { std::wstring fetch(const Result& r, Job job); }
 
 std::wstring download(const Result& r) {
   if (!available()) return L"The online search isn't available in this game version";
-  if (busy()) return L"Still waiting for the last request";
+  if (busy()) return L"Still waiting...";
   const uintptr_t root = combo_trials::saveRoot();
   if (!at<uint8_t>(root + kSaveEnabled)) return L"Saving is off in the game right now";
-  if (g_kept_count(root) >= kKeptMax) return L"Your kept Combo Maker list is full (100). Delete some in Combo Maker first";
+  if (g_kept_count(root) >= kKeptMax) return L"Combo Maker list full (100). Delete some first.";
   return fetch(r, Job::Download);
 }
 
 std::wstring tryIt(const Result& r) {
   if (!available()) return L"The online search isn't available in this game version";
-  if (busy()) return L"Still waiting for the last request";
+  if (busy()) return L"Still waiting...";
   if (r.chara != combo_trials::playerChara()) return L"That combo is for another character";
   return fetch(r, Job::Try);
 }
@@ -362,7 +362,7 @@ std::wstring fetch(const Result& r, Job job) {
   at<uint32_t>(reinterpret_cast<uintptr_t>(p) + 0x08) = r.number;
   at<int>(reinterpret_cast<uintptr_t>(p) + 0x0C) = r.platform;
   alignas(8) uint8_t delegate[16] = {};
-  if (!g_load(mgr, p, delegate)) return L"The game didn't take the request (busy or offline)";
+  if (!g_load(mgr, p, delegate)) return L"Request failed, try again.";
   g_job = job;
   g_downloading = r;
   g_started = GetTickCount64();
@@ -386,7 +386,7 @@ bool update(std::wstring& message) {
     if (at<uintptr_t>(root + kSaveJob)) {
       if (GetTickCount64() - g_started < 10000) return false;
       g_job = Job::None;
-      message = L"Downloaded, but the game was busy saving: it's in the list, and saved with your next save";
+      message = L"Downloaded. It saves with your next save.";
       return true;
     }
     g_request_save(root);
@@ -460,12 +460,12 @@ bool update(std::wstring& message) {
     }
     const std::vector<uint8_t> block = unbase64url(gameString(resp + 0xB0, 1 << 20));
     message = combo_trials::loadData(block.data(), block.size());
-    if (message.empty()) message = L"Trying No." + std::to_wstring(g_downloading.number) + L" in training (not kept). Combo Trials can play it for you (Watch it) or set its version.";
+    if (message.empty()) message = L"Trying No." + std::to_wstring(g_downloading.number) + L" (not saved).";
     COMBO_LOG("combo online: try, " + std::to_string(block.size()) + " bytes");
     return true;
   }
   if (g_kept_count(root) >= kKeptMax || g_kept_slot(root) < 0) {
-    message = L"Your kept Combo Maker list is full (100). Delete some in Combo Maker first";
+    message = L"Combo Maker list full (100). Delete some first.";
     return true;
   }
   // What the game's download request carries into that step: number, official, cleared,
@@ -485,7 +485,7 @@ bool update(std::wstring& message) {
   COMBO_LOG("combo online: stored No." + std::to_string(g_downloading.number));
   g_job = Job::Save;
   g_started = GetTickCount64();
-  message = L"Downloaded No." + std::to_wstring(g_downloading.number) + L": it's in Combo Trials now";
+  message = L"Saved No." + std::to_wstring(g_downloading.number) + L" to Combo Trials";
   return true;
 }
 }  // namespace combo_online

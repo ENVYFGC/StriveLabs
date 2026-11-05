@@ -1,0 +1,20 @@
+Lines
+@ 460 1477 tail ribbon
+@ 815 1446 tail ribbon
+@ 687 1428 tail
+@ 871 1441 tail
+@ 862 40 eyebrows
+@ 1530 68 hair strand
+@ 1874 552 main hair
+@ 1139 36 eyelashes
+@ 1101 543 install hair underside
+@ 1036 543 install hair top
+@ 940 550 tear duct
+@ 965 463 mouth interior
+@ 902 467 tongue
+@ 943 415 gums
+@ 943 326 gums
+@ 936 362 teeth
+@ 643 553 lips
+@ 359 487 lips
+@ 491 380 head

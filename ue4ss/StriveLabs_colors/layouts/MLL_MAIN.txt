@@ -1,0 +1,42 @@
+skin
+HairDEF
+CoatUnderDEF
+leggingsDEF
+shoebaseDEF
+CoattopDEF
+ScarfDEF
+armband
+shirt
+coatinsideDEF
+HatdecalDEF
+CoattoprimDEF
+CoatunderrimDEF
+ShoesoleDEF
+eye
+shoulder
+mouth stuff
+GlovetopDEF
+BeltstopDEF
+horny
+eyelashDEF
+GoldDef
+GlovebottomDEF
+OrangeDEF
+ScarfPieceDEF
+Plate outline
+hatDEF
+Rectangle
+buckles
+BeltbottomDEF
+COVER
+tie holder background
+ShoulderstripeDEF
+BrownDecal1DEF
+beltCuffDEF
+lipstickDEF
+lipstick
+plate screws
+poncho clips
+umbran portal
+tie sides
+nailsDEF

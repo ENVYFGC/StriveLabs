@@ -302,6 +302,8 @@ uintptr_t saveRoot() { return g_save_root && *g_save_root ? *g_save_root : 0; }
 uintptr_t trainingManager() { return g_recipe; }
 int playerChara() { return charaPlayed(); }
 bool inTraining() { return gameMode() == 8; }
+bool onlineFight() { return gameMode() == 22; }
+int opponentChara() { return charaAt(true); }
 int localSide() { return g_chara_owner && *g_chara_owner ? at<uint8_t>(*g_chara_owner + 0x2F4) & 1 : 0; }
 bool onlineVersionInUse() {
   const uint8_t m = gameMode();
@@ -489,7 +491,7 @@ std::wstring loadBlock(uintptr_t b) {
   const int n = stepsIn(b);
   if (!n) return L"That combo is gone, refresh the list";
   if (at<uint32_t>(b + kChara) != static_cast<uint32_t>(charaPlayed())) return L"That combo is for another character";
-  if (n > kPanelRows) return L"Training's recipe panel only has " + std::to_wstring(kPanelRows) + L" rows";
+  if (n > kPanelRows) return L"Too many steps (max " + std::to_wstring(kPanelRows) + L")";
 
   const uintptr_t r = g_recipe;
   resize(r + rMatchName, n, 32);

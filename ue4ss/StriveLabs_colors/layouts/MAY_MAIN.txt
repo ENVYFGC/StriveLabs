@@ -1,0 +1,13 @@
+skin
+text
+eye_base
+jacket_logo
+red
+pink
+green
+blue
+eyelashes
+skin_blush
+skin_lips
+eye_highlight
+skin_knees

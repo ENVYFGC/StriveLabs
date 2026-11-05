@@ -153,28 +153,28 @@ namespace Settings {
       "framebar_countdown", 0};
   // Frame bar's own look while the menu is closed. 0 follows "Hide decorations".
   SettingsEntry BAR_TITLE = SettingsEntry{
-      OptionData{L"Frame Bar Title:", 4, {L"< Like other windows >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}},
+      OptionData{L"Frame Bar Title:", 4, {L"<   Default   >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}},
       "framebar_title", 0};
   SettingsEntry BAR_PANEL = SettingsEntry{
-      OptionData{L"Frame Bar Background:", 3, {L"< Like other windows >", L"<     Shown     >", L"<    Hidden     >"}},
+      OptionData{L"Frame Bar Background:", 3, {L"<   Default   >", L"<     Shown     >", L"<    Hidden     >"}},
       "framebar_background", 0};
   // Meters' own look while the menu is closed, like the frame bar's. 0 follows "Hide decorations".
   SettingsEntry METERS_PANEL = SettingsEntry{
-      OptionData{L"Meters Background:", 3, {L"< Like other windows >", L"<     Shown     >", L"<    Hidden     >"}},
+      OptionData{L"Meters Background:", 3, {L"<   Default   >", L"<     Shown     >", L"<    Hidden     >"}},
       "meters_background", 0};
   // The same for the meters' title, and the damage panel's and battle version's own look.
   SettingsEntry METERS_TITLE = SettingsEntry{
-      OptionData{L"Meters Title:", 4, {L"< Like other windows >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}}, "meters_title", 0};
+      OptionData{L"Meters Title:", 4, {L"<   Default   >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}}, "meters_title", 0};
   SettingsEntry DAMAGE_TITLE = SettingsEntry{
-      OptionData{L"Damage Panel Title:", 4, {L"< Like other windows >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}}, "damage_title", 0};
+      OptionData{L"Damage Panel Title:", 4, {L"<   Default   >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}}, "damage_title", 0};
   SettingsEntry DAMAGE_BG = SettingsEntry{
-      OptionData{L"Damage Panel Background:", 3, {L"< Like other windows >", L"<     Shown     >", L"<    Hidden     >"}}, "damage_background", 0};
+      OptionData{L"Damage Panel Background:", 3, {L"<   Default   >", L"<     Shown     >", L"<    Hidden     >"}}, "damage_background", 0};
   SettingsEntry VERSION_TITLE = SettingsEntry{
-      OptionData{L"Battle Version Title:", 4, {L"< Like other windows >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}}, "version_title", 0};
+      OptionData{L"Battle Version Title:", 4, {L"<   Default   >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}}, "version_title", 0};
   SettingsEntry VERSION_BG = SettingsEntry{
-      OptionData{L"Battle Version Background:", 3, {L"< Like other windows >", L"<     Shown     >", L"<    Hidden     >"}}, "version_background", 0};
+      OptionData{L"Battle Version Background:", 3, {L"<   Default   >", L"<     Shown     >", L"<    Hidden     >"}}, "version_background", 0};
   SettingsEntry DAMAGE_PANEL = SettingsEntry{
-      OptionData{L"Damage Panel:", 4, {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<   1P & 2P   >"}},
+      OptionData{L"Damage Panel:", 4, {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "damage_panel", 0};
   SettingsEntry DAMAGE_HIDE_GAME = SettingsEntry{
       OptionData{L"Hide The Game's Damage Panel:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
@@ -193,7 +193,7 @@ namespace Settings {
       "tension_enabled", 0};
   SettingsEntry TENSION_GAIN = SettingsEntry{
       OptionData{L"Tension Gain:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+                 {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "tension_gain", 3};
   SettingsEntry TENSION_ADVANTAGE = SettingsEntry{
       OptionData{L"Tension Advantage:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
@@ -203,19 +203,19 @@ namespace Settings {
       "tension_adv_change", 0};
   SettingsEntry TENSION_BURST = SettingsEntry{
       OptionData{L"Burst:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+                 {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "tension_burst", 0};
   SettingsEntry TENSION_PULSE = SettingsEntry{
       OptionData{L"Tension Pulse:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+                 {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "tension_pulse", 0};
   SettingsEntry TENSION_PENALTY = SettingsEntry{
       OptionData{L"Tension Penalty:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+                 {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "tension_penalty", 0};
   SettingsEntry WALL_DAMAGE = SettingsEntry{
       OptionData{L"Wall Damage:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+                 {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "wall_damage", 0};
   SettingsEntry TENSION_SIDE = SettingsEntry{
       OptionData{L"Overlay Side:", 2, {L"<    Left    >", L"<   Right    >"}},
@@ -225,7 +225,7 @@ namespace Settings {
       "meters_decimals", 2};
   SettingsEntry TENSION_CURRENT = SettingsEntry{
       OptionData{L"Tension Now:", 4,
-                 {L"<  Disabled  >", L"<     1P     >", L"<     2P     >", L"<  1P & 2P   >"}},
+                 {L"<  Disabled  >", L"<     P1     >", L"<     P2     >", L"<    Both    >"}},
       "tension_current", 0};
   SettingsEntry UI_ACCENT = SettingsEntry{
       OptionData{L"Accent Color:", 7, {L"Red", L"Blue", L"Teal", L"Purple", L"Gold", L"White", L"Custom"}},
@@ -235,10 +235,10 @@ namespace Settings {
       "timeline_on", 0};  // off until you turn it on; remembered across restarts
   // Where the meters sit: anywhere, on top of the frame bar, or right under the damage panel.
   SettingsEntry METERS_SNAP = SettingsEntry{
-      OptionData{L"Meters Position:", 3, {L"<    Free    >", L"< On the frame bar >", L"< Under the damage panel >"}},
+      OptionData{L"Meters Position:", 3, {L"<    Free    >", L"< On frame bar >", L"< Under damage >"}},
       "meters_snap", 0};
   SettingsEntry DAMAGE_AT_GAME = SettingsEntry{
-      OptionData{L"Damage Panel Position:", 2, {L"<    Free    >", L"< The game's own panel >"}},
+      OptionData{L"Damage Panel Position:", 2, {L"<    Free    >", L"< Game's spot >"}},
       "damage_position", 0};
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
@@ -514,7 +514,7 @@ namespace {
   const char* const kCharaNames[] = {"Sol", "Ky", "May", "Axl", "Chipp", "Potemkin", "Faust", "Millia", "Zato-1", "Ramlethal",
                                      "Leo", "Nagoriyuki", "Giovanna", "Anji", "I-No", "Goldlewis", "Jack-O'", "Happy Chaos",
                                      "Baiken", "Testament", "Bridget", "Sin", "Bedman?", "Asuka", "Johnny", "Elphelt", "A.B.A",
-                                     "Slayer", "Dizzy", "Venom", "Unika", "Lucy"};
+                                     "Slayer", "Dizzy", "Venom", "Unika", "Lucy", "Jam", "Robo-Ky"};
   constexpr int kCharaCount = static_cast<int>(sizeof(kCharaNames) / sizeof(kCharaNames[0]));
   std::wstring g_search_status;
   int g_detail = -1;  // the result shown in full, -1 = the list
@@ -525,7 +525,7 @@ namespace {
     std::vector<std::string> l;
     l.push_back(utf8(r.title.empty() ? L"No." + std::to_wstring(r.number) : r.title));
     l.push_back("No." + std::to_string(r.number) + "  " + utf8(versionName(r.version)) + "  by " + (r.author.empty() ? "?" : r.author));
-    l.push_back(std::to_string(r.downloads) + " downloads  " + std::to_string(r.likes) + " likes  clear rate " + std::to_string(r.clear_rate) + "%");
+    l.push_back(std::to_string(r.downloads) + " downloads \xC2\xB7 " + std::to_string(r.likes) + " likes \xC2\xB7 " + std::to_string(r.clear_rate) + "% clear");
     if (!r.stage.empty()) l.push_back("Stage: " + utf8(r.stage));
     if (!r.tags.empty()) l.push_back("Tags: " + utf8(r.tags));
     if (!r.comment.empty()) l.push_back("\"" + r.comment + "\"");
@@ -551,8 +551,9 @@ namespace {
     const std::string vs = r.vs_chara >= 0 && r.vs_chara < kCharaCount ? kCharaNames[r.vs_chara] : "anyone";
     std::wstring t = r.title.empty() ? L"No." + std::to_wstring(r.number) : r.title;
     if (t.size() > 48) t = t.substr(0, 46) + L"...";
-    return utf8(t) + "  " + utf8(versionName(r.version)) + "  " + std::to_string(r.steps.size()) + " steps  vs " + vs + "  " +
-           std::to_string(r.likes) + " likes  " + std::to_string(r.downloads) + " DL  by " + (r.author.empty() ? "?" : r.author);
+    const std::string dot = " \xC2\xB7 ";
+    return utf8(t) + dot + utf8(versionName(r.version)) + dot + std::to_string(r.steps.size()) + " steps" + dot + "vs " + vs + dot +
+           std::to_string(r.likes) + " likes";
   }
   std::wstring versionName(int index);
   // Online version choices: off, then every version newest first (the current one isn't
@@ -565,8 +566,7 @@ namespace {
   void pickOnline(int version) {
     combo_trials::setOnlineVersion(version);
     g_trials_status = version
-        ? L"Online: " + versionName(version) + L" in Park and private room matches. Your opponent must pick the same one. "
-          L"It turns off when you go back to the main menu, and never applies in ranked."
+        ? L"Online: " + versionName(version) + L". Park and rooms only; opponent must match. Resets at main menu."
         : L"Online version off.";
   }
   std::wstring versionName(int index);
@@ -596,34 +596,34 @@ namespace {
       std::sort(g_version_choices.begin() + 1, g_version_choices.end(), std::greater<int>());
     }
     g_trials_status = g_trials.empty()
-        ? L"No Combo Maker combos for this character. Save or download some in Combo Maker first."
-        : std::to_wstring(g_trials.size()) + L" combos. Pick one to try it here.";
+        ? L"No combos for this character yet. Get some in Combo Maker."
+        : std::to_wstring(g_trials.size()) + L" combos";
   }
   // Plays the loaded combo's recording on your character, or stops it.
   void watchTrial() {
-    if (combo_trials::watching()) { combo_trials::stopWatching(); g_trials_status = L"Stopped watching, it's your turn."; return; }
+    if (combo_trials::watching()) { combo_trials::stopWatching(); g_trials_status = L"Your turn."; return; }
     if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
-    if (!combo_trials::active()) { g_trials_status = L"Load a combo first (Try)."; return; }
+    if (!combo_trials::active()) { g_trials_status = L"Load a combo first."; return; }
     g_trials_status = combo_trials::watch()
-        ? L"Watching: your character does the combo as its maker did. Your pad takes over when it ends."
+        ? L"Watching. You take over when it ends."
         : L"This combo has no recording to watch.";
   }
   // Training on the loaded combo's battle version, from the next time training loads.
   void practiceOnItsVersion() {
     const int v = combo_trials::trialVersion();
-    if (!v) { g_trials_status = L"Load a combo first (Try)."; return; }
+    if (!v) { g_trials_status = L"Load a combo first."; return; }
     const int pick = v >= kNewestVersion ? 0 : v;
     // Only versions both characters were in (the dummy may be newer than the combo).
     const int oldest = combo_trials::oldestVersion();
     if (pick && (oldest <= 0 || pick < oldest)) {
-      g_trials_status = L"Your dummy's character wasn't in the game on " + versionName(v) + L". Pick another dummy to practice on it.";
+      g_trials_status = L"The dummy's character isn't in " + versionName(v) + L". Pick another.";
       return;
     }
     g_trials_version = pick;
     combo_trials::setTrainingVersion(pick);
     g_trials_status = pick
-        ? L"Battle version set to " + versionName(v) + L". It applies when training loads again (Character Select and back), then Try the combo again."
-        : L"This combo is on the current version already.";
+        ? L"Set to " + versionName(v) + L". Reload training, then Try again."
+        : L"Already on the current version.";
   }
   // The page's rows in order: the loaded combo's actions (always there, so the rows never
   // move under the mouse or a held key), the two version pickers, then the combos.
@@ -643,7 +643,7 @@ namespace {
     if (i >= g_trials.size()) return;
     if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
     const std::wstring err = combo_trials::load(g_trials[i]);
-    g_trials_status = err.empty() ? L"Loaded with its start settings. Do the combo: each move lights up as it lands." : err;
+    g_trials_status = err.empty() ? L"Combo loaded." : err;
   }
   // A combo's battle version counts the game's versions in order from 1: 1.00..1.09,
   // 2.00..2.06, 3.00..3.07, 4.00..4.09, 5.00..5.03 (35 is 4.09, 39 is 5.03; both seen
@@ -707,8 +707,12 @@ namespace {
     if (g_browse_open.exchange(true)) return;  // already open
     g_browse_font = font;
     const std::wstring dir = (font ? fontsDir() : Settings::recordingsDir()).wstring();
-    HWND owner = GetForegroundWindow();
-    std::thread([dir, owner, font] {
+    std::thread([dir, font] {
+      // Give it its own invisible, always-on-top owner window. The picker then opens in front of a fullscreen game, and
+      // the game's window isn't the owner (a modal picker disables its owner, so the game would get no input until it
+      // closes).
+      HWND owner = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+      if (owner) SetForegroundWindow(owner);
       wchar_t file[MAX_PATH] = L"";
       OPENFILENAMEW ofn{};
       ofn.lStructSize = sizeof(ofn);
@@ -724,6 +728,7 @@ namespace {
         std::lock_guard<std::mutex> lock(g_browse_mutex);
         g_browse_pick = file;
       }
+      if (owner) DestroyWindow(owner);
       g_browse_open = false;
     }).detach();
   }
@@ -794,7 +799,7 @@ namespace {
     const std::wstring name = path.filename().wstring();
     std::wstring err;
     if (!recordings::exportSlot(g_rec_slot, path, err)) { g_rec_status = err; return; }
-    g_rec_status = L"saved " + name;
+    g_rec_status = L"Saved " + name;
     refreshRecordingFiles();
   }
 
@@ -811,6 +816,12 @@ namespace {
   std::wstring secondsText(uint32_t frames) {
     wchar_t buf[32];
     swprintf_s(buf, L"%.1f s", frames / 60.0);
+    return buf;
+  }
+  // A running stream or capture: "Stop . 1.2 / 40 s" (a middle dot).
+  std::string stopLabel(size_t frames, size_t total) {
+    char buf[48];
+    snprintf(buf, sizeof(buf), "Stop \xC2\xB7 %.1f / %.*f s", frames / 60.0, total % 60 ? 1 : 0, total / 60.0);
     return buf;
   }
 
@@ -832,37 +843,34 @@ namespace {
     refreshRecordingFiles();
     for (size_t i = 0; i < g_rec_files.size(); i++)
       if (g_rec_files[i].filename() == path.filename()) { g_rec_file_idx = i; break; }
-    g_rec_status = L"Saved " + path.filename().wstring() + L" (" + secondsText(static_cast<uint32_t>(frames.size())) +
-                   L"). Load it into a slot above.";
+    g_rec_status = L"Saved " + path.filename().wstring() + L" (" + secondsText(static_cast<uint32_t>(frames.size())) + L").";
   }
 
   void toggleCapture() {
     if (ReplayManager::instance().captureActive()) { finishCapture(); return; }
     std::wstring err;
     if (!ReplayManager::instance().startCapture(g_cap_side, err)) { g_rec_status = err; return; }
-    g_rec_status = std::wstring(L"Capturing ") + (g_cap_side == 0 ? L"P1" : L"P2") +
-                   L". Press again to stop, or it stops at 40 s.";
+    g_rec_status = std::wstring(L"Capturing ") + (g_cap_side == 0 ? L"P1" : L"P2") + L" (40 s max)";
   }
 
   void streamSelectedRecording() {
     if (recordings::streamActive() || recordings::streamArmed()) {
       recordings::streamStop();
-      g_rec_status = L"stream stopped";
+      g_rec_status = L"Stream stopped";
       return;
     }
-    if (g_rec_files.empty()) { g_rec_status = L"no .txt files found"; return; }
+    if (g_rec_files.empty()) { g_rec_status = L"No recordings found"; return; }
     auto parsed = recordings::parseFile(g_rec_files[g_rec_file_idx], g_rec_side);
     if (!parsed.ok()) { g_rec_status = parsed.error; return; }
-    const size_t n = parsed.frames.size();
     recordings::streamArm(std::move(parsed.frames));
-    g_rec_status = L"armed " + std::to_wstring(n) + L"f - starts on round call";
+    g_rec_status = L"Ready, starts with the round";
   }
 
   void loadSelectedRecording() {
     char dbg[512];
     if (g_rec_files.empty()) {
       COMBO_LOG("LOAD: no .txt files");
-      g_rec_status = L"no .txt files found"; return;
+      g_rec_status = L"No recordings found"; return;
     }
     const auto& path = g_rec_files[g_rec_file_idx];
     snprintf(dbg, sizeof(dbg), "LOAD: file=%s slot=%d side=%d slots=%llx",
@@ -890,8 +898,7 @@ namespace {
       g_rec_status = err;
       return;
     }
-    g_rec_status = L"loaded " + std::to_wstring(parsed.frames.size()) +
-                   L"f into slot " + std::to_wstring(g_rec_slot + 1);
+    g_rec_status = L"Loaded into slot " + std::to_wstring(g_rec_slot + 1);
   }
 
   struct RootPageDef {
@@ -1025,7 +1032,7 @@ namespace {
     if (&setting == &Settings::REWIND_DELAY_SECONDS || &setting == &Settings::REPLAY_ASSIST_SECONDS) {
       if (setting.value <= 0) return L"Off";
       wchar_t buf[16]{};
-      swprintf_s(buf, L"%.1f", setting.value);
+      swprintf_s(buf, L"%.1f s", setting.value);
       return buf;
     }
     return formatMenuFloat(setting.value);
@@ -1103,35 +1110,35 @@ namespace {
     using namespace Settings;
     if (page == MenuPage::FrameBar) {
       std::vector<SettingsRowDef> rows = {
-        {L"Settings", L"Frame Bar", &FRAMEBAR},
-        {L"", L"Show Dash", &SHOW_DASH_FRAMES},
-        {L"", L"Show Crossup", &CROSSUP_ENABLED},
+        {L"", L"Show", &FRAMEBAR},
+        {L"", L"Dash frames", &SHOW_DASH_FRAMES},
+        {L"", L"Crossups", &CROSSUP_ENABLED},
         {L"", L"Rows", &BAR_ROWS},
-        {L"", L"Fold stretches longer than", &BAR_FOLD_AFTER},
-        {L"", L"Last frames of long stretches", &BAR_UNFOLD},
+        {L"", L"Fold after", &BAR_FOLD_AFTER},
+        {L"", L"Unfold last frames", &BAR_UNFOLD},
         {L"Appearance", L"Color scheme", &COLOR_SCHEME},
         {L"", L"Fade effect", &FADE},
-        {L"", L"Delimit segments", &DELIM},
+        {L"", L"Segment borders", &DELIM},
       };
       if (imgui_overlay::running()) {
-        rows.insert(rows.begin() + 5, {SettingsRowDef{L"", L"Folded compact mode", &BAR_COMPACT},  // drawn by the overlay only
-                                       SettingsRowDef{L"", L"Long stretches as", &BAR_BLOCKS},
-                                       SettingsRowDef{L"", L"Mark frame perfect moves", &BAR_PERFECT},
-                                       SettingsRowDef{L"", L"Show where moves hit", &BAR_HITS},
-                                       SettingsRowDef{L"", L"Show gaps between stuns", &BAR_GAPS},
-                                       SettingsRowDef{L"", L"Count down stun and recovery", &BAR_COUNTDOWN},
+        rows.insert(rows.begin() + 5, {SettingsRowDef{L"", L"Compact", &BAR_COMPACT},  // drawn by the overlay only
+                                       SettingsRowDef{L"", L"Long moves as", &BAR_BLOCKS},
+                                       SettingsRowDef{L"", L"Frame-perfect marks", &BAR_PERFECT},
+                                       SettingsRowDef{L"", L"Hit marks", &BAR_HITS},
+                                       SettingsRowDef{L"", L"Gap counts", &BAR_GAPS},
+                                       SettingsRowDef{L"", L"Stun countdown", &BAR_COUNTDOWN},
                                        SettingsRowDef{L"", L"Input bar", &INPUT_BAR}});
         for (size_t i = 0; i < rows.size(); i++)
           if (rows[i].setting == &BAR_UNFOLD) {
-            rows.insert(rows.begin() + i + 1, SettingsRowDef{L"", L"Last frames only on recovery", &BAR_UNFOLD_REC});
+            rows.insert(rows.begin() + i + 1, SettingsRowDef{L"", L"Unfold recovery only", &BAR_UNFOLD_REC});
             break;
           }
-        rows.push_back({L"", L"Title when menu is closed", &BAR_TITLE});
-        rows.push_back({L"", L"Background when menu is closed", &BAR_PANEL});
-        rows.push_back({L"", L"Background opacity", nullptr, &UI_BAR_BG});
+        rows.push_back({L"", L"Title", &BAR_TITLE});
+        rows.push_back({L"", L"Background", &BAR_PANEL});
+        rows.push_back({L"", L"Opacity", nullptr, &UI_BAR_BG});
       }
       if (imgui_overlay::running())
-        rows.push_back({L"", L"Frame bar size", nullptr, &UI_SCALE_BAR});
+        rows.push_back({L"", L"Size", nullptr, &UI_SCALE_BAR});
       else {
         rows.push_back({L"", L"X position (screen ratio)", nullptr, &BAR_CENTER_X_RATIO});
         rows.push_back({L"", L"Y position (screen ratio)", nullptr, &BAR_CENTER_Y_RATIO});
@@ -1141,20 +1148,19 @@ namespace {
     if (page == MenuPage::Hitboxes)
       return {{L"", L"Hitboxes", &HITBOXES}};
     if (page == MenuPage::TimingInput) {
-      std::vector<SettingsRowDef> rows = {{L"", PAUSE_TYPE.display.title, &PAUSE_TYPE},
-                                          {L"", DELAY_AMOUNT.display.title, &DELAY_AMOUNT}};
+      std::vector<SettingsRowDef> rows = {{L"", L"Input delay", &DELAY_AMOUNT}};
       if (imgui_overlay::running()) {
-        rows.push_back({L"Battle version", L"Show battle version", &VERSION_SHOWN});
-        rows.push_back({L"", L"Title when menu is closed", &VERSION_TITLE});
-        rows.push_back({L"", L"Background when menu is closed", &VERSION_BG});
-        rows.push_back({L"", L"Background opacity", nullptr, &UI_VERSION_BG});
+        rows.push_back({L"Battle version", L"Show", &VERSION_SHOWN});
+        rows.push_back({L"", L"Title", &VERSION_TITLE});
+        rows.push_back({L"", L"Background", &VERSION_BG});
+        rows.push_back({L"", L"Opacity", nullptr, &UI_VERSION_BG});
       }
       return rows;
     }
     if (page == MenuPage::Tension) {
       std::vector<SettingsRowDef> rows = {
-        {L"Settings", L"Meters overlay", &TENSION_ENABLED},
-        {L"", L"Tension now", &TENSION_CURRENT},
+        {L"", L"Show", &TENSION_ENABLED},
+        {L"", L"Tension", &TENSION_CURRENT},
         {L"", L"Tension gain", &TENSION_GAIN},
         {L"", L"Tension advantage", &TENSION_ADVANTAGE},
         {L"", L"Tension advantage change", &TENSION_ADV_CHANGE},
@@ -1163,20 +1169,20 @@ namespace {
         {L"", L"Burst", &TENSION_BURST},
         {L"", L"Wall damage", &WALL_DAMAGE},
         {L"Appearance", L"Meters windows", &METERS_SPLIT},
-        {L"", L"Overlay side", &TENSION_SIDE},
-        {L"", L"Meters position", &METERS_SNAP},
+        {L"", L"Side", &TENSION_SIDE},
+        {L"", L"Position", &METERS_SNAP},
         {L"", L"Decimal places", &METERS_DECIMALS},
       };
       if (imgui_overlay::running()) {
-        rows.push_back({L"", L"Meters size", nullptr, &UI_SCALE_METERS});
-        rows.push_back({L"", L"Title when menu is closed", &METERS_TITLE});
-        rows.push_back({L"", L"Background when menu is closed", &METERS_PANEL});
-        rows.push_back({L"", L"Background opacity", nullptr, &UI_OVERLAY_BG});
-        rows.push_back({L"Damage panel (training)", L"Damage panel", &DAMAGE_PANEL});
-        rows.push_back({L"", L"Hide the game's damage panel", &DAMAGE_HIDE_GAME});
-        rows.push_back({L"", L"Damage panel position", &DAMAGE_AT_GAME});
-        rows.push_back({L"", L"Title when menu is closed", &DAMAGE_TITLE});
-        rows.push_back({L"", L"Background when menu is closed", &DAMAGE_BG});
+        rows.push_back({L"", L"Size", nullptr, &UI_SCALE_METERS});
+        rows.push_back({L"", L"Title", &METERS_TITLE});
+        rows.push_back({L"", L"Background", &METERS_PANEL});
+        rows.push_back({L"", L"Opacity", nullptr, &UI_OVERLAY_BG});
+        rows.push_back({L"Damage panel", L"Show", &DAMAGE_PANEL});
+        rows.push_back({L"", L"Hide game's panel", &DAMAGE_HIDE_GAME});
+        rows.push_back({L"", L"Position", &DAMAGE_AT_GAME});
+        rows.push_back({L"", L"Title", &DAMAGE_TITLE});
+        rows.push_back({L"", L"Background", &DAMAGE_BG});
       }
       return rows;
     }
@@ -1196,17 +1202,17 @@ namespace {
         for (int action = 0; action < binds::COUNT; action++)
           if (!isTakeoverHotkey(action)) hotkey(action);
       } else {
-        rows.push_back({L"Rewind", L"Playback delay (seconds)", nullptr, &REWIND_DELAY_SECONDS});
-        rows.push_back({L"", L"Replay Assist (seconds)", nullptr, &REPLAY_ASSIST_SECONDS});
+        rows.push_back({L"Rewind", L"Playback delay", nullptr, &REWIND_DELAY_SECONDS});
+        rows.push_back({L"", L"Replay assist", nullptr, &REPLAY_ASSIST_SECONDS});
         if (imgui_overlay::running()) {
           rows.push_back({L"", L"Status line", &STATUS_LINE});
-          rows.push_back({L"", L"Status line background", nullptr, &STATUS_BG_OPACITY});
-          rows.push_back({L"", L"Status line text size", nullptr, &STATUS_TEXT_SIZE});
+          rows.push_back({L"", L"Status opacity", nullptr, &STATUS_BG_OPACITY});
+          rows.push_back({L"", L"Status text size", nullptr, &STATUS_TEXT_SIZE});
         }
         const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
         rows[hotkeysBegin].section = L"Hotkeys";
-        rows.push_back({L"Replay takeover", L"Use these buttons in takeover", nullptr, nullptr, SettingsAction::TakeoverToggle});
+        rows.push_back({L"Takeover buttons", L"Use custom buttons", nullptr, nullptr, SettingsAction::TakeoverToggle});
         for (int action = 0; action < binds::G_COUNT; action++) {
           SettingsRowDef row; row.label = binds::G_LABELS[action]; row.capture = binds::GAME_BASE + action;
           rows.push_back(row);
@@ -1219,11 +1225,11 @@ namespace {
         {L"Style", L"Accent color", &UI_ACCENT},
         {L"", L"Custom color", nullptr, nullptr, SettingsAction::PickColor},
         {L"", L"Panel opacity", nullptr, &UI_OPACITY},
-        {L"Font", L"Meters and frame bar font", nullptr, nullptr, SettingsAction::PickFont},
-        {L"", L"Back to Barlow", nullptr, nullptr, SettingsAction::ResetFont},
+        {L"Font", L"Overlay font", nullptr, nullptr, SettingsAction::PickFont},
+        {L"", L"Reset font", nullptr, nullptr, SettingsAction::ResetFont},
         {L"Windows", L"Menu size", nullptr, &UI_SCALE},
-        {L"", L"Hide decorations when menu is closed", &UI_HIDE_WINDOW_DECORATIONS},
-        {L"", L"Reset all window positions", nullptr, nullptr, SettingsAction::ResetWindows},
+        {L"", L"Hide window frames", &UI_HIDE_WINDOW_DECORATIONS},
+        {L"", L"Reset window positions", nullptr, nullptr, SettingsAction::ResetWindows},
       };
     return {};
   }
@@ -1526,7 +1532,7 @@ void ModMenu::updateInner(PressedKeys data) {
       if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
       if (!combo_trials::active()) { g_trials_status = L"No combo is loaded."; return; }
       combo_trials::stop();
-      g_trials_status = L"Trial stopped, your training settings are back.";
+      g_trials_status = L"Trial stopped.";
     } else if (was.kind == TrialRow::Watch) watchTrial();
     else if (was.kind == TrialRow::Practice) practiceOnItsVersion();
     else loadTrial(was.combo);
@@ -2171,6 +2177,11 @@ void ModMenu::buildView() {
   if (isSettingsPage(shown)) {
     for (const auto& def : settingsRowsForPage(shown)) {
       MenuRowView r; r.label = clean(def.label); r.section = utf8(def.section);
+      if (const auto* s = def.setting) {  // the windows' own title / background rows
+        const std::string& id = s->id_;
+        if ((id.size() > 6 && id.compare(id.size() - 6, 6, "_title") == 0) || (id.size() > 11 && id.compare(id.size() - 11, 11, "_background") == 0))
+          r.tip = "When the menu is closed";
+      }
       if (def.capture >= 0) {
         const bool game = def.capture >= binds::GAME_BASE;
         const int id = game ? def.capture - binds::GAME_BASE : def.capture;
@@ -2202,43 +2213,42 @@ void ModMenu::buildView() {
       out.push_back(std::move(r));
     }
   } else if (shown == MenuPage::Recordings) {
-    const std::wstring slot_no = std::to_wstring(g_rec_slot + 1);
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Slot";
       for (int i = 1; i <= recordings::kSlotCount; i++) r.choices.push_back(std::to_string(i));
       r.choice = g_rec_slot; r.value = utf8(recordings::describeSlot(g_rec_slot)); out.push_back(r); }
-    row(MenuRowView::Kind::Action, utf8(L"Save slot " + slot_no + L" to a file"), "Save");
-    row(MenuRowView::Kind::Number, "File", g_rec_files.empty() ? "no .txt files" : utf8(fitValue(g_rec_files[g_rec_file_idx].stem().wstring(), 40)));
-    row(MenuRowView::Kind::Action, "Browse for a file", "Browse");
+    row(MenuRowView::Kind::Action, "Save to file", "Save");
+    row(MenuRowView::Kind::Number, "File", g_rec_files.empty() ? "No recordings" : utf8(fitValue(g_rec_files[g_rec_file_idx].stem().wstring(), 40)));
+    row(MenuRowView::Kind::Action, "Browse", "Browse");
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Player side";
-      r.choices = {"1P", "2P"}; r.choice = g_rec_side == recordings::kDirLeft ? 1 : 0; out.push_back(r); }
-    row(MenuRowView::Kind::Action, utf8(L"Load file into slot " + slot_no), "Load");
+      r.choices = {"P1", "P2"}; r.choice = g_rec_side == recordings::kDirLeft ? 1 : 0; out.push_back(r); }
+    row(MenuRowView::Kind::Action, "Load into slot", "Load");
     row(MenuRowView::Kind::Action, "Stream to dummy",
         (recordings::streamActive() || recordings::streamArmed())
-          ? "Stop (" + std::to_string(recordings::streamPos()) + "/" + std::to_string(recordings::streamLen()) + ")" : "Start");
+          ? stopLabel(recordings::streamPos(), recordings::streamLen()) : "Start");
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Capture side";
       r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
     row(MenuRowView::Kind::Action, "Capture from replay",
-        ReplayManager::instance().captureActive() ? utf8(L"Stop (" + secondsText(ReplayManager::instance().captureFrames()) + L" / 40 s)") : std::string("Start"));
+        ReplayManager::instance().captureActive() ? stopLabel(ReplayManager::instance().captureFrames(), 2400) : std::string("Start"));
     status = utf8(g_rec_status);
   } else if (shown == MenuPage::ComboTrials) {
     int last_version = -1;
     for (const TrialRowRef& t : trialRows()) {
       switch (t.kind) {
         case TrialRow::Stop:
-          row(MenuRowView::Kind::Action, "Stop it (your training settings come back)", "Stop");
-          out.back().section = combo_trials::active() ? "Now: " + utf8(combo_trials::trialName()) : std::string("Now: no combo loaded");
+          row(MenuRowView::Kind::Action, "Stop trial", "Stop");
+          out.back().section = combo_trials::active() ? utf8(combo_trials::trialName()) : std::string("No combo loaded");
           break;
         case TrialRow::Watch:
-          row(MenuRowView::Kind::Action, "Watch it: the combo plays on your character", combo_trials::watching() ? "Stop" : "Watch");
+          row(MenuRowView::Kind::Action, "Watch demo", combo_trials::watching() ? "Stop" : "Watch");
           break;
         case TrialRow::Practice: {
           const int v = combo_trials::trialVersion();
-          row(MenuRowView::Kind::Action, v > 0 && v < kNewestVersion ? "Practice it on " + utf8(versionName(v)) + " (next time training loads)"
-                                                                      : std::string("Practice it on its version"), "Set");
+          row(MenuRowView::Kind::Action, v > 0 && v < kNewestVersion ? "Use " + utf8(versionName(v)) : std::string("Use its version"), "Set");
+          out.back().tip = "Applies next time training loads";
           break;
         }
         case TrialRow::Version: {
-          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Battle version (next time training loads)"; r.section = "Versions";
+          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Battle version"; r.section = "Versions"; r.tip = "Applies next time training loads";
           int sel = 0;
           for (size_t k = 0; k < g_version_choices.size(); k++) {
             r.choices.push_back(k == 0 ? std::string("Current") : utf8(versionName(g_version_choices[k])));
@@ -2248,7 +2258,7 @@ void ModMenu::buildView() {
           break;
         }
         case TrialRow::Online: {
-          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Online version (Park and rooms, same as your opponent)";
+          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Online version"; r.tip = "Park and rooms, same as your opponent";
           const auto c = onlineChoices();
           for (size_t k = 0; k < c.size(); k++) {
             r.choices.push_back(k == 0 ? std::string("Off") : utf8(versionName(c[k])));
@@ -2271,10 +2281,10 @@ void ModMenu::buildView() {
     }
     status = utf8(g_trials_status);
   } else if (shown == MenuPage::ComboSearch && g_detail >= 0 && g_detail < static_cast<int>(combo_online::results().size())) {
-    row(MenuRowView::Kind::Action, "Back to the results", "Back");
-    row(MenuRowView::Kind::Action, "Try it in training (not kept)", combo_online::busy() ? "Waiting..." : "Try");
-    row(MenuRowView::Kind::Action, "Keep it (download to Combo Trials)", combo_online::busy() ? "Waiting..." : "Keep");
-    row(MenuRowView::Kind::Action, "Other combos from this player", "Search");
+    row(MenuRowView::Kind::Action, "Back", "Back");
+    row(MenuRowView::Kind::Action, "Try", combo_online::busy() ? "Waiting..." : "Try");
+    row(MenuRowView::Kind::Action, "Save to Combo Trials", combo_online::busy() ? "Waiting..." : "Keep");
+    row(MenuRowView::Kind::Action, "More by this player", "Search");
     {
       const auto& r = combo_online::results()[static_cast<size_t>(g_detail)];
       const auto lines = detailLines(r);
@@ -2290,7 +2300,7 @@ void ModMenu::buildView() {
     }
     status = utf8(g_search_status);
   } else if (shown == MenuPage::ComboSearch) {
-    row(MenuRowView::Kind::Action, "Combo Maker online, for your character", combo_online::busy() ? "Waiting..." : "Search");
+    row(MenuRowView::Kind::Action, "Search Combo Maker", combo_online::busy() ? "Waiting..." : "Search");
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Sort by";
       r.choices = {"Downloads", "Likes", "Newest", "Clear rate"}; r.choice = g_online_sort; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Page";
@@ -2303,7 +2313,7 @@ void ModMenu::buildView() {
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Version";
       r.choices = {"Any", "Current only"}; r.choice = g_online_ver; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Position";
-      r.choices = {"Any", "Corner", "Outside of corner"}; r.choice = g_online_pos; out.push_back(r); }
+      r.choices = {"Any", "Corner", "Midscreen"}; r.choice = g_online_pos; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Gauge";
       r.choices = {"Any", "0%", "50%", "100%"}; r.choice = g_online_gauge; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Creator";
@@ -2335,8 +2345,7 @@ void ModMenu::buildView() {
   if (shown == MenuPage::Tension && Settings::DAMAGE_PANEL.value != 0 && v.status.empty()) {
     const uintptr_t root = combo_trials::saveRoot();
     if (root && *reinterpret_cast<const int32_t*>(root + 0x282D4 + 87 * 4) == 0)
-      v.status = "Note: Total Action, Attack Startup and the other frame rows need the game's own frame data on "
-                 "(Training > Display Settings).";
+      v.status = "Frame rows need the game's Frame Data display on.";
   }
   v.page = static_cast<int>(shown);
   v.tension_page = shown == MenuPage::Tension;

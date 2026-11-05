@@ -9,11 +9,11 @@ namespace binds {
   const char* const NAMES[COUNT] = {"framebar", "hitboxes", "pause", "advance", "menu", "save",
                                     "takeover_1p", "takeover_2p", "load", "up", "down", "left", "right",
                                     "training_record", "training_playback", "training_reset", "online_version"};
-  const wchar_t* const LABELS[COUNT] = {L"Toggle Frame Bar", L"Toggle Hitboxes", L"Pause", L"Advance Frame",
-                                        L"Toggle Menu", L"Rewind Point + Takeover", L"Takeover 1P", L"Takeover 2P",
+  const wchar_t* const LABELS[COUNT] = {L"Frame bar", L"Hitboxes", L"Pause", L"Advance Frame",
+                                        L"Menu", L"Rewind point & takeover", L"Takeover 1P", L"Takeover 2P",
                                         L"Rewind", L"Menu Up", L"Menu Down", L"Menu Left", L"Menu Right",
-                                        L"Training Record", L"Training Playback", L"Training Reset Position",
-                                        L"Online Version Window"};
+                                        L"Record dummy", L"Play dummy", L"Reset position",
+                                        L"Online window"};
   int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0,
                     BindWatcherI::KEY_CTRL | 'O'};
   unsigned short pad[COUNT] = {0, 0, 0, 0, XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START, 0, 0, 0, 0,
@@ -37,10 +37,13 @@ namespace binds {
   static bool dirty = false;
 
   unsigned short heldPadMask() {
+    static ULONGLONG retry_at[4] = {};  // An empty slot is polled again only every 1.5 s, connected pads every tick
+    const ULONGLONG now = GetTickCount64();
     unsigned short m = 0;
     for (DWORD i = 0; i < 4; i++) {
+      if (now < retry_at[i]) continue;
       XINPUT_STATE st{};
-      if (XInputGetState(i, &st) != ERROR_SUCCESS) continue;
+      if (XInputGetState(i, &st) != ERROR_SUCCESS) { retry_at[i] = now + 1500; continue; }
       const auto& g = st.Gamepad;
       m |= g.wButtons & ~(PAD_LT | PAD_RT);
       if (g.bLeftTrigger  > 100) m |= PAD_LT;

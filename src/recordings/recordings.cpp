@@ -183,9 +183,12 @@ MemorySlot* findSlots() {
 
   if (!s_static && !s_tried) {
     s_tried = true;
-    const uintptr_t hit = sigscan::get().scan(
-        "\x48\x8B\x05\x00\x00\x00\x00\x48\x05\xD4\x84\x02\x00",
-        "xxx????xxxxxx");
+    uintptr_t hit = 0;
+    try {  // the scan throws on a miss, so a pattern lost to a patch means no slots, not a crash
+      hit = sigscan::get().scan(
+          "\x48\x8B\x05\x00\x00\x00\x00\x48\x05\xD4\x84\x02\x00",
+          "xxx????xxxxxx");
+    } catch (...) {}
     if (hit) {
       const int32_t disp = *reinterpret_cast<const int32_t*>(hit + 3);
       s_static = reinterpret_cast<uintptr_t*>(hit + 7 + disp);
@@ -442,8 +445,8 @@ std::wstring describeSlot(int slot_index) {
   if (!slots) return L"slots not found";
   const MemorySlot& slot = slots[slot_index];
   if (slot.max_time <= 4) return L"empty";
-  return std::to_wstring(slot.max_time) + L"f  " +
-         (slot.direction == kDirLeft ? L"2P" : L"1P");
+  return std::to_wstring(slot.max_time) + L" frames \u00B7 " +
+         (slot.direction == kDirLeft ? L"P2" : L"P1");
 }
 
 // ---- live stream -----------------------------------------------------------

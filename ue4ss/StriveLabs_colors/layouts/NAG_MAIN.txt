@@ -1,0 +1,45 @@
+
+@ 1653 1532 Inside of Coat
+@ 866 1331 inside of coat right arm
+@ 687 1123 coat and coat trim
+@ 1388 1021 coat inside
+@ 1620 1005 coat inside
+@ 1954 1080 strap
+@ 1876 985 edge of shoulder decal
+@ 1706 373 back decal
+@ 1578 774 coat outer buckles
+@ 1401 730 Shoulder Studs
+@ 1236 595 Coat center trim
+@ 838 789 Strap
+@ 1149 453 Eyeliner
+@ 1147 395 Eyebrows
+@ 93 937 Chest
+@ 166 148 Face
+@ 86 775 Neck
+@ 386 497 lips
+@ 976 138 Inside Mouth
+@ 1405 375 Chest Ribbon
+@ 1743 264 Hair Tie
+@ 1850 241 Shaved under dreads
+@ 1963 241 Temple
+@ 1807 60 Dreads
+@ 118 1804 pants
+@ 520 1774 shoe strap
+@ 511 1889 shoe top
+@ 679 1983 shoe sole
+@ 774 1902 socks
+@ 824 1813 nails
+@ 592 1681 hand wraps
+@ 711 1582 hand
+@ 419 1402 armband buckle
+@ 544 1425 armband bottom and outside
+@ 921 1670 belts
+@ 1111 1641 belt
+@ 1154 1719 Sash
+@ 1042 1955 bottommost shirt layer
+@ 1573 1842 Coat from waist down
+@ 1959 1859 coat inside waist down
+@ 1694 1687 strap buckle
+@ 1884 1525 straps
+@ 1782 1144 strap buckle
+@ 945 1817 buckles and studs

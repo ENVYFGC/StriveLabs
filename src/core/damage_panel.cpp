@@ -29,6 +29,7 @@ namespace {
   };
   struct Side {
     std::vector<UObject*> widgets;  // the side's two panels (opacity, visibility)
+    std::vector<const uint8_t*> items;  // their object slots once found, kept so a reset needs no new search while they're still there
     std::vector<Row> damage, frames;  // the two panels' rows, shown in that order
     // Each part's visibility: the game collapses a part its training display has off,
     // and then leaves its placeholder numbers in it.
@@ -80,6 +81,17 @@ namespace {
     return true;
   }
 
+  // Whether the panels found are all still there: their object slots still hold them and they aren't being
+  // destroyed (4.25's Unreachable 1 << 28, PendingKill 1 << 29). If so, a reset needs no new search.
+  bool stillThere() {
+    if (!g_bound) return false;
+    for (const Side& s : g_side)
+      for (size_t i = 0; i < s.widgets.size(); i++) {
+        if (i >= s.items.size() || !s.items[i] || *reinterpret_cast<UObject* const*>(s.items[i]) != s.widgets[i]) return false;
+        if (*reinterpret_cast<const int32_t*>(s.items[i] + 8) & ((1 << 28) | (1 << 29))) return false;
+      }
+    return true;
+  }
   void bind() {
     release();
     std::vector<UObject*> found;
@@ -114,6 +126,10 @@ namespace {
     }
     g_blocks.clear();
     g_bound = !g_side[0].widgets.empty() || !g_side[1].widgets.empty();
+    for (Side& s : g_side) {
+      s.items.clear();
+      for (UObject* w : s.widgets) s.items.push_back(w ? reinterpret_cast<const uint8_t*>(w->GetObjectItem()) : nullptr);
+    }
     auto rows = [](const Side& s) {
       int n = 0;
       for (const auto* v : {&s.damage, &s.frames}) for (const Row& r : *v) n += r.label && r.value;
@@ -173,7 +189,10 @@ void update(bool round_started) {
   // Off at a reset: unbound (a new fight's widgets are found again when it's on), once the
   // game's panel was shown again below.
   if (round_started && !on && !g_hidden) g_bound = false;
-  if ((round_started && on) || (on && !g_bound && --g_retry <= 0)) { bind(); g_retry = 120; }
+  if ((round_started && on && !stillThere()) || (on && !g_bound && --g_retry <= 0)) { bind(); g_retry = 120; }  // a reset keeps the panel, so it's searched again only if it's gone
+  else if (round_started && g_bound)  // still bound, so hide the game's panel again in case the reset showed it
+    for (int side = 0; side < 2; side++)
+      if ((g_hidden >> side) & 1) setOpacity(side, 0.0f);
   if (!g_bound) return;
   // The game's panel is hidden only for the sides shown in our windows.
   const int hide = ModMenu::instance().hideGameDamagePanel() ? sides : 0;

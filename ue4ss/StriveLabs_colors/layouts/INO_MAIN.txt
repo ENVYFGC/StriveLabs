@@ -1,0 +1,16 @@
+text
+lips
+jacket_trim
+gums/teeth/tongue
+eyelashes
+tailcoat_decal
+decal
+decal_volupto_highlight
+texture_gradient
+decal_cross
+decal_volupto
+decal_notes
+jacket_logo_decal
+jacket_decal
+tailcoat_flaps_button
+blush

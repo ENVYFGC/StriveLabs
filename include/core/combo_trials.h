@@ -74,6 +74,8 @@ namespace combo_trials {
   int playerChara();          // the character being played (training), -1 if none
   bool inTraining();          // the game's mode is training (the Park's too)
   int localSide();            // our side in the fight, 0 = P1
+  bool onlineFight();         // the game's mode is the online one (Park, rooms; ranked to be confirmed)
+  int opponentChara();        // the other side's character, -1 if none
   // Game thread, every system update: any fight running (online ones too).
   void updateOnline(bool any_battle_running);
 }

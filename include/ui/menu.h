@@ -92,6 +92,7 @@ struct MenuRowView {
   std::vector<std::string> choices;  // Choice options, cleaned of the old "<  >" padding
   int choice = -1;                   // selected index for Choice
   bool capturing = false;            // Bind row waiting for an input
+  std::string tip;                   // hover tooltip, empty = none
 };
 
 // A page popped out into its own ImGui window.

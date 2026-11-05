@@ -1,0 +1,6 @@
+text
+decal_stripe
+decal_rattle
+decal_seal
+decal_text
+decal_latch

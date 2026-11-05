@@ -1,0 +1,1748 @@
+ABA	moroha_main	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind01	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind02	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind03	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind04	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind05	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind06	ABA SP 6 Moroha
+ABA	moroha_shadow	ABA SP 2
+ABA	@aba_shousei	ABA SP 2
+ABA	blood	ABA ULT 1, ABA ULT 1 Moroha, ABA ULT 1 exe, Nml Atk 2C Moroha, Nml Atk 5CFar Moroha, Nml Atk 5D Moroha, Nml Atk Air 5D Moroha, Nml Atk Air 5E Moroha, and 1 more
+ABA	@aba_273_bake01	Nml Atk 5CFar Moroha
+ABA	@aba_273_bake02	Nml Atk 5CFar Moroha
+ABA	@aba_273_bake03	Nml Atk 5CFar Moroha
+ABA	@aba_274_bake02	Nml Atk 5D Moroha
+ABA	@aba_274_bake03	Nml Atk 5D Moroha
+ABA	@aba_274_bake04	Nml Atk 5D Moroha
+ABA	@aba_274_bake05	Nml Atk 5D Moroha
+ABA	@aba_282_bake01	Nml Atk 2C Moroha
+ABA	@aba_282_bake02	Nml Atk 2C Moroha
+ABA	@aba_282_bake03	Nml Atk 2C Moroha
+ABA	@aba_293_bake01	Nml Atk Air 5D Moroha
+ABA	@aba_293_bake02	Nml Atk Air 5D Moroha
+ABA	@aba_293_bake03	Nml Atk Air 5D Moroha
+ABA	@aba_293_bake04	Nml Atk Air 5D Moroha
+ABA	@aba_293_bake05	Nml Atk Air 5D Moroha
+ABA	@aba_294_bake_blood01	Nml Atk Air 5E Moroha
+ABA	@aba_294_bake_blood02	Nml Atk Air 5E Moroha
+ABA	@aba_294_bake_blood03	Nml Atk Air 5E Moroha
+ABA	@aba_500_bake01	ABA ULT 1 Moroha, ABA ULT 1 exe
+ABA	@aba_500_bake02	ABA ULT 1, ABA ULT 1 Moroha, ABA ULT 1 exe
+ABA	@aba_500_bake03	ABA ULT 1, ABA ULT 1 Moroha, ABA ULT 1 exe
+ABA	@aba_500_bake04	ABA ULT 1
+ABA	@aba_252_bake01	j.S
+ABA	@aba_252_bake02	j.S
+ABA	@aba_252_bake03	j.S
+ABA	@aba_252_bake04	j.S
+ABA	@aba_252_bake05	j.S
+ABA	pra_main	ABA SP 6
+ABA	@aba_403_wind01	ABA SP 6
+ABA	@aba_403_wind02	ABA SP 6
+ABA	@aba_403_wind03	ABA SP 6
+ABA	@aba_403_wind04	ABA SP 6
+ABA	@aba_403_wind05	ABA SP 6
+ABA	@aba_403_wind06	ABA SP 6
+ABA	pra_bandage	ABA SP 6, ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind01	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind02	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind03	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind04	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind05	ABA SP 6 Moroha
+ABA	@aba_403_moroha_wind06	ABA SP 6 Moroha
+ABA	@aba_403_wind01	ABA SP 6
+ABA	@aba_403_wind02	ABA SP 6
+ABA	@aba_403_wind03	ABA SP 6
+ABA	@aba_403_wind04	ABA SP 6
+ABA	@aba_403_wind05	ABA SP 6
+ABA	@aba_403_wind06	ABA SP 6
+ABS	abs_suit1	5D, 6H, ABS ULT 01, Counter Blitz, Homing Jump
+ABS	@abs_205_body01	5D, Counter Blitz
+ABS	@abs_205_body02	5D, Counter Blitz
+ABS	@abs_205_body03	5D, Counter Blitz, Homing Jump
+ABS	@abs_205_body04	5D, Counter Blitz, Homing Jump
+ABS	@abs_205_body05	5D, Counter Blitz, Homing Jump
+ABS	@abs_205_tornado_base	5D, Counter Blitz
+ABS	@abs_213_body	6H
+ABS	@abs_500_punch01	ABS ULT 01
+ABS	@abs_500_punch02	ABS ULT 01
+ABS	@abs_500_punch03	ABS ULT 01
+ABS	@abs_500_punch04	ABS ULT 01
+ABS	@abs_500cs_yabure_Afro	ABS ULT 01
+ABS	abs_suit2	6H
+ABS	@abs_213_body	6H
+ABS	abs_cloak	5D, 6H, ABS ULT 01, Counter Blitz, Homing Jump
+ABS	@abs_205_body03	5D, Counter Blitz, Homing Jump
+ABS	@abs_205_body05	5D, Counter Blitz, Homing Jump
+ABS	@abs_213_body	6H
+ABS	@abs_500cs_yabure_Afro	ABS ULT 01
+ABS	abs_hair	6H
+ABS	@abs_213_body	6H
+ABS	abs_hammer	6H
+ABS	@abs_213_body	6H
+ABS	abs_wep_saya	6H
+ABS	@abs_213_body	6H
+ABS	abs_body	ABS ULT 01
+ABS	@abs_500_punch01	ABS ULT 01
+ABS	@abs_500_punch02	ABS ULT 01
+ABS	@abs_500_punch03	ABS ULT 01
+ABS	@abs_500_punch04	ABS ULT 01
+ANJ	ANJ_Kanji	2H, 2S, 5D, 5H, 6H, 6P, Air Throw Exe, Burst, and 14 more
+ANJ	@anj_070_kanji01	Jitabata Loop
+ANJ	@anj_070_kanji02	Jitabata Loop
+ANJ	@anj_070_kanji03	Jitabata Loop
+ANJ	@anj_070_kanji04	Jitabata Loop
+ANJ	@anj_070_kanji05	Jitabata Loop
+ANJ	@anj_070_kanji06	Jitabata Loop
+ANJ	@anj_070_kanji07	Jitabata Loop
+ANJ	@anj_070_kanji08	Jitabata Loop
+ANJ	@anj_202_kanji01	c.S
+ANJ	@anj_202_kanji02	c.S
+ANJ	@anj_203_bake01	f.S
+ANJ	@anj_203_bake02	f.S
+ANJ	@anj_203_bake03	f.S
+ANJ	@anj_204_bake01	5H
+ANJ	@anj_204_bake02	5H
+ANJ	@anj_204_bake03	5H
+ANJ	@anj_205_kanji01	5D
+ANJ	@anj_205_kanji02	5D
+ANJ	@anj_205_kanji03	5D
+ANJ	@anj_205_kanji04	5D
+ANJ	@anj_210_bake01_re01	6P
+ANJ	@anj_210_bake02_re01	6P
+ANJ	@anj_210_bake03_re01	6P
+ANJ	@anj_213_bake01	6H
+ANJ	@anj_213_bake02	6H
+ANJ	@anj_213_bake03	6H
+ANJ	@anj_213_bake04	6H
+ANJ	@anj_213_bake05	6H
+ANJ	@anj_213_bake06	6H
+ANJ	@anj_232_bake01	2S
+ANJ	@anj_232_bake02	2S
+ANJ	@anj_232_bake03	2S
+ANJ	@anj_232_bake04	2S
+ANJ	@anj_233_bake01	2H, Counter Blitz
+ANJ	@anj_233_bake02	2H, Counter Blitz
+ANJ	@anj_233_bake03	2H, Counter Blitz
+ANJ	@anj_252_bake01	j.S
+ANJ	@anj_252_bake02	j.S
+ANJ	@anj_252_bake03	j.S
+ANJ	@anj_253_bake01	j.H
+ANJ	@anj_253_bake02	j.H
+ANJ	@anj_253_bake03	j.H
+ANJ	@anj_253_bake04	j.H
+ANJ	@anj_320_kanji01	Air Throw Exe
+ANJ	@anj_320_kanji02	Air Throw Exe
+ANJ	@anj_320_kanji03	Air Throw Exe
+ANJ	@anj_320_kanji04	Air Throw Exe
+ANJ	@anj_320_kanji05	Air Throw Exe
+ANJ	@anj_320_kanji06	Air Throw Exe
+ANJ	@anj_320_kanji07	Air Throw Exe
+ANJ	@anj_320_kanji08	Air Throw Exe
+ANJ	@anj_330_kanji01	Burst
+ANJ	@anj_330_kanji02	Burst
+ANJ	@anj_350_kanji01	Roman Cancel
+ANJ	@anj_350_kanji02	Roman Cancel
+ANJ	@anj_350_kanji03	Roman Cancel
+ANJ	@anj_351_kanji01	Roman Cancel
+ANJ	@anj_360_bake01	Counter Blitz, Wild Assault
+ANJ	@anj_360_bake02	Counter Blitz, Wild Assault
+ANJ	@anj_400_kanji01	Shitsu
+ANJ	@anj_400_kanji02	Shitsu
+ANJ	@anj_400_kanji03	Shitsu
+ANJ	@anj_400_kanji04	Shitsu
+ANJ	@anj_400_kanji05	Shitsu
+ANJ	@anj_402_kanji01	Kou
+ANJ	@anj_402_kanji02	Kou
+ANJ	@anj_402_kanji03	Kou
+ANJ	@anj_403_kanji01	Counter Blitz, Fujin
+ANJ	@anj_403_kanji02	Counter Blitz, Fujin
+ANJ	@anj_408_kanji01	Rin
+ANJ	@anj_408_kanji02	Rin
+ANJ	@anj_408_slash01	Rin
+ANJ	@anj_408_slash01_charge	Rin
+ANJ	@anj_408_slash02	Rin
+ANJ	@anj_408_slash02_charge	Rin
+ANJ	@anj_409_kanji01	Midare
+ANJ	@anj_409_kanji02	Midare
+ANJ	@anj_409_kanji03	Midare
+ANJ	@anj_409_kanji04	Midare
+ANJ	@anj_501_slash2_01	Kacho Fugetsu
+ANJ	@anj_501_slash2_02	Kacho Fugetsu
+ANJ	@anj_501_slash2_03	Kacho Fugetsu
+ANJ	@anj_501_slash2_04	Kacho Fugetsu
+ANJ	@anj_501_slash3_01	Kacho Fugetsu
+ANJ	@anj_501_slash3_02	Kacho Fugetsu
+ANJ	@anj_501_slash3_03	Kacho Fugetsu
+ANJ	@anj_501_slash4_01	Kacho Fugetsu
+ANJ	@anj_501_slash4_02	Kacho Fugetsu
+ANJ	@anj_501_slash5_01	Kacho Fugetsu
+ANJ	@anj_501_slash5_02	Kacho Fugetsu
+ANJ	@anj_501_slash5_03	Kacho Fugetsu
+ANJ	@anj_501_slash5_04	Kacho Fugetsu
+ANJ	@anj_504_kanji01	Kacho Fugetsu
+ANJ	@anj_504_kanji02	Kacho Fugetsu
+ANJ	@anj_504_kanji03	Kacho Fugetsu
+ANJ	@anj_504_kanji04	Kacho Fugetsu
+ANJ	ANJ_Sai_Kanji	Sai
+ANJ	@anj_500_ougi_crush03_1P	Sai
+ANJ	@anj_500_ougi_crush03_2P	Sai
+ANJ	@anj_500_ougi_end_1P	Sai
+ANJ	@anj_500_ougi_end_2P	Sai
+BED	bed_eye_glow	Ultimate 1 Air, Ultimate 1 Land, every frame (while active)
+BED	@bed_501_buff_eyeaura	Ultimate 1 Air, Ultimate 1 Land, every frame (while active)
+BED	@bed_501_buff_eyeaura_SP	every frame (while active)
+BED	@bed_404_Exyoyaku01	every frame (while active)
+BED	@bed_404_yoyaku01	every frame (while active)
+BED	bed_aura_color	Ultimate 1 Air, Ultimate 1 Land, every frame (while active)
+BED	@bed_501_buff_eyeaura	Ultimate 1 Air, Ultimate 1 Land, every frame (while active)
+BED	@bed_501_buff_eyeaura_end	every frame (while active)
+BED	bed_eye_ball	Ultimate 1 Air, Ultimate 1 Land, Ultimate 2, every frame (while active)
+BED	@bed_501_buff_zanzo	Ultimate 1 Land
+BED	@bed_501_buff_zanzo_air	Ultimate 1 Air
+BED	@bed_eye_energyball	Ultimate 2
+BED	@bed_eye_energyball_burst	Ultimate 2
+BED	@bed_eye_energyball_move	Ultimate 2
+BED	@bed_404_Exyoyaku01	every frame (while active)
+BED	@bed_404_yoyaku01	every frame (while active)
+BED	bed_eye_bloom01	Ultimate 1 Air, Ultimate 1 Land, Ultimate 2
+BED	@bed_501_eyelight	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_501CS_beam	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_501CS_beam_afro	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_501CS_eye_flash	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_501_battle_plight	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_eye_energyball	Ultimate 2
+BED	bed_eye_bloom02	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_501CS_beam	Ultimate 1 Air, Ultimate 1 Land
+BED	@bed_501CS_beam_afro	Ultimate 1 Air, Ultimate 1 Land
+BED	bed_crown_color	standing
+BED	@bed_001_crownline01	standing
+BED	@bed_001_crownline02	standing
+BED	@bed_001_crownline03	standing
+BED	@bed_001_crownline04	standing
+BED	@bed_001_crownline05	standing
+BED	@bed_001_crownline06	standing
+BED	@bed_001_crownline07	standing
+BGT	yoyo_string	KSMH K, Star Ship, YOYO 214H Air, YOYO 214H Land, YOYO 214S Air, YOYO 214S Land, YOYO 236H Air, YOYO 236H Land, and 2 more
+BGT	@bgt_400_yoyo_string01	Star Ship
+BGT	@bgt_400_yoyo_string02	Star Ship
+BGT	@bgt_400_yoyo_string03	Star Ship
+BGT	@bgt_400_yoyo_string04	Star Ship
+BGT	@bgt_403_yoyo_string	KSMH K
+BGT	@bgt_string01	YOYO 214H Air, YOYO 214H Land, YOYO 214S Air, YOYO 214S Land, and 4 more
+BGT	roger_color	Loop The Loop
+BGT	@bgt_500_punchwind01	Loop The Loop
+BGT	@bgt_500_rogerjump	Loop The Loop
+BGT	yoyo_Internal_light	YOYO 214H Air, YOYO 214H Land, YOYO 214S Air, YOYO 214S Land, YOYO 236H Air, YOYO 236H Land, YOYO 236S Air, YOYO 236S Land
+BGT	@bgt_Internal_light	YOYO 214H Air, YOYO 214H Land, YOYO 214S Air, YOYO 214S Land, and 4 more
+BGT	bgt_outline	KSMH K, Loop The Loop, j.D
+BGT	@bgt_403_bake01	KSMH K
+BGT	@bgt_403_bake02	KSMH K
+BGT	@bgt_403_bake03	KSMH K
+BGT	@bgt_254_bake01	j.D
+BGT	@bgt_254_bake02	j.D
+BGT	@bgt_254_bake03	j.D
+BGT	@bgt_500_bake01	Loop The Loop
+BGT	@bgt_500_bake02	Loop The Loop
+BGT	@bgt_500_bake03	Loop The Loop
+BKN	bkn_sleeve	Counter Blitz, Kabari Hasei, round win
+BKN	@bkn_411_dashline	Counter Blitz, Kabari Hasei
+BKN	@bkn_615_bake01	round win
+BKN	@bkn_615_bake02	round win
+BKN	@bkn_615_bake03	round win
+BKN	@bkn_615_bake04	round win
+BKN	@bkn_615_bake05	round win
+BKN	@bkn_615_bake06	round win
+COS	cos_meisai_color	FDown 2 Stand
+COS	@cos_064start	FDown 2 Stand
+COS	cos_gun_color01	Hide, every frame (while active), round win
+COS	@cos_Gun_Recoil04	Hide, every frame (while active)
+COS	@cos_Gun_Recoil05	Hide, every frame (while active)
+COS	@cos_Gun_Recoil06	Hide, every frame (while active)
+COS	@cos_615_gun_bake01	round win
+COS	@cos_615_gun_spin01	round win
+COS	cos_gun_color02	round win
+COS	@cos_615_gun_spin02	round win
+COS	cos_grip_color01	round win
+COS	@cos_615_gun_spin02	round win
+DZY	sword_bloomA	DZY Special 4 HS, DZY Special 4 S
+DZY	@dzy_sword_del01	DZY Special 4 S
+DZY	@dzy_sword_del02	DZY Special 4 HS
+DZY	sword_bloomB	DZY Special 4 HS, DZY Special 4 S
+DZY	@dzy_sword_del01	DZY Special 4 S
+DZY	@dzy_sword_del02	DZY Special 4 HS
+DZY	dzy_featherA	match win, round win
+DZY	@dzy_winCS_feather	match win
+DZY	@dzy_616_feather	round win
+DZY	dzy_featherB	match win, round win
+DZY	@dzy_winCS_feather	match win
+DZY	@dzy_616_feather	round win
+DZY	dzy_axebloom	2S, j.H
+DZY	@dzy_232bake_02	2S
+DZY	@dzy_232bake_03	2S
+DZY	@dzy_253_bake_n02	j.H
+ELP	elp_panier	j.D
+ELP	@elp_254_roll	j.D
+ELP	elp_magic_circle	ELP Ultimate 1, match win
+ELP	@elp_500_mc01	ELP Ultimate 1
+ELP	@elp_500_mc02	ELP Ultimate 1
+ELP	@elp_500_mc03	ELP Ultimate 1
+ELP	@elp_500_mc04	ELP Ultimate 1
+ELP	@elp_500_mc06	ELP Ultimate 1
+ELP	@elp_500_mc07	ELP Ultimate 1
+ELP	@elp_500_mc08	ELP Ultimate 1
+ELP	@elp_magic_circle01	match win
+ELP	@elp_magic_circle02	match win
+ELP	@elp_magic_circle03	match win
+FAU	fau_wear	2S, Counter Blitz, Kuebiko, excitingexe
+FAU	@fau_cs500_startdash	excitingexe
+FAU	@fau_kakasi_start	Kuebiko
+FAU	@fau_kakasi_wearburst	Kuebiko
+FAU	@fau_232body_end	2S, Counter Blitz
+FAU	fau_liquid	Nekkakonnrenn, Nekkakonnrenn Air, j.D
+FAU	@fau_254atk	j.D
+FAU	@fau_tornado_top	Nekkakonnrenn, Nekkakonnrenn Air
+FAU	fau_eyeflash	Burst, Kuebiko
+FAU	@fau_kakasi_eyeflash	Kuebiko
+FAU	@fau_kakasi_eyeflash_burst	Burst
+GIO	gio_color01	Land Ultimate
+GIO	@gio_500atk01re	Land Ultimate
+GIO	@gio_500atk02re	Land Ultimate
+GIO	@gio_500atk03re	Land Ultimate
+GIO	@gio_500tunagi	Land Ultimate
+GIO	@gio_500_tailend	Land Ultimate
+GIO	gio_cs_tail	Land Ultimate
+GIO	@gio_cs500_scr_tail	Land Ultimate
+GIO	gio_bake01	Air Ultimate, Dust Finish, Nml Atk 6D 3rd, j.H
+GIO	@gio253_01Eff	Air Ultimate, j.H
+GIO	@gio253_02Eff	Air Ultimate, j.H
+GIO	@gio253_03Eff	j.H
+GIO	@gio271_01Eff	Dust Finish, Nml Atk 6D 3rd
+GIO	@gio271_02Eff	Dust Finish, Nml Atk 6D 3rd
+GLD	GLD_weparm_color	6P, Counter Blitz, Wild Assault, j.D
+GLD	@gld_210_atk_re01	6P
+GLD	@gld_253_atk01_re	j.D
+GLD	@gld_360_atk	Counter Blitz, Wild Assault
+INO	INO_OutlineColor	Megalo Throw Exe
+INO	@ino_500CS_feather01	Megalo Throw Exe
+INO	@ino_500CS_feather02	Megalo Throw Exe
+INO	INO_WingColor	Megalo Throw Exe
+INO	@ino_cs500_scr01	Megalo Throw Exe
+INO	INO_ThrowStringColor	Throw Exe
+INO	@ino_310_string00	Throw Exe
+INO	@ino_310_string01	Throw Exe
+INO	@ino_310_string02	Throw Exe
+INO	@ino_310_string03	Throw Exe
+INO	@ino_310_string04	Throw Exe
+INO	@ino_310_string05	Throw Exe
+INO	@ino_310_string06	Throw Exe
+INO	@ino_310_string07	Throw Exe
+INO	@ino_310_string08	Throw Exe
+INO	@ino_310_string09	Throw Exe
+JKO	jko_zanzo01	2D, 2H, 2S, 5D, 5K, Air Throw Exe, Counter Blitz, Throw Exe, and 4 more
+JKO	@jko_201_strike01	5K
+JKO	@jko_201_strike02	5K
+JKO	@jko_201_strike03	5K
+JKO	@jko_201_strike04	5K
+JKO	@jko_203_strike01	f.S
+JKO	@jko_203_strike02	f.S
+JKO	@jko_203_strike03	f.S
+JKO	@jko_203_strike04	f.S
+JKO	@jko_232_strike01	2S
+JKO	@jko_232_strike02	2S
+JKO	@jko_232_strike03	2S
+JKO	@jko_233_strike01	2H, Counter Blitz
+JKO	@jko_233_strike02	2H, Counter Blitz
+JKO	@jko_233_strike03	2H, Counter Blitz
+JKO	@jko_233_strike04	2H, Counter Blitz
+JKO	@jko_252_strike01	j.S
+JKO	@jko_252_strike02	j.S
+JKO	@jko_252_strike03	j.S
+JKO	@jko_252_strike04	j.S
+JKO	@jko_360_strike01	Wild Assault
+JKO	@jko_360_strike02	Wild Assault
+JKO	@jko_205_attack	5D
+JKO	@jko_234_ballring01	2D
+JKO	@jko_234_ballring02	2D
+JKO	@jko_234_ballring03	2D
+JKO	@jko_254_end	j.D
+JKO	@jko_254_shot	j.D
+JKO	@jko_310_strike01	Throw Exe
+JKO	@jko_310_strike02	Throw Exe
+JKO	@jko_310_strike03	Throw Exe
+JKO	@jko_310_strike04	Throw Exe
+JKO	@jko_310_strike05	Throw Exe
+JKO	@jko_320_strike01	Air Throw Exe
+JKO	@jko_320_strike02	Air Throw Exe
+JKO	@jko_320_strike03	Air Throw Exe
+JKO	@jko_320_strike04	Air Throw Exe
+JKO	@jko_320_strike05	Air Throw Exe
+JKO	jko_zanzo02	5D
+JKO	@jko_205_attack	5D
+JKO	jko_core	j.D
+JKO	@jko_254_shot	j.D
+JKO	jko_halo01	2D
+JKO	@jko_234_ring01	2D
+JKO	@jko_234_ring01_afro	2D
+JKO	jko_halo02	2D
+JKO	@jko_234_ring01	2D
+JKO	@jko_234_ring01_afro	2D
+KYK	kyk_swordbloom01	2H, 2S, 5D, 5H, 6H, Counter Blitz, Throw Exe, c.S, and 3 more
+KYK	@kyk_202_bake01	c.S
+KYK	@kyk_202_bake02	c.S
+KYK	@kyk_203_bake01	f.S
+KYK	@kyk_204_bake01	5H
+KYK	@kyk_204_bake02	5H
+KYK	@kyk_205_bake01	5D, Counter Blitz
+KYK	@kyk_205_bake02	5D, Counter Blitz
+KYK	@kyk_213_bake01	6H
+KYK	@kyk_213_bake02	6H
+KYK	@kyk_232_bake01	2S
+KYK	@kyk_232_bake02	2S
+KYK	@kyk_233_bake01	2H
+KYK	@kyk_233_bake02	2H
+KYK	@kyk_252_bake01	j.S
+KYK	@kyk_252_bake02	j.S
+KYK	@kyk_253_bake01	j.H
+KYK	@kyk_253_bake02	j.H
+KYK	@kyk_310_bake01	Throw Exe
+KYK	@kyk_310_bake02	Throw Exe
+KYK	kyk_swordbloom02	2H
+KYK	@kyk_233_bake02	2H
+KYK	kyk_swordbloom04	Air Vapor Thrust C, Air Vapor Thrust D, Stun Dipper, Vapor Thrust C, Vapor Thrust D
+KYK	@kyk_400_stundipper	Stun Dipper
+KYK	@kyk_405_vapor	Air Vapor Thrust C, Vapor Thrust C
+KYK	@kyk_406_vapor	Air Vapor Thrust D, Vapor Thrust D
+KYK	kyk_wear_shoe01	2D
+KYK	@kyk_234_bake01	2D
+KYK	@kyk_234_bake02	2D
+KYK	dky_aura	Dragon Install, Jump Pre, backdash, crouching, crouching down, dash, every frame (while active), standing
+KYK	@dky_aura_arm_loop	crouching, crouching down, standing
+KYK	@dky_aura_crouch_loop	every frame (while active)
+KYK	@dky_aura_crouch_loop_oku	every frame (while active)
+KYK	@dky_aura_naname_yoin	Jump Pre
+KYK	@dky_aura_stand_end	every frame (while active)
+KYK	@dky_aura_stand_loop	every frame (while active)
+KYK	@dky_aura_stand_loop_oku	every frame (while active)
+KYK	@dky_aura_stand_start	every frame (while active)
+KYK	@dky_aura_yoin	backdash, dash, standing
+KYK	@dky_cs_wingaura	Dragon Install
+KYK	dky_aura_bloom	Dragon Install, Jump Pre, backdash, crouching, crouching down, dash, every frame (while active), standing
+KYK	@dky_aura_arm_loop	crouching, crouching down, standing
+KYK	@dky_aura_crouch_loop	every frame (while active)
+KYK	@dky_aura_crouch_loop_oku	every frame (while active)
+KYK	@dky_aura_naname_yoin	Jump Pre
+KYK	@dky_aura_stand_end	every frame (while active)
+KYK	@dky_aura_stand_loop	every frame (while active)
+KYK	@dky_aura_stand_loop_oku	every frame (while active)
+KYK	@dky_aura_stand_start	every frame (while active)
+KYK	@dky_aura_yoin	backdash, dash, standing
+KYK	@dky_cs_wingaura	Dragon Install
+KYK	@dky_floor_aura	every frame (while active)
+KYK	kyk_color01	Air Ride The Lightning, Air Stun Edge 1, Air Stun Edge 2, Counter Blitz, Diaekura, Dragon Install, Lose, Nml Atk 5F, and 12 more
+KYK	@dky_burstatk	Dragon Install
+KYK	@kyk_254_atk	j.D
+KYK	@kyk_254_start	j.D
+KYK	@kyk_401_stunedge_end	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_500charge	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_2ndatk	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_rtl_floorend	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_rtl_floorloop	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_tossin01loop	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_tossin01_end	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_cs500_ptc	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_cs500_scr	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_rtl_mc	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_sword_thunder	Win Action Wait, crouching, dash, round win, and 3 more
+KYK	@kyk_sword_thunder_loop	Lose, Nml Atk 5F, Nml Atk 6F
+KYK	@kyk_taiden_charge1	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_taiden_charge2	Stun Edge 2
+KYK	@kyk_taiden_charge2_end	Stun Edge 2
+KYK	@kyk_taiden_charge3	Counter Blitz, Diaekura, Stun Edge 2
+KYK	kyk_color02	Air Ride The Lightning, Counter Blitz, Diaekura, Ride The Lightning
+KYK	@kyk_407_atk	Counter Blitz, Diaekura
+KYK	@kyk_500sword	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_2ndatk	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_jump	Ride The Lightning
+KYK	@kyk_500_jump_air	Air Ride The Lightning
+KYK	@kyk_500_rtl_floorend	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_rtl_floorloop	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_rtl_mc	Air Ride The Lightning, Ride The Lightning
+KYK	kyk_color03	Air Ride The Lightning, Air Vapor Thrust C, Dragon Install, Ride The Lightning, Stun Edge 2, Vapor Thrust C, j.D
+KYK	@dky_burstatk	Dragon Install
+KYK	@dky_cs01_scr	Dragon Install
+KYK	@dky_cs01_scr_afro	Dragon Install
+KYK	@kyk_254_start	j.D
+KYK	@kyk_402_stunedge_end	Stun Edge 2
+KYK	@kyk_405_vapor	Air Vapor Thrust C, Vapor Thrust C
+KYK	@kyk_500_jump	Ride The Lightning
+KYK	@kyk_500_jump_air	Air Ride The Lightning
+KYK	@kyk_500_rtl_floorend	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_rtl_floorloop	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_tossin01loop	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_tossin01_end	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_cs500_scr	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_rtl_mc	Air Ride The Lightning, Ride The Lightning
+KYK	kyk_bloom	Air Stun Edge 1, Air Stun Edge 2, Counter Blitz, Diaekura, Dragon Install, Stun Edge 1, Stun Edge 2
+KYK	@dky_burstatk	Dragon Install
+KYK	@dky_cs_wingaura	Dragon Install
+KYK	@kyk_401_stunedge_end	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_402_stunedge_end	Stun Edge 2
+KYK	@kyk_402_stunedge_loop	Stun Edge 2
+KYK	@kyk_402_stunedge_start	Stun Edge 2
+KYK	@kyk_408_Stunedge_End	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_taiden_charge1	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_taiden_charge2	Stun Edge 2
+KYK	@kyk_taiden_charge2_end	Stun Edge 2
+KYK	@kyk_taiden_charge3	Counter Blitz, Diaekura, Stun Edge 2
+KYK	kyk_light01	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2, j.D
+KYK	@kyk_254_atk	j.D
+KYK	@kyk_401_stunedge_loop	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_402_stunedge_loop	Stun Edge 2
+KYK	kyk_light02	Air Ride The Lightning, Air Vapor Thrust C, Air Vapor Thrust D, Dragon Install, Ride The Lightning, Stun Dipper, Vapor Thrust C, Vapor Thrust D
+KYK	@dky_burstatk	Dragon Install
+KYK	@kyk_400_stundipper	Stun Dipper
+KYK	@kyk_405_vapor	Air Vapor Thrust C, Vapor Thrust C
+KYK	@kyk_406_vapor	Air Vapor Thrust D, Vapor Thrust D
+KYK	@kyk_500_2ndatk	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_tossin01loop	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_500_tossin01_end	Air Ride The Lightning, Ride The Lightning
+KYK	kyk_spark01	Air Ride The Lightning, Air Stun Edge 1, Air Stun Edge 2, Counter Blitz, Diaekura, Dragon Install, Ride The Lightning, Stun Edge 1, and 2 more
+KYK	@dky_cs_wingaura	Dragon Install
+KYK	@kyk_254_atk	j.D
+KYK	@kyk_254_start	j.D
+KYK	@kyk_401_stunedge_floor	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_401_stunedge_loop	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_402_stunedge_floor	Stun Edge 2
+KYK	@kyk_402_stunedge_loop	Stun Edge 2
+KYK	@kyk_408_Thunder_End01	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Thunder_End02	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_500sword	Air Ride The Lightning, Ride The Lightning
+KYK	@kyk_taiden_charge1	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_taiden_charge2	Stun Edge 2
+KYK	@kyk_taiden_charge2_end	Stun Edge 2
+KYK	@kyk_taiden_charge3	Counter Blitz, Diaekura, Stun Edge 2
+KYK	kyk_spark02	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2, j.D
+KYK	@kyk_254_start	j.D
+KYK	@kyk_401_stunedge_floor	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_402_stunedge_floor	Stun Edge 2
+KYK	@kyk_402_stunedge_start	Stun Edge 2
+KYK	@kyk_408_Thunder_End01	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Thunder_End02	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	kyk_dark	Air Stun Edge 1, Air Stun Edge 2, Counter Blitz, Diaekura, Stun Edge 1, Stun Edge 2, j.D
+KYK	@kyk_254_atk	j.D
+KYK	@kyk_254_start	j.D
+KYK	@kyk_taiden_charge1	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_taiden_charge3	Counter Blitz, Diaekura, Stun Edge 2
+KYK	dky_cs_wear	Dragon Install
+KYK	@dky_cs01_scr	Dragon Install
+KYK	@dky_cs01_scr_afro	Dragon Install
+KYK	kyk_stun01	Air Stun Edge 1, Air Stun Edge 2, Counter Blitz, Diaekura, Sacred Edge, Stun Edge 1, Stun Edge 2
+KYK	@kyk_401_stunedge_end	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_401_stunedge_floor	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_401_stunedge_loop	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_402_stunedge_end	Stun Edge 2
+KYK	@kyk_402_stunedge_floor	Stun Edge 2
+KYK	@kyk_402_stunedge_loop	Stun Edge 2
+KYK	@kyk_407_atk	Counter Blitz, Diaekura
+KYK	@kyk_407_floor	Counter Blitz, Diaekura
+KYK	@kyk_408_Ground	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Stunedge_End	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Thunder_End01	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Thunder_End02	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Thunder_LLoop	Round Init
+KYK	@kyk_408_Thunder_MLoop	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_408_Thunder_SLoop	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1, Stun Edge 2
+KYK	@kyk_502_loop	Sacred Edge
+KYK	@kyk_502_start01	Sacred Edge
+KYK	@kyk_taiden_charge1	Air Stun Edge 1, Air Stun Edge 2, Stun Edge 1
+KYK	@kyk_taiden_charge2	Stun Edge 2
+KYK	@kyk_taiden_charge2_end	Stun Edge 2
+KYK	@kyk_taiden_charge3	Counter Blitz, Diaekura, Stun Edge 2
+KYK	bake_outline	Lightning
+KYK	@kyk_408bake01	Lightning
+KYK	@kyk_408bake02	Lightning
+KYK	@kyk_408bake03	Lightning
+KYK	bake_DI_outline	Lightning
+KYK	@kyk_408DIbake01	Lightning
+KYK	@kyk_408DIbake02	Lightning
+KYK	@kyk_408DIbake03	Lightning
+LEO	leo_Outline	2K, 5K, 5P, 6K, Graviert Wurde C, Graviert Wurde D, Nml Atk Throw, c.S, and 2 more
+LEO	@leo_200bake	5P
+LEO	@leo_201bake	5K
+LEO	@leo_202bake	c.S
+LEO	@leo_202bake02	c.S
+LEO	@leo_211bake	6K
+LEO	@leo_211bake1	6K
+LEO	@leo_231bake	2K
+LEO	@leo_251bake	j.K
+LEO	@leo_254bake	j.D
+LEO	@leo_254bake2	j.D
+LEO	@leo_254bake3	j.D
+LEO	@leo_254bake4	j.D
+LEO	@leo_254bake5	j.D
+LEO	@leo_311bake	Nml Atk Throw
+LEO	@leo_311bake1	Nml Atk Throw
+LEO	@leo_400bake	Graviert Wurde C
+LEO	@leo_400bake1	Graviert Wurde C
+LEO	@leo_401bake	Graviert Wurde D
+LEO	@leo_401bake1	Graviert Wurde D
+LUC	luc_wire_color	2D, 2H, 2S, 5H, 6H, 6P, Air Throw Exe, Counter Blitz, and 15 more
+LUC	@luc_202_wire01	c.S
+LUC	@luc_202_wire02	c.S
+LUC	@luc_202_wire03	c.S
+LUC	@luc_202_wire04	c.S
+LUC	@luc_203_wire01	f.S
+LUC	@luc_203_wire02	f.S
+LUC	@luc_203_wire03	f.S
+LUC	@luc_203_wire04	f.S
+LUC	@luc_203_wire05	f.S
+LUC	@luc_203_wire06	f.S
+LUC	@luc_203_wire07	f.S
+LUC	@luc_203_wire08	f.S
+LUC	@luc_203_wire09	f.S
+LUC	@luc_203_wire10	f.S
+LUC	@luc_203_wire11	f.S
+LUC	@luc_203_wire12	f.S
+LUC	@luc_253_wire01	j.H
+LUC	@luc_253_wire02	j.H
+LUC	@luc_253_wire03	j.H
+LUC	@luc_253_wire04	j.H
+LUC	@luc_253_wire05	j.H
+LUC	@luc_254_wire01	j.D
+LUC	@luc_254_wire02	j.D
+LUC	@luc_254_wire03	j.D
+LUC	@luc_254_wire04	j.D
+LUC	@luc_254_wire05	j.D
+LUC	@luc_254_wire06	j.D
+LUC	@luc_254_wire07	j.D
+LUC	@luc_270_wire01	Nml Atk 5CFar 2nd
+LUC	@luc_270_wire02	Nml Atk 5CFar 2nd
+LUC	@luc_270_wire03	Nml Atk 5CFar 2nd
+LUC	@luc_270_wire04	Nml Atk 5CFar 2nd
+LUC	@luc_310_hold_wire01	Throw Exe
+LUC	@luc_310_hold_wire02	Throw Exe
+LUC	@luc_310_hold_wire03	Throw Exe
+LUC	@luc_310_hold_wire04	Throw Exe
+LUC	@luc_310_hold_wire05	Throw Exe
+LUC	@luc_310_hold_wire06	Throw Exe
+LUC	@luc_310_hold_wire07	Throw Exe
+LUC	@luc_310_hold_wire08	Throw Exe
+LUC	@luc_310_start_wire01	Throw Exe
+LUC	@luc_310_start_wire02	Deep Dive exe, Throw Exe
+LUC	@luc_310_start_wire03	Deep Dive exe, Throw Exe
+LUC	@luc_310_wire01	Throw Exe
+LUC	@luc_310_wire02	Throw Exe
+LUC	@luc_310_wire03	Throw Exe
+LUC	@luc_310_wire04	Throw Exe
+LUC	@luc_310_wire05	Throw Exe
+LUC	@luc_310_wire06	Throw Exe
+LUC	@luc_310_wire07	Throw Exe
+LUC	@luc_310_wire08	Throw Exe
+LUC	@luc_320_start_wire01	Air Throw Exe
+LUC	@luc_320_start_wire02	Air Throw Exe
+LUC	@luc_320_start_wire03	Air Throw Exe
+LUC	@luc_320_wire01	Air Throw Exe
+LUC	@luc_320_wire02	Air Throw Exe
+LUC	@luc_320_wire03	Air Throw Exe
+LUC	@luc_320_wire04	Air Throw Exe
+LUC	@luc_320_wire05	Air Throw Exe
+LUC	@luc_320_wire06	Air Throw Exe
+LUC	@luc_320_wire07	Air Throw Exe
+LUC	@luc_320_wire08	Air Throw Exe
+LUC	@luc_320_wire09	Air Throw Exe
+LUC	@luc_320_wire10	Air Throw Exe
+LUC	@luc_320_wire11	Air Throw Exe
+LUC	@luc_320_wire12	Air Throw Exe
+LUC	@luc_320_wire13	Air Throw Exe
+LUC	@luc_405_wire01	LUC SP 06
+LUC	@luc_405_wire02	LUC SP 06
+LUC	@luc_405_wire03	LUC SP 06
+LUC	@luc_500_wire03	Deep Dive exe, LUC ULT 01
+LUC	@luc_500_wire04	Deep Dive exe
+LUC	@luc_500_wire05	Deep Dive exe
+LUC	@luc_500_wire06	Deep Dive exe
+LUC	@luc_500_wireloop	Deep Dive exe
+LUC	@luc_204_wire01	5H
+LUC	@luc_204_wire02	5H
+LUC	@luc_204_wire03	5H
+LUC	@luc_204_wire04	5H
+LUC	@luc_204_wire05	5H
+LUC	@luc_204_wire06	5H
+LUC	@luc_204_wire07	5H
+LUC	@luc_204_wire08	5H
+LUC	@luc_204_wire09	5H
+LUC	@luc_204_wire10	5H
+LUC	@luc_204_wire11	5H
+LUC	@luc_210_wire01	6P
+LUC	@luc_210_wire02	6P
+LUC	@luc_210_wire03	6P
+LUC	@luc_210_wire04	6P
+LUC	@luc_210_wire05	6P
+LUC	@luc_210_wire06	6P
+LUC	@luc_210_wire07	6P
+LUC	@luc_210_wire08	6P
+LUC	@luc_210_wire09	6P
+LUC	@luc_210_wire10	6P
+LUC	@luc_213_wire01	6H
+LUC	@luc_213_wire02	6H
+LUC	@luc_213_wire03	6H
+LUC	@luc_213_wire04	6H
+LUC	@luc_213_wire05	6H
+LUC	@luc_213_wire06	6H
+LUC	@luc_213_wire07	6H
+LUC	@luc_213_wire08	6H
+LUC	@luc_213_wire09	6H
+LUC	@luc_213_wire10	6H
+LUC	@luc_213_wire11	6H
+LUC	@luc_252_wire01	j.S
+LUC	@luc_252_wire02	j.S
+LUC	@luc_252_wire03	j.S
+LUC	@luc_252_wire04	j.S
+LUC	@luc_254_wire08	j.D
+LUC	@luc_254_wire09	j.D
+LUC	@luc_254_wire10	j.D
+LUC	@luc_254_wire11	j.D
+LUC	@luc_254_wire12	j.D
+LUC	@luc_254_wire13	j.D
+LUC	@luc_254_wire14	j.D
+LUC	@luc_360_wire01	Counter Blitz, Wild Assault
+LUC	@luc_360_wire02	Counter Blitz, Wild Assault
+LUC	@luc_360_wire03	Counter Blitz, Wild Assault
+LUC	@luc_360_wire04	Counter Blitz, Wild Assault
+LUC	@luc_360_wire05	Counter Blitz, Wild Assault
+LUC	@luc_360_wire06	Counter Blitz, Wild Assault
+LUC	@luc_360_wire07	Counter Blitz, Wild Assault
+LUC	@luc_360_wire08	Counter Blitz, Wild Assault
+LUC	@luc_404_wire01	LUC SP 05
+LUC	@luc_404_wire02	LUC SP 05
+LUC	@luc_404_wire03	LUC SP 05
+LUC	@luc_404_wire04	LUC SP 05
+LUC	@luc_404_wire05	LUC SP 05
+LUC	@luc_404_wire06	LUC SP 05
+LUC	@luc_404_wire07	LUC SP 05
+LUC	@luc_404_wire08	LUC SP 05
+LUC	@luc_404_wire09	LUC SP 05
+LUC	@luc_404_wire10	LUC SP 05
+LUC	@luc_404_wire11	LUC SP 05
+LUC	@luc_404_wire12	LUC SP 05
+LUC	@luc_404_wire13	LUC SP 05
+LUC	@luc_232_wire_n01	2S
+LUC	@luc_232_wire_n02	2S
+LUC	@luc_232_wire_n03	2S
+LUC	@luc_232_wire_n04	2S
+LUC	@luc_232_wire_n05	2S
+LUC	@luc_233_wire_n04	2H
+LUC	@luc_233_wire_n05	2H
+LUC	@luc_233_wire_n06	2H
+LUC	@luc_233_wire_n07	2H
+LUC	@luc_233_wire_n08	2H
+LUC	@luc_233_wire_n09	2H
+LUC	@luc_233_wire_n10	2H
+LUC	@luc_233_wire_n11	2H
+LUC	@luc_233_wire_n12	2H
+LUC	@luc_233_wire_n13	2H
+LUC	@luc_233_wire_n14	2H
+LUC	@luc_234_wire_n01	2D
+LUC	@luc_234_wire_n02	2D
+LUC	@luc_271_wire_n01	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n02	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n03	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n04	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n05	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n06	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n07	Nml Atk 2C 2nd
+LUC	@luc_401_wire_n01	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n02	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n03	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n04	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n05	LUC SP 02
+LUC	@luc_401_wire_n06	LUC SP 02
+LUC	@luc_402_wire_n01	LUC SP 03
+LUC	@luc_402_wire_n02	LUC SP 03
+LUC	@luc_402_wire_n03	LUC SP 03
+LUC	@luc_402_wire_n04	LUC SP 03
+LUC	@luc_402_wire_n05	LUC SP 03
+LUC	@luc_402_wire_n06	LUC SP 03
+LUC	@luc_402_wire_n07	LUC SP 03
+LUC	@luc_402_wire_n08	LUC SP 03
+LUC	@luc_402_wire_n09	LUC SP 03
+LUC	@luc_500_wire01_plus	LUC ULT 01
+LUC	@luc_500_wire02_plus	Deep Dive exe, LUC ULT 01
+LUC	luc_wire_outlinecolor	2D, 2H, 2S, 5H, 6H, 6P, Air Throw Exe, Counter Blitz, and 14 more
+LUC	@luc_202_wire01	c.S
+LUC	@luc_202_wire02	c.S
+LUC	@luc_202_wire03	c.S
+LUC	@luc_202_wire04	c.S
+LUC	@luc_203_wire01	f.S
+LUC	@luc_203_wire02	f.S
+LUC	@luc_203_wire03	f.S
+LUC	@luc_203_wire04	f.S
+LUC	@luc_203_wire05	f.S
+LUC	@luc_203_wire06	f.S
+LUC	@luc_203_wire07	f.S
+LUC	@luc_253_wire01	j.H
+LUC	@luc_253_wire02	j.H
+LUC	@luc_253_wire03	j.H
+LUC	@luc_253_wire04	j.H
+LUC	@luc_253_wire05	j.H
+LUC	@luc_270_wire01	Nml Atk 5CFar 2nd
+LUC	@luc_270_wire02	Nml Atk 5CFar 2nd
+LUC	@luc_270_wire03	Nml Atk 5CFar 2nd
+LUC	@luc_270_wire04	Nml Atk 5CFar 2nd
+LUC	@luc_310_hold_wire01	Throw Exe
+LUC	@luc_310_hold_wire02	Throw Exe
+LUC	@luc_310_hold_wire03	Throw Exe
+LUC	@luc_310_hold_wire04	Throw Exe
+LUC	@luc_310_hold_wire05	Throw Exe
+LUC	@luc_310_hold_wire06	Throw Exe
+LUC	@luc_310_hold_wire07	Throw Exe
+LUC	@luc_310_hold_wire08	Throw Exe
+LUC	@luc_310_start_wire01	Throw Exe
+LUC	@luc_310_start_wire02	Deep Dive exe, Throw Exe
+LUC	@luc_310_start_wire03	Deep Dive exe, Throw Exe
+LUC	@luc_310_wire01	Throw Exe
+LUC	@luc_310_wire02	Throw Exe
+LUC	@luc_310_wire03	Throw Exe
+LUC	@luc_310_wire04	Throw Exe
+LUC	@luc_310_wire05	Throw Exe
+LUC	@luc_310_wire06	Throw Exe
+LUC	@luc_310_wire07	Throw Exe
+LUC	@luc_310_wire08	Throw Exe
+LUC	@luc_320_start_wire01	Air Throw Exe
+LUC	@luc_320_start_wire02	Air Throw Exe
+LUC	@luc_320_start_wire03	Air Throw Exe
+LUC	@luc_320_wire01	Air Throw Exe
+LUC	@luc_320_wire02	Air Throw Exe
+LUC	@luc_320_wire03	Air Throw Exe
+LUC	@luc_320_wire04	Air Throw Exe
+LUC	@luc_320_wire05	Air Throw Exe
+LUC	@luc_320_wire06	Air Throw Exe
+LUC	@luc_320_wire07	Air Throw Exe
+LUC	@luc_320_wire08	Air Throw Exe
+LUC	@luc_320_wire09	Air Throw Exe
+LUC	@luc_320_wire10	Air Throw Exe
+LUC	@luc_320_wire11	Air Throw Exe
+LUC	@luc_320_wire12	Air Throw Exe
+LUC	@luc_320_wire13	Air Throw Exe
+LUC	@luc_405_wire01	LUC SP 06
+LUC	@luc_405_wire02	LUC SP 06
+LUC	@luc_405_wire03	LUC SP 06
+LUC	@luc_500_wire03	Deep Dive exe, LUC ULT 01
+LUC	@luc_500_wire04	Deep Dive exe
+LUC	@luc_500_wire05	Deep Dive exe
+LUC	@luc_500_wire06	Deep Dive exe
+LUC	@luc_500_wireloop	Deep Dive exe
+LUC	@luc_204_wire01	5H
+LUC	@luc_204_wire02	5H
+LUC	@luc_204_wire03	5H
+LUC	@luc_204_wire04	5H
+LUC	@luc_204_wire05	5H
+LUC	@luc_204_wire06	5H
+LUC	@luc_204_wire07	5H
+LUC	@luc_210_wire01	6P
+LUC	@luc_210_wire02	6P
+LUC	@luc_210_wire03	6P
+LUC	@luc_210_wire04	6P
+LUC	@luc_210_wire05	6P
+LUC	@luc_213_wire01	6H
+LUC	@luc_213_wire02	6H
+LUC	@luc_213_wire03	6H
+LUC	@luc_213_wire04	6H
+LUC	@luc_213_wire05	6H
+LUC	@luc_252_wire01	j.S
+LUC	@luc_252_wire02	j.S
+LUC	@luc_252_wire03	j.S
+LUC	@luc_252_wire04	j.S
+LUC	@luc_360_wire01	Counter Blitz, Wild Assault
+LUC	@luc_360_wire02	Counter Blitz, Wild Assault
+LUC	@luc_360_wire03	Counter Blitz, Wild Assault
+LUC	@luc_360_wire04	Counter Blitz, Wild Assault
+LUC	@luc_404_wire05	LUC SP 05
+LUC	@luc_404_wire06	LUC SP 05
+LUC	@luc_404_wire07	LUC SP 05
+LUC	@luc_232_wire_n01	2S
+LUC	@luc_232_wire_n02	2S
+LUC	@luc_232_wire_n03	2S
+LUC	@luc_232_wire_n04	2S
+LUC	@luc_232_wire_n05	2S
+LUC	@luc_233_wire_n04	2H
+LUC	@luc_233_wire_n05	2H
+LUC	@luc_233_wire_n06	2H
+LUC	@luc_233_wire_n07	2H
+LUC	@luc_233_wire_n08	2H
+LUC	@luc_234_wire_n01	2D
+LUC	@luc_234_wire_n02	2D
+LUC	@luc_271_wire_n01	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n02	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n03	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n04	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n05	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n06	Nml Atk 2C 2nd
+LUC	@luc_271_wire_n07	Nml Atk 2C 2nd
+LUC	@luc_401_wire_n01	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n02	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n03	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n04	Counter Blitz, LUC SP 02
+LUC	@luc_401_wire_n05	LUC SP 02
+LUC	@luc_401_wire_n06	LUC SP 02
+LUC	@luc_402_wire_n01	LUC SP 03
+LUC	@luc_402_wire_n02	LUC SP 03
+LUC	@luc_402_wire_n03	LUC SP 03
+LUC	@luc_402_wire_n04	LUC SP 03
+LUC	@luc_402_wire_n05	LUC SP 03
+LUC	@luc_402_wire_n06	LUC SP 03
+LUC	@luc_402_wire_n07	LUC SP 03
+LUC	@luc_402_wire_n08	LUC SP 03
+LUC	@luc_402_wire_n09	LUC SP 03
+LUC	@luc_500_wire01_plus	LUC ULT 01
+LUC	@luc_500_wire02_plus	Deep Dive exe, LUC ULT 01
+MLL	mll_hair_color	Bad Moon, Iron Savior, Kapel, Septem Voices, Tandem Top C, Tandem Top D, Winger
+MLL	@mll_400_strspinend	Bad Moon
+MLL	@mll_400_strspinloop	Bad Moon
+MLL	@mll_402_end	Tandem Top C, Tandem Top D
+MLL	@mll_402_start	Tandem Top D
+MLL	@mll_407_end	Kapel
+MLL	@mll_500_sparkle	Winger
+MLL	@mll_501_end	Septem Voices
+MLL	@mll_501_spark	Septem Voices
+MLL	@mll_404_hair_end	Iron Savior
+MLL	mll_hair_color_bloom	Artemis, Bad Moon, Kapel, Septem Voices, Winger, match win
+MLL	@mll_cswin_twinkle	match win
+MLL	@mll_400_sparkle	Bad Moon
+MLL	@mll_400_strsparkle	Bad Moon
+MLL	@mll_400_strstart	Bad Moon
+MLL	@mll_407_sparkle	Kapel
+MLL	@mll_410_feather	Artemis
+MLL	@mll_500CS_feather01	Winger
+MLL	@mll_500_ring	Winger
+MLL	@mll_500_sparkle	Winger
+MLL	@mll_501_shot01	Septem Voices
+MLL	@mll_501_shot_wallbreak	Septem Voices
+MLL	@mll_501_windring	Septem Voices
+MLL	mll_hair_color_grad	Bad Moon, Iron Savior, Kapel
+MLL	@mll_400_strstart	Bad Moon
+MLL	@mll_407_end	Kapel
+MLL	@mll_404_hair_end	Iron Savior
+NAG	NAG_BloodDrop	2H, 2S, 5D, 5H, 6H, Air Guard Loop, Counter Blitz, Crouch Guard Loop, and 17 more
+NAG	@nag_203_splash01	f.S
+NAG	@nag_204_splash01	5H
+NAG	@nag_254_splash01	j.D
+NAG	@nag_400_blood01	berserk
+NAG	@nag_401_splash01	berserk End, match win
+NAG	@nag_402_splash01	Zarameyuki
+NAG	@nag_403_splash01	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_splash02	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_404_splash01	Counter Blitz, Shizuriyuki
+NAG	@nag_404_splash02	Shizuriyuki
+NAG	@nag_500_splash01	Wasureyuki
+NAG	@nag_500_splash02	Wasureyuki
+NAG	@nag_500_splash05	Wasureyuki
+NAG	@nag_500_splash07	Wasureyuki
+NAG	@nag_500_splash09	Wasureyuki
+NAG	@nag_500_splash11	Wasureyuki
+NAG	@nag_AGuard01	Air Guard Loop
+NAG	@nag_AGuard02	Air Guard Loop
+NAG	@nag_AGuard03	Air Guard Loop
+NAG	@nag_CGuard01	Crouch Guard Loop
+NAG	@nag_CGuard02	Crouch Guard Loop
+NAG	@nag_CGuard03	Crouch Guard Loop
+NAG	@nag_HGuard01	High Guard Loop
+NAG	@nag_HGuard02	High Guard Loop
+NAG	@nag_HGuard03	High Guard Loop
+NAG	@nag_MGuard01	Mid Guard Loop
+NAG	@nag_MGuard02	Mid Guard Loop
+NAG	@nag_MGuard03	Mid Guard Loop
+NAG	@nag_213_splash01	6H
+NAG	@nag_213_splash02	6H
+NAG	@nag_253_splash01	j.H
+NAG	@nag_409_blood_LV2	NAG New Special
+NAG	@nag_205_splash01	5D
+NAG	@nag_232_splash01	2S
+NAG	@nag_232_splash02	2S
+NAG	@nag_233_splash01	2H
+NAG	@nag_252_splash01	j.S
+NAG	@nag_275_splash01	Nml Atk 5C hasei
+NAG	@nag_275_splash02	Nml Atk 5C hasei
+NAG	@nag_276_splash01	Nml Atk 5C hasei 2
+NAG	@nag_276_splash02	Nml Atk 5C hasei 2
+NAG	@nag_276_splash03	Nml Atk 5C hasei 2
+NAG	NAG_SlashColor	2H, 2S, 5D, 5H, 6H, Counter Blitz, Nml Atk 5C hasei, Nml Atk 5C hasei 2, and 4 more
+NAG	@nag_204_slashB01	5H
+NAG	@nag_204_slashB02	5H
+NAG	@nag_204_slashB03	5H
+NAG	@nag_360_slashB01	Counter Blitz, Wild Assault
+NAG	@nag_360_slashB02	Counter Blitz, Wild Assault
+NAG	@nag_360_slashB03	Counter Blitz, Wild Assault
+NAG	@nag_501_afterimage01	Zansetu
+NAG	@nag_501_afterimage02	Zansetu
+NAG	@nag_501_afterimage03	Zansetu
+NAG	@nag_213_slashB01	6H
+NAG	@nag_213_slashB02	6H
+NAG	@nag_213_slashB03	6H
+NAG	@nag_253_slashB01	j.H
+NAG	@nag_253_slashB02	j.H
+NAG	@nag_205_slashB01	5D
+NAG	@nag_205_slashB02	5D
+NAG	@nag_205_slashB03	5D
+NAG	@nag_205_slashB04	5D
+NAG	@nag_232_slashB01	2S
+NAG	@nag_232_slashB02	2S
+NAG	@nag_232_slashB03	2S
+NAG	@nag_233_slashB01	2H
+NAG	@nag_233_slashB02	2H
+NAG	@nag_233_slashB03	2H
+NAG	@nag_252_slashB01	j.S
+NAG	@nag_252_slashB02	j.S
+NAG	@nag_252_slashB03	j.S
+NAG	@nag_252_slashB04	j.S
+NAG	@nag_275_slashB01	Nml Atk 5C hasei
+NAG	@nag_276_slashB01	Nml Atk 5C hasei 2
+NAG	@nag_276_slashB02	Nml Atk 5C hasei 2
+NAG	@nag_276_slashB03	Nml Atk 5C hasei 2
+NAG	NAG_ExSlash	Counter Blitz, Dust Finish, Kamuriyuki, Shizuriyuki, Wasureyuki, Zansetu, Zarameyuki
+NAG	@nag_402_slash01	Zarameyuki
+NAG	@nag_402_slash02	Zarameyuki
+NAG	@nag_402_slash03	Zarameyuki
+NAG	@nag_402_slash04	Zarameyuki
+NAG	@nag_403_slash01	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash02	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash03	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash04	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash05	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash06	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash07	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash08	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_403_slash09	Counter Blitz, Dust Finish, Kamuriyuki
+NAG	@nag_404_slash01	Counter Blitz, Shizuriyuki
+NAG	@nag_404_slash02	Counter Blitz, Shizuriyuki
+NAG	@nag_404_slash03	Shizuriyuki
+NAG	@nag_404_slash04	Shizuriyuki
+NAG	@nag_500_slash01	Wasureyuki
+NAG	@nag_500_slash02	Wasureyuki
+NAG	@nag_500_slash03	Wasureyuki
+NAG	@nag_500_slash03ex	Wasureyuki
+NAG	@nag_500_slash04	Wasureyuki
+NAG	@nag_500_slash05	Wasureyuki
+NAG	@nag_500_slash06	Wasureyuki
+NAG	@nag_500_slash07	Wasureyuki
+NAG	@nag_500_slash08	Wasureyuki
+NAG	@nag_500_slash09	Wasureyuki
+NAG	@nag_500_slash10	Wasureyuki
+NAG	@nag_500_slash11	Wasureyuki
+NAG	@nag_500_slash12	Wasureyuki
+NAG	@nag_500_slash13	Wasureyuki
+NAG	@nag_501_blade01	Zansetu
+NAG	@nag_501_blade02	Zansetu
+NAG	@nag_501_blade03	Zansetu
+NAG	@nag_501_blade04	Zansetu
+NAG	@nag_501_blade05	Zansetu
+NAG	@nag_501_blade06	Zansetu
+NAG	@nag_501_blade07	Zansetu
+NAG	@nag_501_slash01	Zansetu
+NAG	@nag_501_slash02	Zansetu
+NAG	@nag_501_slash03	Zansetu
+NAG	NAG_Outline	2D, 6P
+NAG	@nag_210_bake01	6P
+NAG	@nag_210_bake02	6P
+NAG	@nag_210_bake03	6P
+NAG	@nag_234_bake01	2D
+NAG	@nag_234_bake02	2D
+NAG	@nag_234_bake03	2D
+RAM	wep_color00	2H, 2S, 5H, 6H, Counter Blitz, f.S, j.H, j.S
+RAM	@ram_203slash00	f.S
+RAM	@ram_203slash01	f.S
+RAM	@ram_204slash00	5H
+RAM	@ram_204slash01	5H
+RAM	@ram_204slash02	5H
+RAM	@ram_204slash03	5H
+RAM	@ram_213pilebunker	6H, Counter Blitz
+RAM	@ram_232eff_ring02	2S
+RAM	@ram_233wep	2H
+RAM	@ram_252slash00	j.S
+RAM	@ram_252slash01	j.S
+RAM	@ram_253slash	j.H
+RAM	wep_color01	2H, 2S, 5D, 5H, 6H, 6P, Agresa Ordono, Air BDash, and 22 more
+RAM	@ram_404saber01	Sabrobato
+RAM	@ram_404saber02	Sabrobato
+RAM	@ram_404saber03	Sabrobato
+RAM	@ram_404saber04	Sabrobato
+RAM	@ram_404saber05	Sabrobato
+RAM	@ram_404slash00_L	Sabrobato
+RAM	@ram_404slash00_R	Sabrobato
+RAM	@ram_404slash01_L	Sabrobato
+RAM	@ram_404slash01_R	Sabrobato
+RAM	@ram_406slash_L00	Agresa Ordono
+RAM	@ram_406slash_L01	Agresa Ordono
+RAM	@ram_406slash_L02	Agresa Ordono
+RAM	@ram_406slash_R00	Agresa Ordono
+RAM	@ram_406slash_R01	Agresa Ordono
+RAM	@ram_406slash_R02	Agresa Ordono
+RAM	@ram_500wepL_del	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_500wepR_del	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_500wepspark	Falstelo
+RAM	@ram_501wepL_spark	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501wepL_summon	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501wepR_spark	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501wepR_summon	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501_atk_nowep	Morutobato
+RAM	@ram_501_atk_wepL	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501_atk_wepR	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_cs500_bg	Falstelo
+RAM	@ram_cs500_spark	Falstelo
+RAM	@ram_kakusei_beam	Falstelo
+RAM	@ram_kakusei_beam_long	Falstelo
+RAM	@ram_kakusei_beam_yakkyo	Falstelo
+RAM	@ram_404_dissolve_L	Sabrobato
+RAM	@ram_404_dissolve_R	Sabrobato
+RAM	@ram_501wepL_reverse	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501wepR_reverse	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_616floor	round win
+RAM	@ram_616summon_wep	round win
+RAM	@ram_616_dissolveL	Nml Atk 5F, match win, round win
+RAM	@ram_616_dissolveR	Nml Atk 5F, match win, round win
+RAM	@ram_Lucifero_bomb	Nml Atk 5F
+RAM	@ram_Lucifero_Coalescing	Nml Atk 5F, round win
+RAM	@ram_summon_neutral_L	2H, 2S, 5D, 5H, and 23 more
+RAM	@ram_summon_neutral_R	2H, 2S, 5D, 5H, and 23 more
+RAM	@ram_summon_wep_short	2H, 2S, 5D, 5H, and 23 more
+RAM	@wep_Recovery	2H, 2S, 5D, 5H, and 23 more
+RAM	wep_color02	2H, 2S, 5D, 5H, 6H, 6P, Agresa Ordono, Air BDash, and 19 more
+RAM	@ram_404slash01_L	Sabrobato
+RAM	@ram_404slash01_R	Sabrobato
+RAM	@ram_406slash_L02	Agresa Ordono
+RAM	@ram_406slash_R02	Agresa Ordono
+RAM	@ram_501_atk_nowep	Morutobato
+RAM	@ram_501_atk_wepL	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501_atk_wepR	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_cs500_spark	Falstelo
+RAM	@ram_kakusei_beam	Falstelo
+RAM	@ram_kakusei_beam_long	Falstelo
+RAM	@wep_Recovery	2H, 2S, 5D, 5H, and 23 more
+RAM	smoke_color	2H, 2S, 5D, 5H, 6H, 6P, Agresa Ordono, Air BDash, and 17 more
+RAM	@ram_501_atk_wepL	2H, 2S, 5D, 5H, and 21 more
+RAM	@ram_501_atk_wepLR	Morutobato
+RAM	@ram_501_atk_wepR	2H, 2S, 5D, 5H, and 21 more
+SIN	sin_shoes	2D
+SIN	@sin_234_line01	2D
+SIN	@sin_234_line02	2D
+SIN	@sin_234_line03	2D
+SIN	@sin_234_line04	2D
+SLY	sly_bat	2D, 2K, 2P, 2S, BDown Loop, Crouch 2 Stand, Crouch Guard End, Crouch Guard Loop, and 30 more
+SLY	@sly_010_bat_loop	Crouch 2 Stand, Crouch Guard End, Crouch Tachi, Crouch Tachi 2, and 7 more
+SLY	@sly_010_bat_start	2D, Wall Haritsuki Get Up, crouching, crouching down, and 1 more
+SLY	@sly_011_bat_loop	crouching, sly test 6
+SLY	@sly_013_bat_crouchturn	Crouch Turn
+SLY	@sly_054_bat_dmg	Crouch Guard Loop, Hajikare Crouch, Harden, Nokezori Crouch Lv 1, and 4 more
+SLY	@sly_060_bat_down02	BDown Loop, FDown Loop, VDown Loop
+SLY	@sly_230_bat_atk	2P
+SLY	@sly_231_bat_atk	2K
+SLY	@sly_232_bat_atk	2S
+SLY	@sly_500cs_aura	sly ULT 01 exe
+SLY	@sly_500_bat	sly ULT 01
+SLY	@sly_500_bat_atk	sly ULT 01
+SLY	@sly_dashstep_cancel	Jump Pre, sly SP 01, sly SP 02, sly SP 03, and 4 more
+SLY	sly_bat_color	2D, 2H, BDown Bound, BDown Loop, Crouch 2 Stand, FDown Bound, FDown Loop, VDown Bound, and 6 more
+SLY	@sly_010_bat_end	Crouch 2 Stand, sly test 6
+SLY	@sly_060_bat_down03	BDown Bound, BDown Loop, FDown Bound, FDown Loop, and 2 more
+SLY	@sly_233_bat_atk	2H
+SLY	@sly_234_bat_atk	2D
+SLY	@sly_271_bat_atk	sly SP 10
+SLY	@sly_400_bat_atk	sly SP 02
+SLY	@sly_500_bat	sly ULT 01
+SLY	@sly_502_wear_bat01	sly ULT 02
+SLY	@sly_502_wear_bat02	sly ULT 02
+SLY	sly_bat_color2	2D, 2H, BDown Bound, BDown Down, BDown Loop, Crouch 2 Stand, FDown Bound, FDown Loop, and 16 more
+SLY	@sly_010_bat_end	Crouch 2 Stand, sly test 6
+SLY	@sly_060_bat_down01	BDown Down, FDown Upper, Hizakuzure, Korogari, and 2 more
+SLY	@sly_060_bat_down03	BDown Bound, BDown Loop, FDown Bound, FDown Loop, and 2 more
+SLY	@sly_077_bat_wall	Wall Haritsuki
+SLY	@sly_233_bat_atk	2H
+SLY	@sly_234_bat_atk	2D
+SLY	@sly_271_bat_atk	sly SP 10
+SLY	@sly_400_bat_atk	sly SP 02
+SLY	@sly_500_bat	sly ULT 01
+SLY	@sly_500_bat_atk	sly ULT 01
+SLY	@sly_502_wear_bat01	sly ULT 02
+SLY	@sly_502_wear_bat02	sly ULT 02
+SLY	@sly_dashstep_in_bat	backdash, dash, test backstep
+SLY	@sly_dashstep_out_bat	dash
+SLY	@sly_dashstep_out_re_bat	backdash
+SLY	sly_bat_color3	2H, Crouch 2 Stand, backdash, dash, sly SP 02, sly test 6, test backstep
+SLY	@sly_010_bat_end	Crouch 2 Stand, sly test 6
+SLY	@sly_233_bat_atk	2H
+SLY	@sly_400_bat_atk	sly SP 02
+SLY	@sly_dashstep_in_bat	backdash, dash, test backstep
+SLY	@sly_dashstep_out_bat	dash
+SLY	@sly_dashstep_out_re_bat	backdash
+SOL	fire_color01	5D, 6S, Bandit Bringer Air, Bandit Bringer Land, Counter Blitz, Dust Finish, Fefnir, Gun Flame, and 10 more
+SOL	@dsl_cs501_bg	HMC
+SOL	@dsl_floor_damage	HMCExe
+SOL	@dsl_ryuhai01	HMC
+SOL	@dsl_wing_fire	HMC
+SOL	@sol212_eff1	6S, Counter Blitz
+SOL	@sol212_eff2	6S, Counter Blitz
+SOL	@sol416_FireBurst	New Sidewinder
+SOL	@sol_500bake01	Tyrant Rave
+SOL	@sol_616_handfire01a	round win
+SOL	@sol_616_handfire01b	round win
+SOL	@sol_616_handfire01c	round win
+SOL	@sol_616_handfire02	round win
+SOL	@sol_banditbringer_loop	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_bringer_charge	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_cs500_glare	Tyrant Rave
+SOL	@sol_dust	5D
+SOL	@sol_fafnir_main	Fefnir
+SOL	@sol_grandviper_atk	Counter Blitz, Vortex
+SOL	@sol_grandviper_floor	Counter Blitz, Vortex
+SOL	@sol_gunflame	Gun Flame
+SOL	@sol_gunflame_end	Gun Flame
+SOL	@sol_tyrantrave2	Tyrant Rave
+SOL	@sol_tyrantrave_sub	Tyrant Rave
+SOL	@sol_vv2end	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvend_air	Volcanic Viper Air S
+SOL	@sol_vvloop_hs2	Volcanic Viper Land HS
+SOL	@sol_vvloop_hs_koware	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvloop_koware	Volcanic Viper Air S, Volcanic Viper Land S
+SOL	@sol_vv_1st	Volcanic Viper Land S
+SOL	fire_color02	5D, 6S, Bandit Bringer Air, Bandit Bringer Land, Counter Blitz, Dust Finish, Fefnir, HMCExe, and 8 more
+SOL	@dsl_floor_damage	HMCExe
+SOL	@sol212_eff1	6S, Counter Blitz
+SOL	@sol416_FireBurst	New Sidewinder
+SOL	@sol_616_handfire02	round win
+SOL	@sol_banditbringer_end	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_banditbringer_loop	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_bringer_charge	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_dust	5D
+SOL	@sol_fafnir_charge	Fefnir
+SOL	@sol_fafnir_main	Fefnir
+SOL	@sol_grandviper_atk	Counter Blitz, Vortex
+SOL	@sol_grandviper_floor	Counter Blitz, Vortex
+SOL	@sol_grandviper_sliding	Counter Blitz, Vortex
+SOL	@sol_tyrantrave1	Tyrant Rave
+SOL	@sol_tyrantrave2	Tyrant Rave
+SOL	@sol_vv2end	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvend	Volcanic Viper Land S
+SOL	@sol_vvend_air	Volcanic Viper Air S
+SOL	@sol_vvloop	Volcanic Viper Land S
+SOL	@sol_vvloop_hs2	Volcanic Viper Land HS
+SOL	@sol_vvloop_hs_air	Volcanic Viper Air HS
+SOL	@sol_vv_1st_koware	Volcanic Viper Air HS, Volcanic Viper Air S, Volcanic Viper Land HS, Volcanic Viper Land S
+SOL	fire_color03	Bandit Bringer Air, Bandit Bringer Land, Counter Blitz, Dust Finish, Fefnir, Gun Flame, HMC, Tyrant Rave, and 3 more
+SOL	@dsl_cs501_bg	HMC
+SOL	@sol_banditbringer_loop	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_cs500_eff02	Tyrant Rave
+SOL	@sol_fafnir_main	Fefnir
+SOL	@sol_grandviper_floor	Counter Blitz, Vortex
+SOL	@sol_grandviper_sliding	Counter Blitz, Vortex
+SOL	@sol_gunflame	Gun Flame
+SOL	@sol_gunflame_end	Gun Flame
+SOL	@sol_tyrantrave2	Tyrant Rave
+SOL	@sol_vv2end	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	fire_color04	Gun Flame, HMC, HMCExe, New Sidewinder, Tyrant Rave, Volcanic Viper Air HS, Volcanic Viper Air S, Volcanic Viper Land HS, and 2 more
+SOL	@dsl_floor_damage	HMCExe
+SOL	@dsl_ryuhai01	HMC
+SOL	@sol416_FireBurst	New Sidewinder
+SOL	@sol416_FireBurstSub	New Sidewinder
+SOL	@sol_616_handfire01a	round win
+SOL	@sol_616_handfire01b	round win
+SOL	@sol_616_handfire01c	round win
+SOL	@sol_616_handfire02	round win
+SOL	@sol_gunflame	Gun Flame
+SOL	@sol_gunflame_end	Gun Flame
+SOL	@sol_tyrantrave2	Tyrant Rave
+SOL	@sol_vv2end	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvend	Volcanic Viper Land S
+SOL	@sol_vvend_air	Volcanic Viper Air S
+SOL	@sol_vvloop	Volcanic Viper Land S
+SOL	@sol_vvloop_air	Volcanic Viper Air S
+SOL	@sol_vvloop_hs2	Volcanic Viper Land HS
+SOL	@sol_vvloop_hs_air	Volcanic Viper Air HS
+SOL	@sol_vvloop_hs_koware	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvloop_koware	Volcanic Viper Air S, Volcanic Viper Land S
+SOL	@sol_vv_1st	Volcanic Viper Land S
+SOL	@sol_vv_1st_air	Volcanic Viper Air HS, Volcanic Viper Air S, Volcanic Viper Land HS
+SOL	fire_black	Counter Blitz, Gun Flame, HMCExe, New Sidewinder, Tyrant Rave, Volcanic Viper Air HS, Volcanic Viper Air S, Volcanic Viper Land HS, and 2 more
+SOL	@dsl_502_jump	HMCExe
+SOL	@sol416_FireBurst	New Sidewinder
+SOL	@sol_grandviper_floor	Counter Blitz, Vortex
+SOL	@sol_grandviper_sliding	Counter Blitz, Vortex
+SOL	@sol_gunflame	Gun Flame
+SOL	@sol_gunflame_end	Gun Flame
+SOL	@sol_tyrantrave1	Tyrant Rave
+SOL	@sol_tyrantrave2	Tyrant Rave
+SOL	@sol_vv2end	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvend	Volcanic Viper Land S
+SOL	@sol_vvend_air	Volcanic Viper Air S
+SOL	@sol_vvloop	Volcanic Viper Land S
+SOL	@sol_vvloop_air	Volcanic Viper Air S
+SOL	@sol_vvloop_hs2	Volcanic Viper Land HS
+SOL	@sol_vvloop_hs_air	Volcanic Viper Air HS
+SOL	@sol_vvloop_hs_koware	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	@sol_vvloop_koware	Volcanic Viper Air S, Volcanic Viper Land S
+SOL	fire_light	Bandit Bringer Air, Bandit Bringer Land, Dust Finish, Gun Flame, Tyrant Rave, Volcanic Viper Air S, Volcanic Viper Land S, round win
+SOL	@sol_616_handfire02	round win
+SOL	@sol_banditbringer_loop	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_gunflame	Gun Flame
+SOL	@sol_tyrantrave2	Tyrant Rave
+SOL	@sol_vvloop	Volcanic Viper Land S
+SOL	@sol_vvloop_air	Volcanic Viper Air S
+SOL	fire_light_short	Counter Blitz, Fefnir, Tyrant Rave, Volcanic Viper Air HS, Volcanic Viper Land HS, Vortex
+SOL	@sol_fafnir_main	Fefnir
+SOL	@sol_grandviper_atk	Counter Blitz, Vortex
+SOL	@sol_tyrantrave1	Tyrant Rave
+SOL	@sol_vv_ptclight	Volcanic Viper Air HS, Volcanic Viper Land HS
+SOL	fire_smoke	Bandit Bringer Air, Bandit Bringer Land, Dust Finish, Gun Flame, New Sidewinder, Tyrant Rave
+SOL	@sol416_FireBurst	New Sidewinder
+SOL	@sol_banditbringer_loop	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_cs500_eff01	Tyrant Rave
+SOL	@sol_gunflame	Gun Flame
+SOL	fire_cs	HMC, Tyrant Rave
+SOL	@dsl_cs501_bg	HMC
+SOL	@sol_cs500_glare	Tyrant Rave
+SOL	fire_dsl01	Fefnir, HMC, HMCExe
+SOL	@dsl_502_dash	HMC, HMCExe
+SOL	@dsl_502_jump	HMCExe
+SOL	@dsl_ryuhai01	HMC
+SOL	@dsl_tukamifire_atk	HMCExe
+SOL	@sol_fafnir_main	Fefnir
+SOL	fire_dsl02	Bandit Bringer Air, Bandit Bringer Land, Dust Finish, HMC, HMCExe, Tyrant Rave
+SOL	@dsl_502_atk01	HMCExe
+SOL	@dsl_502_atk02	HMCExe
+SOL	@dsl_ryuhai01	HMC
+SOL	@dsl_tukamifire_end	HMC, HMCExe
+SOL	@dsl_wing_fire	HMC
+SOL	@sol_banditbringer_end	Bandit Bringer Air, Bandit Bringer Land, Dust Finish
+SOL	@sol_tyrantrave1	Tyrant Rave
+SOL	@sol_tyrantrave2	Tyrant Rave
+TST	tst_crow	Hide, Nml Atk 5F, Nml Atk 6F, TST Special 5, TST Special 6, TST Special 7, TST Ultimate 1, every frame (while active), and 2 more
+TST	@tst_500_scratch03	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch04	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch05	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch06	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_wing01	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_wing02	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_401scubuss_hit	TST Special 7
+TST	@tst_401_succubus_end	TST Special 7
+TST	@tst_500_saccubus_end	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_crow_atkeff	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_atkeff_end	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_atkeff_hit	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_atk_outside	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_move	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_moveend	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_warp	Hide, Nml Atk 5F, Nml Atk 6F, TST Special 7, and 3 more
+TST	@tst_CS500_scr	TST Ultimate 1
+TST	@tst_CSwin_crow_fly	match win
+TST	@tst_CSwin_crow_start	match win
+TST	@tst_warp_end	TST Special 5, TST Special 6
+TST	@tst_warp_end_air	TST Special 5, TST Special 6
+TST	@tst_warp_start	TST Special 5, TST Special 6
+TST	@tst_warp_start_air	TST Special 5, TST Special 6
+TST	@tst_warp_start_distance	TST Special 5, TST Special 6
+TST	tst_sickle	Delete shot scull start, Dust Finish, Hide, Nml Atk 5F, Nml Atk 6F, TST Special 1, TST Special 2, TST Special 3, and 8 more
+TST	@tst_400_blood_line02	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_400_blood_line03	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_400_blood_line04	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_400_floor01	TST Special 1, TST Special 2
+TST	@tst_400_floor02	TST Special 1, TST Special 2
+TST	@tst_400_scull_start_line	Delete shot scull start, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_400_shot_splash01	TST Special 1
+TST	@tst_400_shot_splash02	TST Special 1
+TST	@tst_400_start_splash	TST Special 1
+TST	@tst_401_blood_line03	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_blood_line04	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_scull_start_line	Delete shot scull start, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_401_shot_splash01	TST Special 2
+TST	@tst_401_shot_splash02	TST Special 2
+TST	@tst_401_start_splash	TST Special 2
+TST	@tst_402_shot_start01	TST Special 3
+TST	@tst_402_shot_start02	TST Special 3
+TST	@tst_402_shot_start03	TST Special 3
+TST	@tst_402_shot_start04	TST Special 3
+TST	@tst_403_shot_start01	Dust Finish, TST Special 4
+TST	@tst_403_shot_start02	Dust Finish, TST Special 4
+TST	@tst_403_shot_start03	Dust Finish, TST Special 4
+TST	@tst_403_shot_start04	Dust Finish, TST Special 4
+TST	@tst_500_scratch01	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch02	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch03	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch04	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch05	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_scratch06	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_splash01	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_500_splash02	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_air_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_start	Delete shot scull start, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_air_succubus_change	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_start	Delete shot scull start, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_Ground_succubus_change	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_scull_dash	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_scull_end	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_400_succubus_end	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_succubus_end	TST Special 7
+TST	@tst_500_saccubus_end	Nml Atk 5F, Nml Atk 6F, TST Special 7, TST Ultimate 1, and 3 more
+TST	@tst_crow_atkeff_end	Nml Atk 5F, Nml Atk 6F, TST Special 7, every frame (while active), and 2 more
+TST	@tst_crow_warp	Hide, Nml Atk 5F, Nml Atk 6F, TST Special 7, and 3 more
+TST	tst_cs_blood	match win
+TST	@tst_CSwin_blood	match win
+TST	tst_cage	match win
+TST	@tst_CSwin_drop	match win
+TST	@tst_CSwin_flash	match win
+TST	tst_beast	5D, Counter Blitz, Homing Jump, TST Special 9, TST Ultimate 1
+TST	@tst_205hand	5D, Counter Blitz, Homing Jump
+TST	@tst_205hole	5D, Counter Blitz
+TST	@tst_411beast_cancel	TST Special 9
+TST	@tst_CS500_scr	TST Ultimate 1
+TST	tst_sickle_hi	2D, 2H, 2S, 5H, 6H, 6P, Counter Blitz, Nml Atk 5F, and 9 more
+TST	@tst_202_01	c.S
+TST	@tst_202_02	c.S
+TST	@tst_202_03	c.S
+TST	@tst_202_04	c.S
+TST	@tst_202_05	c.S
+TST	@tst_203_01	f.S
+TST	@tst_203_02	f.S
+TST	@tst_203_03	f.S
+TST	@tst_203_04	f.S
+TST	@tst_204_01	5H
+TST	@tst_204_02	5H
+TST	@tst_204_03	5H
+TST	@tst_213_01	6H, Counter Blitz
+TST	@tst_213_02	6H, Counter Blitz
+TST	@tst_213_03	6H, Counter Blitz
+TST	@tst_213_04	6H, Counter Blitz
+TST	@tst_213_05	6H, Counter Blitz
+TST	@tst_232_01	2S
+TST	@tst_232_02	2S
+TST	@tst_233_01	2H
+TST	@tst_233_02	2H
+TST	@tst_233_03	2H
+TST	@tst_233_04	2H
+TST	@tst_233_05	2H
+TST	@tst_233_06	2H
+TST	@tst_252_01	j.S
+TST	@tst_252_02	j.S
+TST	@tst_252_03	j.S
+TST	@tst_253_01	j.H
+TST	@tst_253_02	j.H
+TST	@tst_253_03	j.H
+TST	@tst_253_04	j.H
+TST	@tst_253_05	j.H
+TST	@tst_254_01	j.D
+TST	@tst_254_02	j.D
+TST	@tst_254_03	j.D
+TST	@tst_254_04	j.D
+TST	@tst_254_05	j.D
+TST	@tst_254_06	j.D
+TST	@tst_254_07	j.D
+TST	@tst_310_01	Throw Exe
+TST	@tst_310_02	Throw Exe
+TST	@tst_360_charge_attack01	Counter Blitz, Wild Assault
+TST	@tst_360_charge_attack02	Counter Blitz, Wild Assault
+TST	@tst_210atk_01	6P
+TST	@tst_210atk_02	6P
+TST	@tst_210atk_03	6P
+TST	@tst_210atk_04	6P
+TST	@tst_210atk_05	6P
+TST	@tst_210atk_06	6P
+TST	@tst_234_01	2D
+TST	@tst_234_02	2D
+TST	@tst_234_03	2D
+TST	@tst_234_04	2D
+TST	@tst_234_05	2D
+TST	@tst_234_06	2D
+TST	@tst_234_floor	2D
+TST	@tst_301_foor	Nml Atk 5F
+TST	@tst_301_foorend	Nml Atk 5F
+TST	@tst_floorblood_end	TST Special 8, TST Special 9
+TST	tst_outline	5D, Air Throw Exe, Counter Blitz, Delete shot scull start, Homing Jump, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_401_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_start	Delete shot scull start, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_ground_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_start	Delete shot scull start, TST Special 1, TST Special 2, TST Special 3, and 5 more
+TST	@tst_205hand	5D, Counter Blitz, Homing Jump
+TST	@tst_wara_end	Air Throw Exe
+TST	tst_scull_eye	TST Special 1, TST Special 2, TST Special 3, TST Special 4, TST Special 5, TST Special 6, TST Special 7, TST Ultimate 1
+TST	@tst_401_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_401_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_air_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_attack	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+TST	@tst_ground_scull_loop	TST Special 1, TST Special 2, TST Special 3, TST Special 4, and 4 more
+UNI	uni_wep1	Counter Blitz, Wild Assault
+UNI	@uni_360_floor	Counter Blitz, Wild Assault
+UNI	uni_wep2	Counter Blitz, Wild Assault
+UNI	@uni_360_floor	Counter Blitz, Wild Assault
+UNI	uni_cs500_hair	UNI ULT 01 WFree exe
+UNI	@uni_CS500_scr01	UNI ULT 01 WFree exe
+UNI	uni_drain_bodylight	UNI ULT 01 WFree exe, UNI ULT 02 SDAnnihilate, every frame (while active)
+UNI	@uni_CS500_scr02	UNI ULT 01 WFree exe
+UNI	@uni_CS520_scr01	UNI ULT 02 SDAnnihilate
+UNI	@uni_CS520_scr02	UNI ULT 02 SDAnnihilate
+UNI	@uni_drain_aura	every frame (while active)
+UNI	uni_drain_pointlight	UNI ULT 01 SDeviation, UNI ULT 02 SDAnnihilate, World Side Break Master DS
+UNI	@uni_500_bodylight01	UNI ULT 01 SDeviation, UNI ULT 02 SDAnnihilate, World Side Break Master DS
+UNI	uni_519_electrification_scr	UNI ULT 01 D, UNI ULT 01 SDeviation
+UNI	@uni_518_n01	UNI ULT 01 D
+UNI	@uni_519_electrification_scr_n01	UNI ULT 01 SDeviation
+VEN	cueball_ball	Counter Blitz, Hide, VEN Special 01, VEN Special 02, VEN Special 03, VEN Special 04 HS Air, VEN Special 04 HS Land, VEN Special 04 S Air, and 4 more
+VEN	@cue_buff2_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_buff2_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_loop_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	cueball_eye	Counter Blitz, Hide, VEN Special 01, VEN Special 02, VEN Special 03, VEN Special 04 HS Air, VEN Special 04 HS Land, VEN Special 04 S Air, and 4 more
+VEN	@cue_buff2_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_buff2_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_loop_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	cueball_outline	Counter Blitz, Hide, VEN Special 01, VEN Special 02, VEN Special 03, VEN Special 04 HS Air, VEN Special 04 HS Land, VEN Special 04 S Air, and 4 more
+VEN	@cue_buff2_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_buff2_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_loop_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	cueball_shadow	Counter Blitz, Hide, VEN Special 01, VEN Special 02, VEN Special 03, VEN Special 04 HS Air, VEN Special 04 HS Land, VEN Special 04 S Air, and 4 more
+VEN	@cue_buff2_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_buff2_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_loop_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	cueball_undercolor	Counter Blitz, Hide, VEN Special 01, VEN Special 02, VEN Special 03, VEN Special 04 HS Air, VEN Special 04 HS Land, VEN Special 04 S Air, and 4 more
+VEN	@cue_buff2_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_buff2_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_generate_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_ball_cue_loop_1p	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	cueball_zanzo	Counter Blitz, Hide, VEN Special 01, VEN Special 02, VEN Special 03, VEN Special 04 HS Air, VEN Special 04 HS Land, VEN Special 04 S Air, and 4 more
+VEN	@ven_cue_impact_loop	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+VEN	@ven_cue_impact_start	Counter Blitz, Hide, VEN Special 01, VEN Special 02, and 8 more
+ZAT	shadow_base	2D, 2H, 2K, 2P, 2S, 5D, 5H, 5K, and 118 more
+ZAT	@zat_200eff01	5P
+ZAT	@zat_200eff02	2P
+ZAT	@zat_201eff01	5K
+ZAT	@zat_201eff02	5K
+ZAT	@zat_204_Cerberus	5H, Counter Blitz
+ZAT	@zat_204_cerberus_reverse2	5H, Counter Blitz
+ZAT	@zat_205eff01	5D, Counter Blitz
+ZAT	@zat_205eff02	5D, Counter Blitz
+ZAT	@zat_210eff01	6P
+ZAT	@zat_211floor	6K
+ZAT	@zat_213eff	6H
+ZAT	@zat_213landing	6H
+ZAT	@zat_213liquid04	6H
+ZAT	@zat_230eff	2P
+ZAT	@zat_231eff	2K
+ZAT	@zat_232eff01	2S
+ZAT	@zat_232eff02	2S
+ZAT	@zat_234eff01	2D
+ZAT	@zat_234eff02	2D
+ZAT	@zat_300chohatu01	Nml Atk 5F
+ZAT	@zat_301floor	Nml Atk 5F
+ZAT	@zat_350eff	Roman Cancel
+ZAT	@zat_403eff	Eddie End
+ZAT	@zat_407floor	Drunkerd Shade
+ZAT	@zat_407splash	Drunkerd Shade
+ZAT	@zat_407_reflect	Drunkerd Shade
+ZAT	@zat_408_edy_burst	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_end	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_loop	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_move	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_615floor	round win
+ZAT	@zat_616floor	round win
+ZAT	@zat_800_floorshadow01	match win
+ZAT	@zat_800_floorshadow02	match win
+ZAT	@zat_amorphous_aura	Amorphous
+ZAT	@zat_amorphous_aura530	Amorphous
+ZAT	@zat_amorphous_shark	Amorphous
+ZAT	@zat_amorphous_wave	Amorphous
+ZAT	@zat_amorphous_wave_end	Amorphous
+ZAT	@zat_appear_l	5D, Counter Blitz, Nml Atk Throw
+ZAT	@zat_appear_s	2S
+ZAT	@zat_burst	Burst
+ZAT	@zat_burst_landing	Burst
+ZAT	@zat_crouch	crouching down
+ZAT	@zat_crouchatk_shadow_end01	2K, 2P, crouching
+ZAT	@zat_crouchatk_shadow_end02	Drunkerd Shade
+ZAT	@zat_crouchatk_shadow_start01	2D, 2K, 2P, crouching
+ZAT	@zat_crouchatk_shadow_start02	2H, 2S, Throw Exe
+ZAT	@zat_crouch_loop	crouching
+ZAT	@zat_damned_wave01	Damned Fang, Damned Fang Exe
+ZAT	@zat_dashbrake	FDash Stop, Homing Jump, WSB Master Up, WSB Slave Up
+ZAT	@zat_dashstop	FDash Stop
+ZAT	@zat_down_floor	Down Ground Frozen, FDown Bound, FDown Down, VDown Bound, and 1 more
+ZAT	@zat_dragon01	f.S
+ZAT	@zat_dragon01_reverse2	f.S
+ZAT	@zat_drill2	Invite Hell
+ZAT	@zat_drill2_del	Invite Hell
+ZAT	@zat_eddieA	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_eddieD	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_eddiedelete_floor	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_eddiemove01	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_eddie_stretch	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_guard_crouch_end	Crouch Guard End
+ZAT	@zat_guard_crouch_start	Crouch Guard Loop, Faultless Pressure Land, High Guard Loop, Mid Guard Loop
+ZAT	@zat_guard_end	Faultless Pressure Land, High Guard End, Mid Guard End
+ZAT	@zat_guard_lv1	Faultless Pressure Land, Guard delete, High Guard Loop, Mid Guard Loop
+ZAT	@zat_guard_lv1_crouch	Crouch Guard Loop, Guard delete
+ZAT	@zat_guard_lv2	Guard delete, High Guard Loop, Mid Guard Loop
+ZAT	@zat_guard_lv2_crouch	Crouch Guard Loop, Guard delete
+ZAT	@zat_guard_lv3	Guard delete, High Guard Loop, Mid Guard Loop
+ZAT	@zat_guard_lv3_crouch	Crouch Guard Loop, Guard delete
+ZAT	@zat_guard_start	Crouch Guard Loop, Faultless Pressure Land, High Guard Loop, Mid Guard Loop
+ZAT	@zat_harituki	Wall Haritsuki, Wall Haritsuki Land
+ZAT	@zat_harituki_modori	Wall Haritsuki Get Up
+ZAT	@zat_jump01	Jump Pre
+ZAT	@zat_jump02	Homing Jump, Jump Pre
+ZAT	@zat_jump03	Damned Fang Exe, Jump Pre
+ZAT	@zat_kakusei501_air	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei501_edy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei501_noedy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei_aura_air_re	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei_aura_re	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei_landing	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_keii1	Nml Atk 6F
+ZAT	@zat_keii2	Nml Atk 6F
+ZAT	@zat_landing	Burst, Fly, Hajikare Air, Jump Landing, and 5 more
+ZAT	@zat_liquid07	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_liquid08	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_lose	Lose
+ZAT	@zat_Ndown_sp	Quick Down, WSB Slave Slide, WSB Slave Up, World Side Break Master DS
+ZAT	@zat_rakka01	Air Throw Exe, jump
+ZAT	@zat_rakka02	jump
+ZAT	@zat_rakka03	jump
+ZAT	@zat_reaction_crouch	crouching
+ZAT	@zat_shadow_del	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_shadow_del_floor	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_shadow_dive_end	Damned Fang Exe, Nml Atk 5F, Nml Atk 6F, round win
+ZAT	@zat_shadow_dive_idling	Break The Law, Nml Atk 5F, round win
+ZAT	@zat_shadow_dive_splash02	Damned Fang Exe, Nml Atk 5F, Nml Atk 6F, round win
+ZAT	@zat_shadow_furimuki	Stand Turn, zat test 4
+ZAT	@zat_shadow_nakawari1	Crouch 2 Stand, Crouch Turn, Float Damage, Landing Stiff
+ZAT	@zat_shadow_okiagari	BDown 2 Stand, FDown 2 Stand, World Side Break Slave DS
+ZAT	@zat_shark01	2H
+ZAT	@zat_shark01_reverse2	2H
+ZAT	@zat_standatk_shadow_end01	5P, Eddie Command, Eddie Summon A, Eddie Summon B, and 3 more
+ZAT	@zat_standatk_shadow_end02	5D, 6P, Counter Blitz, backdash
+ZAT	@zat_standatk_shadow_start01	5P, Counter Blitz, Damned Fang, Wild Assault
+ZAT	@zat_standatk_shadow_start02	5D, 5H, 5K, 6P, and 10 more
+ZAT	@zat_standmorph01	BDown 2 Stand, FDown 2 Stand, World Side Break Slave DS
+ZAT	@zat_stand_end	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 8 more
+ZAT	@zat_stand_loop	Eddie Surround, Entry To Stand 1P, Entry To Stand 2P, Fade Out, and 6 more
+ZAT	@zat_stand_start	6K, Amorphous, Eddie Summon Only, Eddie Surround, and 35 more
+ZAT	@zat_throw_eff	Throw Exe
+ZAT	@zat_under_edy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_walkback_loop	walking back
+ZAT	@zat_walk_loop	walking
+ZAT	@zat_yoroke	Jitabata Loop
+ZAT	@zat_202footshadow	c.S
+ZAT	@zat_202Saw00	c.S
+ZAT	@zat_202Saw01	c.S
+ZAT	@zat_202Saw02	c.S
+ZAT	@zat_202SawEnd	c.S
+ZAT	@zat_damage01	BDown Bound, Down Ground Frozen, Jitabata Loop, Korogari, and 27 more
+ZAT	@zat_damage02	FDown Upper, Nokezori Bottom Lv 1, Nokezori Bottom Lv 2, Nokezori Bottom Lv 3, and 17 more
+ZAT	@zat_damage03	Nokezori Bottom Lv 1, Nokezori Bottom Lv 2, Nokezori Bottom Lv 3, Nokezori Bottom Lv 4, and 16 more
+ZAT	@zat_DamnedEnd	Damned Fang Exe
+ZAT	@zat_Damnedsplash	Damned Fang Exe
+ZAT	@zat_Danmed_Emergence00	Damned Fang Exe
+ZAT	@zat_dash_end	WSB Master Bound, WSB Master Down, WSB Master Up, WSB Slave Slide
+ZAT	shadow_outline	2H, 2S, 5H, 6H, 6K, Air Throw Exe, Amorphous, BDown 2 Stand, and 27 more
+ZAT	@zat_204_Cerberus	5H, Counter Blitz
+ZAT	@zat_204_cerberus_reverse2	5H, Counter Blitz
+ZAT	@zat_211liquid01	6K
+ZAT	@zat_211liquid02	6K
+ZAT	@zat_211liquid03	6K
+ZAT	@zat_213eff	6H
+ZAT	@zat_213liquid01	6H
+ZAT	@zat_213liquid02	6H
+ZAT	@zat_213liquid03	6H
+ZAT	@zat_232eff02	2S
+ZAT	@zat_300chohatu01	Nml Atk 5F
+ZAT	@zat_407splash	Drunkerd Shade
+ZAT	@zat_amorphous_shark	Amorphous
+ZAT	@zat_dragon01	f.S
+ZAT	@zat_dragon01_reverse2	f.S
+ZAT	@zat_drill2	Invite Hell
+ZAT	@zat_drill2_del	Invite Hell
+ZAT	@zat_harituki_modori	Wall Haritsuki Get Up
+ZAT	@zat_jump01	Jump Pre
+ZAT	@zat_jump02	Homing Jump, Jump Pre
+ZAT	@zat_jump03	Damned Fang Exe, Jump Pre
+ZAT	@zat_kakusei501_air	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei501_edy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei501_noedy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_keii1	Nml Atk 6F
+ZAT	@zat_keii2	Nml Atk 6F
+ZAT	@zat_rakka01	Air Throw Exe, jump
+ZAT	@zat_rakka02	jump
+ZAT	@zat_rakka03	jump
+ZAT	@zat_reaction_crouch	crouching
+ZAT	@zat_shadow_dive_end	Damned Fang Exe, Nml Atk 5F, Nml Atk 6F, round win
+ZAT	@zat_shark01	2H
+ZAT	@zat_shark01_reverse2	2H
+ZAT	@zat_standmorph01	BDown 2 Stand, FDown 2 Stand, World Side Break Slave DS
+ZAT	@zat_throw_eff	Throw Exe
+ZAT	@zat_202Saw00	c.S
+ZAT	@zat_202Saw01	c.S
+ZAT	@zat_202Saw02	c.S
+ZAT	@zat_Danmed_Emergence00	Damned Fang Exe
+ZAT	@zat_Executor	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_Executor_start	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_sunvoid_spheremorph	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	shadow_eye	2D, 2H, 2K, 2P, 2S, 5D, 5H, 5K, and 76 more
+ZAT	@zat_204_Cerberus	5H, Counter Blitz
+ZAT	@zat_204_cerberus_reverse2	5H, Counter Blitz
+ZAT	@zat_300chohatu01	Nml Atk 5F
+ZAT	@zat_408_edy_burst	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_end	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_loop	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_move	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_616floor	round win
+ZAT	@zat_800_floorshadow01	match win
+ZAT	@zat_amorphous_shark	Amorphous
+ZAT	@zat_amorphous_wave	Amorphous
+ZAT	@zat_amorphous_wave_end	Amorphous
+ZAT	@zat_crouch	crouching down
+ZAT	@zat_crouchatk_shadow_end01	2K, 2P, crouching
+ZAT	@zat_crouchatk_shadow_end02	Drunkerd Shade
+ZAT	@zat_crouchatk_shadow_start01	2D, 2K, 2P, crouching
+ZAT	@zat_crouchatk_shadow_start02	2H, 2S, Throw Exe
+ZAT	@zat_crouch_loop	crouching
+ZAT	@zat_dragon01	f.S
+ZAT	@zat_dragon01_reverse2	f.S
+ZAT	@zat_kakusei501_air	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei501_edy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_kakusei501_noedy	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_keii1	Nml Atk 6F
+ZAT	@zat_keii2	Nml Atk 6F
+ZAT	@zat_lose	Lose
+ZAT	@zat_reaction_crouch	crouching
+ZAT	@zat_shadow_furimuki	Stand Turn, zat test 4
+ZAT	@zat_shadow_nakawari1	Crouch 2 Stand, Crouch Turn, Float Damage, Landing Stiff
+ZAT	@zat_shark01	2H
+ZAT	@zat_shark01_reverse2	2H
+ZAT	@zat_standatk_shadow_end01	5P, Eddie Command, Eddie Summon A, Eddie Summon B, and 3 more
+ZAT	@zat_standatk_shadow_end02	5D, 6P, Counter Blitz, backdash
+ZAT	@zat_standatk_shadow_start01	5P, Counter Blitz, Damned Fang, Wild Assault
+ZAT	@zat_standatk_shadow_start02	5D, 5H, 5K, 6P, and 10 more
+ZAT	@zat_stand_end	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 8 more
+ZAT	@zat_stand_loop	Eddie Surround, Entry To Stand 1P, Entry To Stand 2P, Fade Out, and 6 more
+ZAT	@zat_stand_start	6K, Amorphous, Eddie Summon Only, Eddie Surround, and 35 more
+ZAT	@zat_walkback_loop	walking back
+ZAT	@zat_walk_loop	walking
+ZAT	@zat_DamnedEnd	Damned Fang Exe
+ZAT	@zat_Damnedsplash	Damned Fang Exe
+ZAT	shadow_teeth	2H, Amorphous, Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, Eddie Summon Only, Eddie Surround, and 7 more
+ZAT	@zat_300chohatu01	Nml Atk 5F
+ZAT	@zat_408_edy_end	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_408_edy_loop	Eddie Summon A, Eddie Summon B, Eddie Summon C, Eddie Summon D, and 6 more
+ZAT	@zat_amorphous_shark	Amorphous
+ZAT	@zat_dragon01	f.S
+ZAT	@zat_dragon01_reverse2	f.S
+ZAT	@zat_reaction_crouch	crouching
+ZAT	@zat_shark01	2H

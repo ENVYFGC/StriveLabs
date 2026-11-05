@@ -10,6 +10,7 @@
 #include "imgui_overlay.h"
 namespace crash_log { void install(const std::filesystem::path& dir); }
 namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
+namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); }
 #include "menu.h"
 #include "recordings.h"
 #include "replay_manager.h"
@@ -22,6 +23,7 @@ namespace select_memory { void init(const std::filesystem::path& dir); void save
 #include "damage_panel.h"
 #include "game_menu.h"
 #include "handshake.h"
+#include "recolor_share.h"
 #include "combo_online.h"
 #include <chrono>
 #include <filesystem>
@@ -131,6 +133,10 @@ bool hook_KeyJustPressed(void* controller, uint32_t mask)
     return orig_KeyJustPressed(controller, mask);
 }
 
+// The pause's style is the mod's setting, but with the color editor open the fight stops while the game
+// keeps running (style 1), so the editor's free camera and picking work on the frozen frame.
+static int pauseStyle() { return recolor_test::isOpen() && game_state.checkModeTraining() ? 1 : ModMenu::instance().pauseType(); }  // training only, since a replay keeps feeding inputs
+
 class PauseManager
 {
     bool isPaused = false;
@@ -172,7 +178,7 @@ public:
 
         updateBinds();
 
-        if (ModMenu::instance().pauseType() == 0)
+        if (pauseStyle() == 0)
         {
             while (isPaused && !shouldAdvance)
             {
@@ -375,8 +381,13 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
     if (game_state.checkModeReplay()) ReplayManager::instance().update();
 
-    if (ModMenu::instance().pauseType() == 0 && pause_manager.advancing()) return;
-    if (ModMenu::instance().pauseType() == 1 && pause_manager.cinematicShouldAdvance()) return;
+    const int style = pauseStyle();
+    if ((style == 0 && pause_manager.advancing()) ||
+        (style == 1 && pause_manager.cinematicShouldAdvance()))
+    {
+        if (game_state.checkModeTraining()) { recolor_test::update(false); recolor_test::afterBattleUpdate(); }  // paused here too
+        return;
+    }
 
     ModMenu::instance().update(PressedKeys{
         keybindings.getButtonState(keybindings.TOGGLE_FRAMEBAR_BUTTON),
@@ -410,6 +421,8 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     }
 
     if (game_state.checkModeTraining()) damage_panel::update(round_started);
+    if (game_state.checkModeTraining()) recolor_test::update(round_started);
+    if (game_state.checkModeTraining() && !Timeline::instance().canAdvanceFrame()) recolor_test::afterBattleUpdate();  // the free camera, paused
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
     if (g_training_pending)
     {
@@ -419,6 +432,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
                   + (g_training_press & kFakeReset ? "reset " : "") + "bind");
     }
     orig_UpdateBattle(GameState, DeltaTime);
+    if (game_state.checkModeTraining()) recolor_test::afterBattleUpdate();
     ReplayManager::instance().onBattleFrameProcessed();
 
     if (game_state.matchStarted)
@@ -512,7 +526,8 @@ static void dropKeysOutsideFight()
                 if (const int step = imgui_overlay::takeOnlinePickStep()) combo_trials::stepOnlineVersion(step);
             }
         }
-        else imgui_overlay::setOnlinePicker(false);  // a fight started: out of its way
+        else if (keybindings.takeAction(binds::ONLINE_VERSION))  // in an online fight it opens the recolor sharing panel, and the version stays put
+            imgui_overlay::setOnlinePicker(!imgui_overlay::onlinePickerOpen());
         keybindings.resetButtons();
         // Only when the overlay draws out here (an online fight, the online version
         // window): never while the game is still starting up.
@@ -524,6 +539,16 @@ static void dropKeysOutsideFight()
 void hook_UpdateSystem(uintptr_t System)
 {
     orig_UpdateSystem(System);
+    {  // The overlay's Present hook comes 5 s after the game's first update, on its own thread.
+       // It makes a throwaway DirectX device, so never while the game starts up, which OBS or a playing video
+       // already makes slow.
+        static ULONGLONG first = 0;
+        static bool hooked = false;
+        if (!hooked) {
+            if (!first) first = GetTickCount64();
+            else if (GetTickCount64() - first > 5000) { hooked = true; std::thread([] { imgui_overlay::install(); }).detach(); }
+        }
+    }
     ReplayManager::instance().setInputSystem(System);
     // Out of battle (the fight ended on the frame a bind fired), nothing clears the
     // press at the start of the next battle update, so clear it here, and drop one
@@ -533,11 +558,17 @@ void hook_UpdateSystem(uintptr_t System)
     const bool battle_running = GetTickCount64() - g_last_battle_update < 250;
     combo_trials::latchVersion(battle_running);
     combo_trials::updateOnline(GetTickCount64() - g_any_battle_update < 250);
+    recolor_share::update(GetTickCount64() - g_any_battle_update < 250);
     if (!battle_running) {
         combo_trials::idle();     // left training: the trial doesn't carry on
         damage_panel::release();  // the game's panel goes with the fight
         game_menu::release();
     }
+    if (GetTickCount64() - g_any_battle_update >= 250) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
+    // Saved recolors on the menus' models (character select), only with no fight at all.
+    if (GetTickCount64() - g_any_battle_update > 250) recolor_test::menuUpdate(false);
+    else if (!game_state.checkModeTraining()) recolor_test::menuUpdate(true);  // any other fight gets the saved recolors on the fighters
+    else recolor_test::menuRelease();
     dropKeysOutsideFight();
     // The pads' key controllers share one vtable; its "just pressed" check is the
     // function at +0x60. Hooked once, as soon as the first controller exists.
@@ -689,7 +720,8 @@ public:
         combo_online::init();
         crash_log::install(working_dir);  // first hard fault -> combo_log.txt + StriveLabs_crash.dmp, for user reports
         select_memory::init(working_dir);
-        imgui_overlay::install();
+        recolor_test::init(working_dir);
+        recolor_share::init(working_dir);
         ReplayManager::instance().logStatus();
     }
 };

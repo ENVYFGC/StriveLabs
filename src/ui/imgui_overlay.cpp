@@ -4,6 +4,10 @@
 #include "combo_log.h"
 #include "keybinds.h"
 #include "combo_trials.h"
+#include "recolor_test.h"
+#include "recolor_share.h"
+#include "update_check.h"
+#include <random>
 #include <tuple>
 
 #ifndef NOMINMAX
@@ -50,6 +54,7 @@ namespace {
   HWND g_hwnd = nullptr;
   WNDPROC g_wndproc = nullptr;
   bool g_init_failed = false;
+  std::atomic<int> g_other_presents{0};  // Presents that wanted drawing before any UnrealWindow one. Game Pass may use another class.
   std::atomic<bool> g_running{false};
   std::mutex g_frame_mutex;  // one ImGui frame at a time
 
@@ -74,12 +79,21 @@ namespace {
 
   // Mouse and keyboard go to ImGui only while the F5 menu is open.
   LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible)) ||
+    if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen())) ||
                       (!modScreenActive() && menu_ui::g_online_picker))) {
       ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp);
       const ImGuiIO& io = ImGui::GetIO();
       const bool mouse = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST;
       if (mouse && io.WantCaptureMouse) return 0;
+      const bool key = msg >= WM_KEYFIRST && msg <= WM_KEYLAST;
+      if (key && io.WantTextInput) return 0;
+      if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && recolor_test::freeCameraKeys()) {
+        switch (wp) {
+          case 'W': case 'A': case 'S': case 'D': case 'Q': case 'E': case 'R':
+          case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: return 0;
+          default: break;
+        }
+      }
     }
     return CallWindowProcW(g_wndproc, hwnd, msg, wp, lp);
   }
@@ -121,6 +135,27 @@ namespace {
     return srv;
   }
 
+  // Makes an ImGui texture from RGBA pixels and releases the old one, if any.
+  ImTextureID upload_rgba(const uint8_t* px, int w, int h, ImTextureID old) {
+    if (old) reinterpret_cast<ID3D11ShaderResourceView*>(old)->Release();
+    if (!g_device || !px || w <= 0 || h <= 0) return 0;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = static_cast<UINT>(w); td.Height = static_cast<UINT>(h); td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sd{px, static_cast<UINT>(w) * 4, 0};
+    ID3D11Texture2D* tex = nullptr;
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (SUCCEEDED(g_device->CreateTexture2D(&td, &sd, &tex)) && tex) {
+      g_device->CreateShaderResourceView(tex, nullptr, &srv);
+      tex->Release();
+    }
+    return reinterpret_cast<ImTextureID>(srv);
+  }
+
+  ID3D11SamplerState* g_point = nullptr;  // Nearest-texel sampling, for the zoomed-in texture view
+  void point_sampling(const ImDrawList*, const ImDrawCmd*) { if (g_point && g_context) g_context->PSSetSamplers(0, 1, &g_point); }
+
   bool init(IDXGISwapChain* swap) {
     if (FAILED(swap->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void**>(&g_device))) || !g_device) return false;
     g_device->GetImmediateContext(&g_context);
@@ -140,6 +175,18 @@ namespace {
     menu_ui::load_fonts(static_cast<float>(desc.BufferDesc.Height));
     ImGui_ImplWin32_Init(g_hwnd);
     ImGui_ImplDX11_Init(g_device, g_context);
+    menu_ui::upload_rgba = &upload_rgba;
+    menu_ui::device_gen++;
+    {
+      D3D11_SAMPLER_DESC sd{};
+      sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+      sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+      sd.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+      sd.MaxLOD = D3D11_FLOAT32_MAX;
+      if (g_point) { g_point->Release(); g_point = nullptr; }
+      g_device->CreateSamplerState(&sd, &g_point);
+      menu_ui::point_sampling = g_point ? &point_sampling : nullptr;
+    }
     if (auto* srv = load_png((ModMenu::dataDir() / "StriveLabs_logo.png").wstring(), menu_ui::logo_aspect))
       menu_ui::logo = reinterpret_cast<ImTextureID>(srv);
     else
@@ -160,9 +207,186 @@ namespace {
     return SUCCEEDED(swap->GetDesc(&desc)) && desc.OutputWindow == g_hwnd;
   }
 
+  // The color editor's scans. Reads the back buffer (the game's frame, before our overlay), every step-th pixel,
+  // as 8-bit RGB. Returns 1 when read, 0 when it can't read right now (tried again later), and -1 for a format
+  // it can't read (why says which).
+  float half_to_float(uint16_t v) {
+    const uint32_t s = (v >> 15) & 1, e = (v >> 10) & 0x1F, m = v & 0x3FF;
+    if (e == 0) return (s ? -1.0f : 1.0f) * std::ldexp(static_cast<float>(m), -24);
+    if (e == 31) return m ? 0.0f : (s ? -1.0f : 1.0f) * 65504.0f;
+    return (s ? -1.0f : 1.0f) * std::ldexp(static_cast<float>(m | 0x400), static_cast<int>(e) - 25);
+  }
+  int grab_frame(IDXGISwapChain* swap, std::vector<uint8_t>& out, int& w, int& h, int step, std::string& why) {
+    ID3D11Texture2D* back = nullptr;
+    if (FAILED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back))) || !back) return 0;
+    D3D11_TEXTURE2D_DESC d{};
+    back->GetDesc(&d);
+    const DXGI_FORMAT f = d.Format;
+    const bool bgra = f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8X8_UNORM || f == DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
+    const bool rgba = f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    const bool rgb10 = f == DXGI_FORMAT_R10G10B10A2_UNORM;
+    const bool half = f == DXGI_FORMAT_R16G16B16A16_FLOAT;  // HDR in scRGB, where 1.0 is SDR white
+    if (!bgra && !rgba && !rgb10 && !half) {
+      back->Release();
+      why = "the screen's format (" + std::to_string(static_cast<int>(f)) + ") can't be read.";
+      return -1;
+    }
+    ID3D11Texture2D* src = back;  // With MSAA, it's resolved into a plain texture first
+    ID3D11Texture2D* resolved = nullptr;
+    if (d.SampleDesc.Count != 1) {
+      UINT support = 0;
+      if (FAILED(g_device->CheckFormatSupport(f, &support)) || !(support & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE)) {
+        back->Release();
+        why = "the screen's antialiasing can't be read (format " + std::to_string(static_cast<int>(f)) + ").";
+        return -1;
+      }
+      D3D11_TEXTURE2D_DESC rd = d;
+      rd.SampleDesc.Count = 1; rd.SampleDesc.Quality = 0; rd.Usage = D3D11_USAGE_DEFAULT; rd.BindFlags = 0; rd.CPUAccessFlags = 0; rd.MiscFlags = 0;
+      if (FAILED(g_device->CreateTexture2D(&rd, nullptr, &resolved)) || !resolved) { back->Release(); return 0; }
+      g_context->ResolveSubresource(resolved, 0, back, 0, f);
+      src = resolved;
+    }
+    D3D11_TEXTURE2D_DESC sd = d;
+    sd.SampleDesc.Count = 1; sd.SampleDesc.Quality = 0;
+    sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0;
+    ID3D11Texture2D* st = nullptr;
+    if (FAILED(g_device->CreateTexture2D(&sd, nullptr, &st)) || !st) {
+      if (resolved) resolved->Release();
+      back->Release();
+      return 0;
+    }
+    g_context->CopyResource(st, src);
+    D3D11_MAPPED_SUBRESOURCE m{};
+    const bool ok = SUCCEEDED(g_context->Map(st, 0, D3D11_MAP_READ, 0, &m));
+    if (ok) {
+      w = static_cast<int>(d.Width) / step; h = static_cast<int>(d.Height) / step;
+      out.assign(static_cast<size_t>(w) * h * 3, 0);
+      auto to8 = [](float v) { return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+      for (int y = 0; y < h; y++) {
+        const uint8_t* rowb = static_cast<const uint8_t*>(m.pData) + static_cast<size_t>(y) * step * m.RowPitch;
+        for (int x = 0; x < w; x++) {
+          uint8_t r, g, b;
+          if (half) {
+            const uint16_t* p = reinterpret_cast<const uint16_t*>(rowb) + static_cast<size_t>(x) * step * 4;
+            r = to8(half_to_float(p[0])); g = to8(half_to_float(p[1])); b = to8(half_to_float(p[2]));
+          } else {
+            const uint32_t px = reinterpret_cast<const uint32_t*>(rowb)[x * step];
+            if (rgb10) { r = static_cast<uint8_t>((px & 0x3FF) >> 2); g = static_cast<uint8_t>((px >> 10 & 0x3FF) >> 2); b = static_cast<uint8_t>((px >> 20 & 0x3FF) >> 2); }
+            else if (bgra) { b = px & 0xFF; g = px >> 8 & 0xFF; r = px >> 16 & 0xFF; }
+            else { r = px & 0xFF; g = px >> 8 & 0xFF; b = px >> 16 & 0xFF; }
+          }
+          uint8_t* o = &out[(static_cast<size_t>(y) * w + x) * 3];
+          o[0] = r; o[1] = g; o[2] = b;
+        }
+      }
+      g_context->Unmap(st, 0);
+    }
+    st->Release();
+    if (resolved) resolved->Release();
+    back->Release();
+    return ok ? 1 : 0;
+  }
+  // A scan has frame 0 with the fighter all dark, frame 1 with all its regions lit, frame k+2 with the regions whose
+  // number has bit k lit, and the last frame dark again. Each pixel is judged against its own dark and lit values,
+  // so the stage's light, HDR or a color filter can't move it across a fixed line. What doesn't change between dark
+  // and lit (the stage, the HUD, an overlay) stays out, and so does what changed between the first and last dark
+  // frames (something moved). A scan that can't be read cleanly is refused, with the reason, rather than guessed.
+  void scan_capture(IDXGISwapChain* swap) {
+    static std::vector<std::vector<uint8_t>> frames;
+    static int w = 0, h = 0, seen_id = -1, seen_frame = -1, presents = 0;
+    int id = 0, frame = 0, count = 0, groups = 0;
+    if (!recolor_test::scanWanted(id, frame, count, groups)) return;
+    if (id != seen_id || frame != seen_frame) { seen_id = id; seen_frame = frame; presents = 0; }
+    if (++presents < 4) return;
+    if (frame == 0) frames.assign(static_cast<size_t>(count), {});
+    if (static_cast<int>(frames.size()) != count || count < 4 || count > 40) return;  // Joined half way, so the game gives up on it
+    int fw = 0, fh = 0;
+    std::string why;
+    const int got = grab_frame(swap, frames[static_cast<size_t>(frame)], fw, fh, 2, why);
+    if (got < 0) { std::vector<std::vector<uint8_t>>().swap(frames); recolor_test::scanFailed(id, why); return; }
+    if (got == 0) return;  // Try again on the next present
+    if (frame == 0) { w = fw; h = fh; }
+    std::vector<recolor_test::ScanSample> out;
+    if (fw != w || fh != h || w <= 0 || h <= 0) { std::vector<std::vector<uint8_t>>().swap(frames); recolor_test::scanFailed(id, "the window changed size during it."); return; }
+    if (frame < count - 1) { recolor_test::scanGrabbed(id, frame); return; }
+    struct Free { std::vector<std::vector<uint8_t>>& f; ~Free() { std::vector<std::vector<uint8_t>>().swap(f); } } free_frames{frames};  // After the last frame, all of them are let go once read
+    const size_t n = static_cast<size_t>(w) * h;
+    const int bits = count - 3, last = count - 1;
+    auto lum = [&](int k, size_t i) { const uint8_t* p = &frames[static_cast<size_t>(k)][i * 3]; return p[0] + p[1] + p[2]; };
+    // How much a lit region lifts here (the top tenth of it), to tell a real lift from a faint one.
+    std::vector<int> lift;
+    for (size_t i = 0; i < n; i++) if (const int d = lum(1, i) - lum(0, i); d >= 60) lift.push_back(d);
+    if (lift.size() < 8) {  // Nothing lit up, so the fighter isn't in view
+      COMBO_LOG("color editor: scan " + std::to_string(id) + ": nothing lit");
+      recolor_test::scanResult(id, w * 2, h * 2, out);
+      return;
+    }
+    std::nth_element(lift.begin(), lift.begin() + static_cast<std::ptrdiff_t>(lift.size() * 9 / 10), lift.end());
+    const int least = (std::max)(60, lift[lift.size() * 9 / 10] / 3);
+    std::vector<uint16_t> code(n, 0);
+    size_t fighter = 0, moved = 0, clear_px = 0;
+    for (size_t i = 0; i < n; i++) {
+      const int l0 = lum(0, i), span = lum(1, i) - l0;
+      if (span < least) continue;  // Doesn't light up. Not the fighter's, or too faint to read.
+      fighter++;
+      if (std::abs(lum(last, i) - l0) * 4 > span) { moved++; continue; }  // Changed between the dark frames, so it moved
+      int c = 0;
+      bool clear = true;
+      for (int k = 0; k < bits && clear; k++) {
+        const int t = (lum(k + 2, i) - l0) * 100 / span;  // 0 is its dark value, 100 its lit one
+        if (t >= 65) c |= 1 << k;
+        else if (t > 35) clear = false;  // Half lit (an edge's blend, or a filter), so it's out
+      }
+      if (clear && c > 0 && c <= groups) { code[i] = static_cast<uint16_t>(c); clear_px++; }
+    }
+    if (fighter >= 64 && clear_px * 2 < fighter) {  // Most of the fighter is unreadable, so refuse rather than guess
+      COMBO_LOG("color editor: scan " + std::to_string(id) + ": " + std::to_string(clear_px) + " of " + std::to_string(fighter) + " pixels read cleanly, " +
+                std::to_string(moved) + " moved");
+      recolor_test::scanFailed(id, moved * 4 > fighter ? std::string("the picture kept changing during it (an overlay, or the fighter moving).")
+                                                       : std::string("the picture is being altered (an overlay or filter like ReShade, or HDR). Turn it off."));
+      return;
+    }
+    // A pixel counts when two of its four neighbours agree: strays drop out, thin lines stay.
+    std::vector<uint16_t> kept(n, 0);
+    std::vector<int> pixels(static_cast<size_t>(groups) + 1, 0);
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++) {
+        const size_t i = static_cast<size_t>(y) * w + x;
+        const int c = code[i];
+        if (!c) continue;
+        const int same = (x > 0 && code[i - 1] == c) + (x + 1 < w && code[i + 1] == c) + (y > 0 && code[i - w] == c) + (y + 1 < h && code[i + w] == c);
+        if (same >= 2) { kept[i] = static_cast<uint16_t>(c); pixels[static_cast<size_t>(c)]++; }
+      }
+    std::vector<int> taken(static_cast<size_t>(groups) + 1, 0);
+    for (size_t i = 0; i < n; i++) {
+      const int c = kept[i];
+      if (!c || pixels[static_cast<size_t>(c)] < 8) continue;  // Only a few stray pixels, so it's noise
+      const int every = (std::max)(1, pixels[static_cast<size_t>(c)] / 64);
+      if (taken[static_cast<size_t>(c)]++ % every) continue;
+      out.push_back({static_cast<uint16_t>(c), static_cast<uint16_t>(i % w * 2), static_cast<uint16_t>(i / w * 2)});
+    }
+    float px = 0, py = 0;
+    if (recolor_test::scanPoint(px, py)) {  // A pick takes every pixel right around the clicked point (thin lines included)
+      const int cx = static_cast<int>(px * w), cy = static_cast<int>(py * h), r = 8;
+      for (int y = (std::max)(0, cy - r); y <= (std::min)(h - 1, cy + r); y++)
+        for (int x = (std::max)(0, cx - r); x <= (std::min)(w - 1, cx + r); x++) {
+          const size_t i = static_cast<size_t>(y) * w + x;
+          const int c = kept[i] ? kept[i] : code[i];
+          if (c) out.push_back({static_cast<uint16_t>(c), static_cast<uint16_t>(x * 2), static_cast<uint16_t>(y * 2)});
+        }
+    }
+    COMBO_LOG("color editor: scan " + std::to_string(id) + ": " + std::to_string(out.size()) + " samples");
+    recolor_test::scanResult(id, w * 2, h * 2, out);
+  }
+
+  bool is_unreal_window(IDXGISwapChain* swap) {  // the game's own window (not a splash, movie or overlay one)
+    DXGI_SWAP_CHAIN_DESC desc{};
+    wchar_t cls[32] = {};
+    return SUCCEEDED(swap->GetDesc(&desc)) && desc.OutputWindow && GetClassNameW(desc.OutputWindow, cls, 32) && wcscmp(cls, L"UnrealWindow") == 0;
+  }
   HRESULT __stdcall hook_present(IDXGISwapChain* swap, UINT sync, UINT flags) {
-    if (g_running && !modScreenActive() && !onlineVersionScreen() && !menu_ui::g_online_picker) return g_present(swap, sync, flags);
-    if (!g_running && !g_init_failed) {
+    if (!(modScreenActive() || onlineVersionScreen() || menu_ui::g_online_picker)) return g_present(swap, sync, flags);  // Nothing to draw, so present the game's frame as it is
+    if (!g_running && !g_init_failed && (is_unreal_window(swap) || ++g_other_presents > 300)) {  // Set up when first needed, on the game's own window
       std::lock_guard<std::mutex> once(g_frame_mutex);  // two threads must not both set up
       if (!g_running && !g_init_failed) {
         if (init(swap)) {
@@ -190,10 +414,16 @@ namespace {
         menu_ui::load_fonts(static_cast<float>(desc.BufferDesc.Height));
         ImGui_ImplDX11_CreateDeviceObjects();
       }
+      if (is_game_window(swap)) {  // Before our overlay draws
+        DXGI_SWAP_CHAIN_DESC desc{};
+        swap->GetDesc(&desc);
+        recolor_test::overlayFrame(ImGui::GetIO().WantTextInput, static_cast<int>(desc.BufferDesc.Width), static_cast<int>(desc.BufferDesc.Height));
+        scan_capture(swap);
+      }
       ImGui_ImplDX11_NewFrame();
       ImGui_ImplWin32_NewFrame();
       ImGui::NewFrame();
-      ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible)) ||
+      ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen())) ||
                                        (!modScreenActive() && menu_ui::g_online_picker);
       draw_ui();
       ImGui::Render();
@@ -288,8 +518,13 @@ namespace imgui_overlay {
     bool ok = false;
     if (SUCCEEDED(hr) && swap) {
       auto** vtable = *reinterpret_cast<void***>(swap);
-      g_present = reinterpret_cast<Present_t>(patch_vtable(vtable, 8, reinterpret_cast<void*>(&hook_present)));
-      g_resize = reinterpret_cast<ResizeBuffers_t>(patch_vtable(vtable, 13, reinterpret_cast<void*>(&hook_resize)));
+      // Store the originals first. The game keeps presenting on its render thread meanwhile, and may call a hook the
+      // moment it's in.
+      g_present = reinterpret_cast<Present_t>(vtable[8]);
+      g_resize = reinterpret_cast<ResizeBuffers_t>(vtable[13]);
+      std::atomic_thread_fence(std::memory_order_release);
+      patch_vtable(vtable, 8, reinterpret_cast<void*>(&hook_present));
+      patch_vtable(vtable, 13, reinterpret_cast<void*>(&hook_resize));
       ok = true;
     }
     if (swap) swap->Release();

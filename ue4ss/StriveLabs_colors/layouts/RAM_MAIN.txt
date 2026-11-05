@@ -1,0 +1,18 @@
+skin
+jacket
+bandages/bandage metal
+shirt/undershirt
+hat
+text
+feet/wrapping
+eyes
+eyelash
+wrapping_text
+jacket_patch_wings
+blush
+jacket_patch_emblem
+lips
+jacket_clover
+jacket_patch_text
+wrapping_emblem
+eyes_highlight
