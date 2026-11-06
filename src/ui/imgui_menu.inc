@@ -2607,6 +2607,137 @@ namespace menu_ui {
     }
     end_window();
   }
+  // ---- Import's own file window: folders and drives to go through, image files to tick ----
+  struct TexEntry { std::wstring name; bool folder = false; std::string label; };
+  struct TexBrowser {
+    bool open = false, want_open = false;
+    std::filesystem::path dir;  // empty: the drives
+    std::vector<TexEntry> entries;
+    std::set<std::wstring> ticked;  // full paths
+    std::string error;
+  } g_tex_browser;
+  std::string tb_narrow(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+    return out;
+  }
+  void tex_browser_list(const std::filesystem::path& dir) {
+    TexBrowser& b = g_tex_browser;
+    b.dir = dir;
+    b.entries.clear();
+    b.error.clear();
+    if (dir.empty()) {  // The drives
+      const DWORD drives = GetLogicalDrives();
+      for (int i = 0; i < 26; i++)
+        if (drives & (1u << i)) { const std::wstring d = std::wstring(1, static_cast<wchar_t>(L'A' + i)) + L":\\"; b.entries.push_back({d, true, tb_narrow(d)}); }
+      return;
+    }
+    std::error_code ec;
+    std::vector<TexEntry> folders, files;
+    for (std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+      const std::wstring name = it->path().filename().wstring();
+      if (name.empty() || name[0] == L'.') continue;  // (the export's own .exported copies)
+      std::error_code e2;
+      if (it->is_directory(e2)) { folders.push_back({name, true}); continue; }
+      std::wstring ext = it->path().extension().wstring();
+      for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+      std::wstring low = name;
+      for (auto& c : low) c = static_cast<wchar_t>(towlower(c));
+      const bool mat = ext == L".txt" && ((low.size() > 20 && low.compare(low.size() - 20, 20, L"_material_colors.txt") == 0) || low == L"effects.txt");  // (an export's material and effect colors)
+      if (ext == L".png" || ext == L".bmp" || ext == L".tif" || ext == L".tiff" || mat) files.push_back({name, false});
+    }
+    if (ec) b.error = "Couldn't read this folder.";
+    std::sort(folders.begin(), folders.end(), [](const TexEntry& x, const TexEntry& y) {  // Dated exports newest first, the rest A to Z
+      const bool dx = !x.name.empty() && iswdigit(x.name[0]), dy = !y.name.empty() && iswdigit(y.name[0]);
+      if (dx && dy) return x.name > y.name;
+      if (dx != dy) return dx;
+      return _wcsicmp(x.name.c_str(), y.name.c_str()) < 0;
+    });
+    std::sort(files.begin(), files.end(), [](const TexEntry& x, const TexEntry& y) { return _wcsicmp(x.name.c_str(), y.name.c_str()) < 0; });
+    b.entries = std::move(folders);
+    b.entries.insert(b.entries.end(), files.begin(), files.end());
+    for (TexEntry& e : b.entries) e.label = tb_narrow(e.name);
+  }
+  void tex_browser_open() {
+    TexBrowser& b = g_tex_browser;
+    b.ticked.clear();
+    std::error_code ec;
+    std::filesystem::path d = recolor_test::textureDir();
+    if (!std::filesystem::is_directory(d, ec)) d = recolor_test::exportsDir();
+    if (!std::filesystem::is_directory(d, ec)) d.clear();
+    tex_browser_list(d);
+    b.want_open = true;
+  }
+  void tex_browser_draw() {
+    TexBrowser& b = g_tex_browser;
+    if (b.want_open) { ImGui::OpenPopup("tex_browser"); b.want_open = false; b.open = true; }
+    if (!b.open) return;
+    push_widget_style();
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowSize(ImVec2((std::min)(vp.x * 0.6f, 900.0f * S), (std::min)(vp.y * 0.7f, 640.0f * S)), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("tex_browser", &b.open, ImGuiWindowFlags_NoTitleBar)) {
+      ImGui::TextUnformatted("Import textures");
+      ImGui::TextDisabled("%s", b.dir.empty() ? "Drives" : tb_narrow(b.dir.wstring()).c_str());
+      if (ImGui::SmallButton("Up")) tex_browser_list(b.dir.empty() || b.dir == b.dir.root_path() ? std::filesystem::path() : b.dir.parent_path());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Exports")) tex_browser_list(recolor_test::exportsDir());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Drives")) tex_browser_list({});
+      int files = 0;
+      for (const TexEntry& e : b.entries) files += e.folder ? 0 : 1;
+      if (files) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Tick all")) for (const TexEntry& e : b.entries) if (!e.folder) b.ticked.insert((b.dir / e.name).wstring());
+      }
+      if (!b.ticked.empty()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Untick all")) b.ticked.clear();
+      }
+      if (!b.error.empty()) ImGui::TextUnformatted(b.error.c_str());
+      ImGui::Separator();
+      const float foot = ImGui::GetFrameHeightWithSpacing() * 2.0f;
+      std::filesystem::path go;
+      if (ImGui::BeginChild("tex_list", ImVec2(0, -foot), false)) {
+        const bool second_click = ImGui::GetIO().MouseClickedLastCount[0] >= 2;  // (a double click's second half lands on the new list: ignored)
+        ImGuiListClipper clip;
+        clip.Begin(static_cast<int>(b.entries.size()), ImGui::GetFrameHeightWithSpacing());  // (every row one frame tall, folders and files alike)
+        while (clip.Step())
+          for (int i = clip.DisplayStart; i < clip.DisplayEnd; i++) {
+            const TexEntry& e = b.entries[static_cast<size_t>(i)];
+            ImGui::PushID(i);
+            if (e.folder) {
+              if (ImGui::Selectable(("[" + e.label + "]").c_str(), false, 0, ImVec2(0, ImGui::GetFrameHeight())) && !second_click) go = b.dir.empty() ? std::filesystem::path(e.name) : b.dir / e.name;
+            } else {
+              const std::wstring full = (b.dir / e.name).wstring();
+              bool on = b.ticked.count(full) > 0;
+              if (ImGui::Checkbox(e.label.c_str(), &on) && !second_click) { if (on) b.ticked.insert(full); else b.ticked.erase(full); }
+            }
+            ImGui::PopID();
+          }
+        if (b.entries.empty() && b.error.empty()) ImGui::TextDisabled("No folders or images here.");
+      }
+      ImGui::EndChild();
+      if (!go.empty()) tex_browser_list(go);
+      ImGui::Separator();
+      const std::string imp = "Import " + std::to_string(b.ticked.size()) + (b.ticked.size() == 1 ? " texture" : " textures");
+      ImGui::BeginDisabled(b.ticked.empty());
+      if (ImGui::Button(imp.c_str())) {
+        recolor_test::importTextureFiles(std::vector<std::wstring>(b.ticked.begin(), b.ticked.end()));
+        b.open = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel")) { b.open = false; ImGui::CloseCurrentPopup(); }
+      ImGui::EndPopup();
+    } else {
+      b.open = false;
+    }
+    pop_widget_style();
+  }
   void draw_colors() {
     use(E_MENU);
     const recolor_test::View v = recolor_test::view();
@@ -3554,8 +3685,8 @@ namespace menu_ui {
           if (ImGui::SmallButton("Export textures")) recolor_test::exportTextures();
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("All parts of this color, into a new dated folder. The _Lit/_Shadow PNGs open anywhere; alpha/ has the exact game copies.");
           ImGui::SameLine();
-          if (ImGui::SmallButton("Import texture...")) recolor_test::importTextures();
-          if (ImGui::IsItemHovered()) ImGui::SetTooltip("An exported <Part>_Lit/_Shadow PNG (or its alpha/ copy) of the shown part, or any PNG, BMP or TIFF at its size. Changes come in as paint.");
+          if (ImGui::SmallButton("Import textures...")) tex_browser_open();
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("An export's <Part>_Lit/_Shadow PNGs and <Part>_material_colors.txt and effects.txt (each goes on its part), or any PNG, BMP or TIFF at the shown part's size. The regions take a picture's colors (an edited copy of this color's own export only brings what was changed in it); the rest comes in as paint.");
           ImGui::EndDisabled();
           ImGui::Dummy(ImVec2(cw, 6 * S));
           { const ImVec2 at = ImGui::GetCursorScreenPos(); ImGui::SetCursorScreenPos(ImVec2(at.x + pad, at.y)); }
@@ -3570,35 +3701,56 @@ namespace menu_ui {
       }
       ImGui::EndChild();
       ImGui::PopStyleColor(2);
-      static bool recovered_answered = false;
-      if (v.offer_recovery.empty()) recovered_answered = false;
-      if (!v.offer_recovery.empty() && !recovered_answered) ImGui::OpenPopup("recovery_offer");
-      push_widget_style();
-      if (ImGui::BeginPopupModal("recovery_offer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
-        ImGui::Text("You have unsaved changes to %s from last time.", v.offer_recovery.c_str());
-        ImGui::Spacing();
-        if (ImGui::Button("Restore")) { recolor_test::restoreRecovery(true); recovered_answered = true; ImGui::CloseCurrentPopup(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Discard")) { recolor_test::restoreRecovery(false); recovered_answered = true; ImGui::CloseCurrentPopup(); }
-        ImGui::EndPopup();
-      }
-      pop_widget_style();
-      static bool answered = false;  // An answer is on its way, but the view still says "asking" for a frame or two
-      if (!v.confirm_close) answered = false;
-      if (v.confirm_close && !answered) ImGui::OpenPopup("unsaved_close");
-      push_widget_style();
-      if (ImGui::BeginPopupModal("unsaved_close", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
-        ImGui::TextUnformatted("You have unsaved changes.");
-        ImGui::Spacing();
-        if (ImGui::Button("Save")) { recolor_test::saveRecolor(); answered = true; ImGui::CloseCurrentPopup(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Discard")) { recolor_test::discardAndClose(); answered = true; ImGui::CloseCurrentPopup(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) { recolor_test::cancelClose(); answered = true; ImGui::CloseCurrentPopup(); }
-        ImGui::EndPopup();
-      }
-      pop_widget_style();
     }
+    tex_browser_draw();
+    // The editor's questions, shown when the window is collapsed too
+    static bool recovered_answered = false;
+    if (v.offer_recovery.empty()) recovered_answered = false;
+    if (!v.offer_recovery.empty() && !recovered_answered) ImGui::OpenPopup("recovery_offer");
+    push_widget_style();
+    if (ImGui::BeginPopupModal("recovery_offer", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+      ImGui::Text("You have unsaved changes to %s from last time.", v.offer_recovery.c_str());
+      ImGui::Spacing();
+      if (ImGui::Button("Restore")) { recolor_test::restoreRecovery(true); recovered_answered = true; ImGui::CloseCurrentPopup(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Discard")) { recolor_test::restoreRecovery(false); recovered_answered = true; ImGui::CloseCurrentPopup(); }
+      ImGui::EndPopup();
+    }
+    pop_widget_style();
+    static bool answered = false;  // An answer is on its way, but the view still says "asking" for a frame or two
+    if (!v.confirm_close) answered = false;
+    if (v.confirm_close && !answered) ImGui::OpenPopup("unsaved_close");
+    push_widget_style();
+    if (ImGui::BeginPopupModal("unsaved_close", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+      ImGui::TextUnformatted("You have unsaved changes.");
+      ImGui::Spacing();
+      if (ImGui::Button("Save")) { recolor_test::saveRecolor(); answered = true; ImGui::CloseCurrentPopup(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Discard")) { recolor_test::discardAndClose(); answered = true; ImGui::CloseCurrentPopup(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel")) { recolor_test::cancelClose(); answered = true; ImGui::CloseCurrentPopup(); }
+      ImGui::EndPopup();
+    }
+    pop_widget_style();
+    // The first-time setup: the editor can't be used until it's done (the keys are held too)
+    const bool setup_up = v.setup && recolor_test::setupShown() && v.offer_recovery.empty() && !v.confirm_close;  // (not over the other questions)
+    if (setup_up && !ImGui::IsPopupOpen("first_setup")) ImGui::OpenPopup("first_setup");
+    push_widget_style();
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("first_setup", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove)) {
+      if (!setup_up) ImGui::CloseCurrentPopup();
+      ImGui::TextUnformatted("One-time setup");
+      ImGui::Spacing();
+      ImGui::TextUnformatted("This is the first time the editor is used on this fighter, so it's scanning each of its parts.");
+      ImGui::TextUnformatted("It only happens once per character. Please wait: the controls come back when it's done.");
+      ImGui::Spacing();
+      ImGui::Text("Now: %s", v.setup_part.c_str());
+      ImGui::ProgressBar(v.mapping >= 0 ? v.mapping : 0.0f, ImVec2(-1.0f, 0.0f), v.mapping >= 0 ? "Scanning" : "Getting ready");
+      ImGui::Spacing();
+      if (ImGui::Button("Close editor")) recolor_test::toggle();
+      ImGui::EndPopup();
+    }
+    pop_widget_style();
     end_window();
   }
 

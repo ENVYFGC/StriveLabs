@@ -6,6 +6,8 @@
 
 #include <Windows.h>
 
+namespace recolor_test { bool setupRunning(); }
+
 LRESULT CALLBACK KeyboadCallback(int nCode, WPARAM wParam, LPARAM lParam);
 
 class BindWorker {
@@ -115,6 +117,14 @@ public:
       if (fg != nullptr && fg_pid == GetCurrentProcessId()) {
         KBDLLHOOKSTRUCT &k = *(KBDLLHOOKSTRUCT *)lParam;
         const DWORD vk = k.vkCode & 0xFF;
+        // The color editor's first-time setup is up ("please wait"): keys are kept from the game and the mod, but not
+        // Windows' own (Alt+Tab, Alt+F4, the Windows key, Ctrl+Shift+Esc) or the modifiers
+        const bool system = vk == VK_LWIN || vk == VK_RWIN || vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == VK_CONTROL ||
+                            vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SNAPSHOT ||
+                            (k.flags & LLKHF_ALTDOWN) || (vk == VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) ||
+                            ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) ||
+                            (vk >= VK_VOLUME_MUTE && vk <= VK_LAUNCH_APP2);  // (volume and media keys)
+        if (!system && recolor_test::setupRunning()) return 1;
         const bool repeat = held.test(vk);
         held.set(vk);
         if (vk == VK_ESCAPE && escCaptured()) {

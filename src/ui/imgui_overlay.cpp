@@ -22,6 +22,8 @@
 #include <cctype>
 #include <cmath>
 #include <functional>
+#include <filesystem>
+#include <set>
 #include <map>
 #include <wincodec.h>
 #include <mutex>
@@ -303,6 +305,7 @@ namespace {
     int fw = 0, fh = 0;
     std::string why;
     const int got = grab_frame(swap, frames[static_cast<size_t>(frame)], fw, fh, 2, why);
+    const bool whole = recolor_test::scanWhole();
     if (got < 0) { std::vector<std::vector<uint8_t>>().swap(frames); recolor_test::scanFailed(id, why); return; }
     if (got == 0) return;  // Try again on the next present
     if (frame == 0) { w = fw; h = fh; }
@@ -330,7 +333,7 @@ namespace {
       if (span < least) continue;  // Doesn't light up. Not the fighter's, or too faint to read.
       fighter++;
       // One region (Sol's DI wing flare, whose flame flickers by itself): whatever lights up is it, moving or not
-      if (groups == 1) { code[i] = 1; clear_px++; continue; }
+      if (groups == 1 && whole) { code[i] = 1; clear_px++; continue; }
       if (std::abs(lum(last, i) - l0) * 4 > span) { moved++; continue; }  // Changed between the dark frames, so it moved
       int c = 0;
       bool clear = true;

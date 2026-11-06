@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -889,6 +890,14 @@ namespace {
     float off[3] = {};         // Offset from it, only when no pixel was near a bone
     float frac = 0, dist = 0;  // the share of the view it took, at that camera distance
   };
+  // A region's place on the model, from the bone atlas: a point on a mesh, in the space of the bone it moves with,
+  // and the way the surface faces there. own: the region is at the middle of the atlas cell it came from (where the
+  // atlas has its point).
+  struct AtlasMesh;
+  struct Place { std::string mesh, bone; float p[3] = {}, n[3] = {}; bool own = false; const AtlasMesh* am = nullptr; int bi = -1; };  // (am, bi: its mesh and bone in the atlas)
+  const std::vector<std::vector<Place>>* placesFor(const Target& t);  // Null when the part has no atlas (defined with anchorOf)
+  bool atlasCovers(const Target& t);                                 // The part's meshes are in an atlas, so it needs no mapping
+  std::set<std::string> drawnMeshes(const Target& t);                // The part's meshes drawn now (none if none is), lower case
 
   std::mutex g_m;  // guards g_view and g_reqs
   View g_view;
@@ -950,6 +959,8 @@ namespace {
   std::string g_status;
   bool g_view_dirty = true;
   void* g_fight = nullptr;  // the engine the targets' materials belong to
+  bool g_find_due = false;  // the editor was opened: the fighters are searched for again if the last search is old
+  std::string g_setup_home;  // the part the first-time setup started on, shown again when the fighter's other parts are mapped
   std::vector<UObject*> g_pawns;  // the fighters on stage when they were found (sorted)
 
   std::string keyOf(const Target& t) { return t.chr + "/" + t.color + "/" + t.kind; }
@@ -1143,6 +1154,14 @@ namespace {
     return {l, s};
   }
   std::pair<uint32_t, uint32_t> pairOf(int r, const std::vector<Edit>& ed) { return pairOfW(*g_worn, g_follow, r, ed); }
+  // A region's color from a picture: the most common one among the texels counted, or their average when no color
+  // has a fifth of them (a shaded texture). counts by color; sum r g b of all of them; n how many.
+  uint32_t regionColor(const std::unordered_map<uint32_t, uint32_t>& counts, const uint64_t sum[3], uint32_t n) {
+    uint32_t best = 0, most = 0;
+    for (const auto& [c, k] : counts) if (k > most) { most = k; best = c; }
+    if (most * 5 >= n) return best;
+    return static_cast<uint32_t>((sum[0] / n) << 16 | (sum[1] / n) << 8 | (sum[2] / n));
+  }
   // New textures from the worn color, with edited regions (and the highlighted ones, in magenta) moved.
   // Blackout makes everything black except the highlighted regions, which are white (lit) and light grey (shadow).
   void buildW(const Worn& w, bool follow, const std::vector<Edit>& ed, const std::vector<int>& highlight, Image& ob, Image& os, bool blackout = false);
@@ -2072,6 +2091,21 @@ namespace {
   struct Timed {  // adds the scope's time to a total
     double& to; Clock::time_point t0 = Clock::now();
     ~Timed() { to += std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
+  };
+  // An update's time by step, logged when the whole of it is slow (so a freeze says where it was)
+  struct Laps {
+    Clock::time_point t0 = Clock::now(), last = t0;
+    std::string steps;
+    void mark(const char* step) {
+      const auto now = Clock::now();
+      const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+      if (ms >= 20) steps += std::string(" ") + step + " " + std::to_string(ms) + " ms";
+      last = now;
+    }
+    ~Laps() {
+      const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+      if (ms >= 300) { mark("rest"); COMBO_LOG("color editor: slow update, " + std::to_string(ms) + " ms:" + steps); }
+    }
   };
   void timingTick() {
     g_time.frames++;
@@ -3360,9 +3394,15 @@ namespace {
   std::map<std::string, PaintPart> g_paint;                          // Keyed by part key (read when first painted or shown)
   std::map<std::string, std::filesystem::path> g_paint_restore;      // recovered copies waiting to be read
   std::filesystem::path paintFile(const Target& t) { return g_dir / "saved" / t.chr / (t.color + "_" + t.kind + "_paint.slpn"); }
-  std::vector<uint8_t> readBytes(const std::filesystem::path& f) {
-    std::ifstream in(f, std::ios::binary);
-    return in ? std::vector<uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()) : std::vector<uint8_t>();
+  std::vector<uint8_t> readBytes(const std::filesystem::path& f) {  // (whole, in one read)
+    std::ifstream in(f, std::ios::binary | std::ios::ate);
+    if (!in) return {};
+    const std::streamoff n = in.tellg();
+    if (n <= 0) return {};
+    std::vector<uint8_t> out(static_cast<size_t>(n));
+    in.seekg(0);
+    if (!in.read(reinterpret_cast<char*>(out.data()), n)) return {};
+    return out;
   }
   // The part's paint for an encode. That's the open canvas's snapshot, or else what's on disk (a recovery first).
   PaintBytes paintBytes(const Target& t) {
@@ -4237,7 +4277,7 @@ namespace {
   }
   // Undo keeps the shown part's region colors, material colors and its slot's effect colors from before each change.
   struct Snap { std::string key; std::vector<Edit> ed; std::map<std::string, std::array<float, 4>> vec; std::map<std::string, std::array<float, 3>> fx;
-                int paint = 0; };  // paint marks a painting step, undone by the part's canvas as this many of its own steps
+                int paint = 0; bool with_ed = false; };  // paint marks a painting step, undone by the part's canvas as this many of its own steps (with_ed: and ed swapped back with it, an import's)
   std::map<std::string, std::vector<Snap>> g_undo, g_redo;  // Keyed by color slot ("SOL/Color08"), covering every part of it and its effect colors
   std::string slotOf(const Target& t) { return t.chr + "/" + t.color; }
   int g_snap_kind = -1, g_snap_index = -1;
@@ -4351,7 +4391,15 @@ namespace {
   }
   // ---- recolor sharing: pictures are sent as raw RGBA, LZMS packed (Windows' Compression API). Raw, not PNG,
   // so the opponent's bytes never reach a picture decoder here. We make the PNG ourselves (encodePng).
+  // Under Wine and Proton (Linux, Steam Deck) the Compression API is a stub that crashes the game when called, so
+  // there it's never called: pictures are kept unpacked (a packed size equal to the picture's means unpacked, and
+  // Windows reads those too), and LZMS made on Windows can't be unpacked there (a failure, not a crash).
+  bool underWine() {
+    static const bool wine = GetModuleHandleW(L"ntdll.dll") && GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
+    return wine;
+  }
   std::vector<uint8_t> lzmsPack(const std::vector<uint8_t>& in) {
+    if (underWine()) return in;
     COMPRESSOR_HANDLE h = nullptr;
     if (in.empty() || !CreateCompressor(COMPRESS_ALGORITHM_LZMS, nullptr, &h)) return {};
     struct Close { COMPRESSOR_HANDLE h; ~Close() { CloseCompressor(h); } } close{h};  // (closed whatever happens below)
@@ -4360,9 +4408,12 @@ namespace {
     std::vector<uint8_t> out(need);
     if (!need || !Compress(h, in.data(), in.size(), out.data(), out.size(), &need)) out.clear();
     else out.resize(need);
+    if (!out.empty() && out.size() >= in.size()) return in;  // (no smaller: kept unpacked, so a packed size is never the picture's)
     return out;
   }
   std::vector<uint8_t> lzmsUnpack(const uint8_t* in, size_t n, size_t raw) {  // Worker. Gives exactly raw bytes, or none
+    if (n && n == raw) return std::vector<uint8_t>(in, in + n);  // Kept unpacked (made under Wine)
+    if (underWine()) return {};
     DECOMPRESSOR_HANDLE h = nullptr;
     if (!n || !raw || !CreateDecompressor(COMPRESS_ALGORITHM_LZMS, nullptr, &h)) return {};
     struct Close { DECOMPRESSOR_HANDLE h; ~Close() { CloseDecompressor(h); } } close{h};
@@ -4402,6 +4453,7 @@ namespace {
   struct Packed { bool ok = false; int w[2] = {}, h[2] = {}; std::vector<uint8_t> z[2]; };  // base, shadow
   Packed packPngs(std::shared_ptr<const Pngs> p) try {  // Worker. A failure is a not-ok result, never a throw
     Packed k;
+    if (underWine()) return k;  // Unpacked, the pictures are too big to send (and the other side drops them), so no sharing from there
     Image im[2];
     if (!storedPngPixels(p->base, im[0]) || !storedPngPixels(p->sss, im[1])) return k;
     for (int i = 0; i < 2; i++) { k.w[i] = im[i].w; k.h[i] = im[i].h; k.z[i] = lzmsPack(im[i].px); if (k.z[i].empty()) return k; }
@@ -4782,10 +4834,16 @@ namespace {
   }
   // The picture as exported (what Import compares an edited file with), out of the way of the user's files.
   std::filesystem::path exportedCopy(const std::filesystem::path& dir, const std::string& file) { return dir / ".exported" / file; }
-  std::mutex g_tex_pick_m;               // Import texture's file picker: what was picked, and where it opens (the slot's newest export)
-  std::filesystem::path g_tex_pick;
+  std::mutex g_tex_pick_m;               // Import textures' window: what was ticked, and where it opens (the slot's newest export)
+  std::deque<std::filesystem::path> g_tex_pick;  // the files ticked, imported one by one (the editor's window adds, under the lock)
+  int g_tex_added = 0;                   // files added since the game thread last looked (under the lock)
+  // The rest is the game thread's:
+  std::string g_tex_home;                // the part shown when the batch started, shown again after
+  std::filesystem::path g_tex_front;     // the file at the front, and since when (30 s to go in)
+  Clock::time_point g_tex_front_at;
+  bool g_tex_switched = false;           // its part was asked for
+  int g_tex_done = 0, g_tex_all = 0;     // of this batch
   std::wstring g_tex_pick_dir;
-  std::atomic<bool> g_tex_pick_open{false};
   std::string fileSafe(std::string s) {  // A part's name made safe for a file name: "DI wing" stays, "a/b" -> "a_b"
     for (char& c : s) if (static_cast<unsigned char>(c) < 32 || std::strchr("<>:\"/\\|?*", c)) c = '_';
     return s;
@@ -4898,6 +4956,7 @@ namespace {
   // A part's finished textures, packed: [w][h][lit bytes][lit][shadow bytes][shadow] (u32s), LZMS'd RGBA.
   bool lookPackPart(ExportPart p, bool follow) {  // (worker)
     struct Count { ~Count() { g_encoding--; } } done;
+    if (underWine()) return false;  // Unpacked, a look is tens of MB in the palette file, so a palette made there has none
     if (!p.worn) p.worn = prepareWorn(p.map, p.base, p.sss);
     if (!p.worn) return false;
     Image ob, os;
@@ -4959,8 +5018,19 @@ namespace {
         uint64_t best = 0;
         uint32_t n = 0;
         for (const auto& [pr, k] : pairs[r]) if (k > n) { n = k; best = pr; }
-        if (!n || n * 2 <= counted[r]) continue;  // No color covers most of it, so leave it as it is and let the paint show the look
-        const uint32_t l = uint32_t(best >> 32), sh = uint32_t(best & 0xFFFFFFFFu);
+        if (!n) continue;
+        uint32_t l = uint32_t(best >> 32), sh = uint32_t(best & 0xFFFFFFFFu);
+        if (n * 5 < counted[r]) {  // No pair has a fifth of it (a shaded look): the average of each, and the paint shows the rest
+          uint64_t a[6] = {};
+          for (const auto& [pr, k] : pairs[r]) {
+            const uint32_t pl = uint32_t(pr >> 32), ps = uint32_t(pr & 0xFFFFFFFFu);
+            a[0] += uint64_t(pl >> 16 & 255) * k; a[1] += uint64_t(pl >> 8 & 255) * k; a[2] += uint64_t(pl & 255) * k;
+            a[3] += uint64_t(ps >> 16 & 255) * k; a[4] += uint64_t(ps >> 8 & 255) * k; a[5] += uint64_t(ps & 255) * k;
+          }
+          const uint64_t c = counted[r];
+          l = static_cast<uint32_t>((a[0] / c) << 16 | (a[1] / c) << 8 | (a[2] / c));
+          sh = static_cast<uint32_t>((a[3] / c) << 16 | (a[4] / c) << 8 | (a[5] / c));
+        }
         const std::pair<uint32_t, uint32_t> now = pairOfW(wn, follow, r, ed);
         if (l == now.first && sh == now.second) continue;  // Already its color, so leave it
         Edit& e = ed[static_cast<size_t>(r)];
@@ -5056,6 +5126,11 @@ namespace {
     for (size_t i = 0; i < parts.size(); i++) {
       const std::vector<VecGroup> rows = g_vecs_for == keyOf(*parts[i]) ? g_vecs : vecsOf(*parts[i]);
       if (!rows.empty()) writeMatColors(rows, ex->dir / (ex->todo[i].file + "_material_colors.txt"));
+    }
+    if (g_fx_for == t.chr + "/" + t.color && !fxList().empty()) {  // The slot's effect colors as they are (a skin's own too), for Import
+      std::ofstream f(ex->dir / "effects.txt", std::ios::trunc);
+      f << "# effect color, R G B (the hue its effects take)\n";
+      for (const FxColor& c : fxList()) f << c.label << '\t' << c.rgb[0] << ' ' << c.rgb[1] << ' ' << c.rgb[2] << "\n";
     }
     g_export = std::move(ex);
     g_status = "Exporting...";
@@ -5366,7 +5441,7 @@ namespace {
       lookFinish(ex);
       if (ex.mode == 1) {  // (a palette, or an exported recolor file)
         const std::string f = narrow(ex.palette.filename().wstring());
-        g_status = !ex.failed.empty() ? "Saved " + f + " (some parts' look couldn't be kept)."
+        g_status = !ex.failed.empty() ? "Saved " + f + (underWine() ? " (without its look: that isn't kept on Linux / Proton)." : " (some parts' look couldn't be kept).")
                    : ex.later.empty() ? "Saved " + f + ", with its look."
                                       : "Saved " + f + ", with its look (not " + ex.later + ": open them once, then save again).";
       }
@@ -5480,10 +5555,13 @@ namespace {
   }
 
   // Some of the selection can be shown: the mapping saw it (or there's no mapping yet to say).
-  bool findable(const Target& t, const std::vector<int>& sel) {
+  bool findable(const Target& t, const std::vector<int>& sel) {  // (from the atlas's places or the mapping's)
+    const auto* pl = placesFor(t);
     const std::vector<Part>* parts = partsFor(t);
     return std::any_of(sel.begin(), sel.end(), [&](int r) {
-      return !parts || (r >= 0 && r < static_cast<int>(parts->size()) && !(*parts)[static_cast<size_t>(r)].bone.empty());
+      if (pl && r >= 0 && r < static_cast<int>(pl->size()) && !(*pl)[static_cast<size_t>(r)].empty()) return true;
+      if (!parts) return !pl;
+      return r >= 0 && r < static_cast<int>(parts->size()) && !(*parts)[static_cast<size_t>(r)].bone.empty();
     });
   }
 
@@ -5519,7 +5597,14 @@ namespace {
   }
   bool isVisible(UObject* comp);
   // Which fighters wear a color material now: one target per character + color + kind.
-  void discover() {
+  void discoverNow();
+  void discover() {  // (timed: it walks every mesh and material, so it's logged when it's slow)
+    const auto t0 = Clock::now();
+    discoverNow();
+    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+    if (ms >= 30) COMBO_LOG("color editor: finding the fighters took " + std::to_string(ms) + " ms");
+  }
+  void discoverNow() {
     std::vector<Seen> seen;
     std::vector<Seen> extra;  // color materials of other names (their texture checked below)
     for (UObject* comp : fighterParts()) {
@@ -5699,6 +5784,7 @@ namespace {
     }
     g_smear_stale = true;  // The fighters' materials may be new ones, so the smears' live copies are looked up again
     g_target = 0;
+    g_setup_home.clear();  // (the first-time setup's part was in the old fight)
     g_fight = asw_engine::get();
     g_pawns = fighters();
     g_bones_for.clear();  // the meshes may be new ones
@@ -5807,6 +5893,7 @@ namespace {
   std::mutex g_scan_m;          // shared with the render thread:
   int g_scan_id = 0;
   int g_scan_frames = 0, g_scan_groups = 0;
+  bool g_scan_whole = false;  // the part is one region by itself (see scanWhole)
   int g_scan_frame = -1;        // the frame on screen now (-1: no scan)
   bool g_scan_grabbed = false;  // the render thread has it
   bool g_scan_done = false;     // the result is in
@@ -5837,6 +5924,7 @@ namespace {
       }
     std::lock_guard<std::mutex> lk(g_scan_m);
     g_scan_groups = groups;
+    g_scan_whole = groups == 1 && group.size() == 1;  // (not a selection's scan of one region among many: that one is read as usual, moving pixels left out)
     return true;
   }
   std::vector<Kept> g_scan_hidden;  // what a scan hid (the other fighter, effects), shown again when it ends
@@ -5856,8 +5944,9 @@ namespace {
     for (const Kept& k : g_scan_hidden) if (k.alive()) setVisible(k.obj, true);
     g_scan_hidden.clear();
   }
-  void scanRun(Target& t) {  // Puts frame 0 up, and the render thread takes it from there
-    scanHideOthers(t);
+  void scanRun(Target& t, bool hide_others = false) {  // Puts frame 0 up, and the render thread takes it from there
+    if (hide_others) scanHideOthers(t);  // A mapping sees the whole fighter from each side, so nothing may be in the way. A selection's own
+                                       // scan (on every click in the list) and a pick hide nothing
     show(t, g_scan_tex[0], true);
     g_scan_on = true;
     std::lock_guard<std::mutex> lk(g_scan_m);
@@ -5921,6 +6010,7 @@ namespace {
     std::string key;
     int view = 0;
     bool scanning = false;
+    bool remap = false;  // asked for with Remap (not the first-time setup)
     float yaw0 = 0, dist = 0;
     std::vector<std::vector<std::array<float, 6>>> rays;  // per region: where it was seen from, and which way
     std::vector<std::map<std::string, int>> bone_votes;   // per region: the bones under its pixels, by name
@@ -5929,6 +6019,12 @@ namespace {
   };
   std::unique_ptr<Mapping> g_mapping;
   std::set<std::string> g_map_tried;  // map keys mapped (or tried) this session
+  std::set<std::string> g_setup_seen;  // map keys the setup has shown this session (each once, so one that never gets ready isn't gone back to)
+  bool g_setup_off = false;            // the user took over (a tab, Remap, a selection or an edit): no setup until the editor is opened again
+  std::atomic<bool> g_setup_busy{false};          // the setup's "please wait" is up
+  std::atomic<unsigned long long> g_setup_busy_ms{0};  // when that was last worked out (an old answer doesn't count, so it can't stick)
+  std::string g_setup_sig;                        // where the setup is, to tell it's moving
+  Clock::time_point g_setup_moved;                // when that last changed
   std::string g_map_force;            // map this key again even though it's mapped
 
   // ---- Previewing a hidden model. Sol's Dragon Install outfit is only drawn during the move (its meshes
@@ -6717,6 +6813,8 @@ namespace {
     v.status = g_status;
     v.exporting = g_export && g_export->mode != 3;  // Not when the other parts are being made again. That's quiet, and a new change drops it
     v.mapping = g_mapping ? std::clamp((g_mapping->view + (g_mapping->scanning ? 0.5f : 0.0f)) / kViews, 0.0f, 1.0f) : -1.0f;
+    v.setup = g_setup_busy;
+    v.setup_part = target() ? partName(target()->kind) : std::string();
     if (Target* t = target()) {
       v.title = t->chr + "  " + slotLabel(t->color);
       for (int i : partsOf(*t)) {
@@ -6739,6 +6837,18 @@ namespace {
       if (g_worn && g_worn_key == keyOf(*t) && mp != g_maps.end()) {
         const auto& ed = g_edits[keyOf(*t)];
         const std::vector<Part>* parts = partsFor(*t);
+        const auto* places = placesFor(*t);
+        std::string hidden_part;  // a hidden model sharing this part's meshes ("DI"), and its mesh name prefixes ("dky_")
+        const std::vector<std::string> hidden_pre = places && !t->kept_hidden ? hiddenPrefixes(*t, &hidden_part) : std::vector<std::string>{};
+        auto hiddens = [&](const std::string& mesh) { return std::any_of(hidden_pre.begin(), hidden_pre.end(), [&](const std::string& pre) { return mesh.rfind(pre, 0) == 0; }); };
+        // The meshes seen drawn this session, by character and part. Not the hidden model's (its preview and its move put
+        // its mesh on these components), and not during a preview. ponytail: the close-up head is learned too if a super
+        // plays with the editor open, and then its regions lose the tag until the game restarts
+        static std::map<std::string, std::set<std::string>> seen_drawn;
+        std::set<std::string>& drawn_now = seen_drawn[t->chr + "/" + t->kind];
+        if (places && !g_preview.pawn)
+          for (const std::string& m : drawnMeshes(*t))
+            if (!hiddens(m)) drawn_now.insert(m);
         const std::vector<uint32_t>* drawn = drawnOf(*t);
         const std::vector<int>* parents = parentsOf(*t);
         const uint32_t least = drawnMin(*mp->second);
@@ -6750,7 +6860,10 @@ namespace {
           rv.orig_lit = g_worn->lit[r]; rv.orig_shadow = g_worn->shadow[r];
           rv.share = mp->second->share[r];
           rv.edited = r < static_cast<int>(ed.size()) && (ed[r].has_lit || ed[r].has_shadow);
-          rv.unseen = parts && (*parts)[static_cast<size_t>(r)].bone.empty();
+          {  // Neither the atlas nor the scan has a place for it
+            const bool placed = places && r < static_cast<int>(places->size()) && !(*places)[static_cast<size_t>(r)].empty();
+            rv.unseen = !placed && (parts ? (*parts)[static_cast<size_t>(r)].bone.empty() : places != nullptr);
+          }
           rv.detail = r >= mp->second->major;
           rv.name = namesOf(*t, mp->second->regions)[static_cast<size_t>(r)];
           if (rv.name.empty()) {  // The template's name, when the user hasn't named it
@@ -6763,6 +6876,13 @@ namespace {
             if (auto df = g_drawn.find(mapKey(*t)); df != g_drawn.end() && !df->second.only.empty() && df->second.shown.size() == drawn->size() &&
                                                     df->second.shown[static_cast<size_t>(r)] < least)
               rv.only_on = df->second.only;  // Only the hidden model draws it, like Ky's Dragon Install glow
+          if (rv.only_on.empty() && places && !t->kept_hidden && !drawn_now.empty() && r < static_cast<int>(places->size()) && !(*places)[static_cast<size_t>(r)].empty()) {
+            const auto& pr = (*places)[static_cast<size_t>(r)];
+            if (std::none_of(pr.begin(), pr.end(), [&](const Place& pl) { return drawn_now.count(pl.mesh) > 0; })) {  // Only meshes not seen drawn have it
+              const bool hidden_model = !hidden_pre.empty() && std::all_of(pr.begin(), pr.end(), [&](const Place& pl) { return hiddens(pl.mesh); });
+              rv.only_on = hidden_model ? hidden_part : "Close-up";  // The hidden model's (its move), else the close-up head of the super moves
+            }
+          }
           if (parents && r >= mp->second->major) {
             const int pr = (*parents)[static_cast<size_t>(r)];
             rv.parent = pr >= 0 && pr < static_cast<int>(lead.size()) ? lead[static_cast<size_t>(pr)] : -1;  // Its row
@@ -6888,10 +7008,13 @@ namespace {
 
 View view() { std::lock_guard<std::mutex> lock(g_m); return g_view; }
 bool isOpen() { std::lock_guard<std::mutex> lock(g_m); return g_view.open; }
-// Game thread. While the editor maps or scans the fighter, the fight is held (as the pause holds it with the
-// editor open): a scan compares frames, and a fighter moving through its idle animation reads as a picture that
-// kept changing, so most first scans failed unless the fight was frozen by hand.
-bool holdsFight() { return g_open && (g_mapping || g_scan_on || g_pick_scanning); }
+// Game thread. While the editor scans the fighter (mapping, a pick, a selection's own scan) or runs the first-time
+// setup, the fight is held (as the pause holds it with the editor open): a scan compares frames, and a fighter
+// moving through its idle animation reads as a picture that kept changing (without it, most selection scans were
+// refused in game).
+bool setupRunning() { return g_setup_busy && GetTickCount64() - g_setup_busy_ms < 500; }
+bool setupShown() { return g_setup_busy && GetTickCount64() - g_setup_busy_ms < 1500; }
+bool holdsFight() { return g_open && (g_mapping || g_scan_on || g_pick_scanning || setupRunning()); }
 void toggle() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kToggle, -1, 0}); }
 void setLit(int region, uint32_t rgb) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kLit, region, rgb}); }
 void setShadow(int region, uint32_t rgb) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kShadow, region, rgb}); }
@@ -6926,34 +7049,23 @@ std::string partName(const std::string& k) {
 }
 void exportTextures() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kExport, -1, 0}); }
 void groupSame(bool on) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kGroupSame, -1, on ? 1u : 0u}); }
-void importTextures() {  // Opens a Windows file picker on its own thread so the game keeps running. The pick comes as a request
-  if (g_tex_pick_open.exchange(true)) return;  // Already open
-  std::wstring dir;
-  { std::lock_guard<std::mutex> lk(g_tex_pick_m); dir = g_tex_pick_dir.empty() ? (g_dir / "export").wstring() : g_tex_pick_dir; }
-  std::thread([dir] {
-    // It gets its own invisible, always-on-top owner window, so the picker opens in front of a fullscreen game.
-    // The game's window isn't the owner because a modal picker disables its owner, which would block input to the
-    // game until it closes.
-    HWND owner = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (owner) SetForegroundWindow(owner);
-    wchar_t file[MAX_PATH] = L"";
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Images (*.png;*.bmp;*.tif;*.tiff)\0*.png;*.bmp;*.tif;*.tiff\0All files\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrInitialDir = dir.c_str();
-    ofn.lpstrTitle = L"Pick an edited texture (a name with _Shadow, SssMap, Sss or shadow = the shadow color; else the lit color)";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-    if (GetOpenFileNameW(&ofn)) {
-      { std::lock_guard<std::mutex> lk(g_tex_pick_m); g_tex_pick = file; }
-      std::lock_guard<std::mutex> lock(g_m);
-      g_reqs.push_back({kImportTex, -1, 0});
-    }
-    if (owner) DestroyWindow(owner);
-    g_tex_pick_open = false;
-  }).detach();
+// Import's own window (the editor's, not Windows' picker): where it opens, and the files ticked in it
+std::wstring textureDir() {
+  std::lock_guard<std::mutex> lk(g_tex_pick_m);
+  return g_tex_pick_dir.empty() ? (g_dir / "export").wstring() : g_tex_pick_dir;
+}
+std::wstring exportsDir() { return (g_dir / "export").wstring(); }
+void importTextureFiles(const std::vector<std::wstring>& files) {
+  if (files.empty()) return;
+  std::vector<std::filesystem::path> picked(files.begin(), files.end());
+  std::sort(picked.begin(), picked.end());
+  {
+    std::lock_guard<std::mutex> lk(g_tex_pick_m);
+    g_tex_pick.insert(g_tex_pick.end(), picked.begin(), picked.end());
+    g_tex_added += static_cast<int>(picked.size());
+  }
+  std::lock_guard<std::mutex> lock(g_m);
+  g_reqs.push_back({kImportTex, -1, 0});
 }
 void logDrawn() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kLogDrawn, -1, 0}); }
 void renameRegion(int region, const std::string& name) {
@@ -7090,6 +7202,24 @@ void resetCapturedColor(int i, uint32_t gen) { std::lock_guard<std::mutex> lock(
 void menuUpdate(bool in_fight) { menuUpdateNow(in_fight); }
 void menuRelease() { menuRelease_(); }
 void battleGone() {
+  // The same training fight, only stalled: nothing's over. (The engine's address can be reused by a new fight, so the
+  // fighters' meshes must still be the ones found.)
+  if (asw_engine::get() && asw_engine::get() == g_fight && !g_targets.empty() && std::all_of(g_targets.begin(), g_targets.end(), [](const Target& t) {
+        if (t.items.size() != t.mids.size() + t.comps.size()) return false;
+        for (size_t j = 0; j < t.comps.size(); j++)
+          if (!Kept{t.comps[j], t.items[t.mids.size() + j]}.alive()) return false;
+        return true;
+      }))
+    return;
+  {  // Textures ticked for this fight's fighter don't go on the next one's
+    std::lock_guard<std::mutex> lk(g_tex_pick_m);
+    g_tex_pick.clear();
+    g_tex_added = 0;
+  }
+  g_tex_front.clear();
+  g_tex_home.clear();
+  g_tex_all = g_tex_done = 0;
+  g_setup_home.clear();
   scanShowOthers();  // Left the fight during a scan: what it hid is shown again while it's still there
   for (RxPart& p : g_rx.parts) {  // The fight's over. Only its file is kept, for saving, and unfinished textures are dropped when done
     unroot(p.shown); p.shown = Shown{}; p.failed = true;
@@ -7255,7 +7385,7 @@ int sharePayload(std::vector<uint8_t>& out, std::string& why) {
   put32(out, static_cast<uint32_t>(parts.size()));
   for (const auto& [kind, k] : parts) {
     const Packed& p = k->packed.get();
-    if (!p.ok) { out.clear(); why = "a texture couldn't be packed"; return 2; }
+    if (!p.ok) { out.clear(); why = underWine() ? "recolors aren't sent from Linux / Proton" : "a texture couldn't be packed"; return 2; }
     putStr(out, kind);
     std::string vecs;
     if (const auto* v = menuVecs(pre + kind))
@@ -7379,6 +7509,7 @@ bool scanWanted(int& id, int& frame, int& frames, int& groups) {
   groups = g_scan_groups;
   return true;
 }
+bool scanWhole() { std::lock_guard<std::mutex> lk(g_scan_m); return g_scan_whole; }
 void scanGrabbed(int id, int frame) {
   std::lock_guard<std::mutex> lk(g_scan_m);
   if (id == g_scan_id && frame == g_scan_frame) g_scan_grabbed = true;
@@ -7806,36 +7937,113 @@ void paintRequest(Target& t, const Req& q) {
       break;
   }
 }
-// A texture edited elsewhere (Photoshop...), or any image of the part's size, picked in a file picker.
+// A texture edited elsewhere (Photoshop...), or any image of the part's size, ticked in Import textures.
 // Whatever differs from its baseline becomes Normal paint at full strength (one undo step), so region colors
 // still work everywhere else. Its name says the map. "_Shadow", "sss" or "shadow" in it means the shadow
 // color, else lit. The baseline for an exported file is the export's own copy (.exported/), so colors changed
 // in the editor since aren't put back. For anything else it's the picture as shown now. A new export's
 // "<Part>_Lit" / "<Part>_Shadow" name says its part too, and another part's file is turned away (show that
 // part first).
-void importTexturesNow(const Target& t) {  // (game thread)
-  std::filesystem::path file;
-  { std::lock_guard<std::mutex> lk(g_tex_pick_m); file.swap(g_tex_pick); }
-  if (file.empty()) return;
-  const std::string fname = narrow(file.filename().wstring());
+// The part a new export's file name says ("Body_Lit.png"), of this fighter, and which color (0 lit, 1 shadow). Null
+// for a name that says none; *many is set when it fits more than one.
+const Target* texPartOf(const Target& t, const std::filesystem::path& file, int& m, bool& many) {
   const std::wstring stem = file.stem().wstring();
-  const Target* named = nullptr;  // The part a new export's name says
-  int named_m = 0;
-  for (const auto& [tail, mm] : {std::pair<const wchar_t*, int>{L"_Lit", 0}, {L"_Shadow", 1}}) {
+  const Target* named = nullptr;
+  many = false;
+  m = 0;
+  for (const auto& [tail, mm] : {std::pair<const wchar_t*, int>{L"_Lit", 0}, {L"_Shadow", 1}, {L"_material_colors", 2}}) {
     const size_t n = wcslen(tail);
     if (named || stem.size() <= n || _wcsicmp(stem.c_str() + stem.size() - n, tail) != 0) continue;
     const std::wstring part = stem.substr(0, stem.size() - n);
     std::set<std::string> kinds;
     for (const Target& o : g_targets)
-      if (o.chr == t.chr && o.color == t.color && _wcsicmp(wide(exportStem(o)).c_str(), part.c_str()) == 0 && kinds.insert(o.kind).second) named = o.kind == t.kind ? &t : &o;
-    if (kinds.size() > 1) { g_status = fname + ": which part? Its name fits more than one."; return; }
-    named_m = mm;
+      if (o.pawn == t.pawn && o.chr == t.chr && o.color == t.color && _wcsicmp(wide(exportStem(o)).c_str(), part.c_str()) == 0 && kinds.insert(o.kind).second)
+        named = o.kind == t.kind ? &t : &o;
+    if (kinds.size() > 1) many = true;
+    m = mm;
   }
-  if (named && named != &t) { g_status = fname + " is " + partName(named->kind) + "'s texture: show that part first."; return; }
+  return named;
+}
+// An export's effects.txt onto the shown slot's effect colors (by label). True if any changed.
+bool importFxNow(const Target& t, const std::filesystem::path& file) {
+  const std::string fname = narrow(file.filename().wstring());
+  const std::string slot = t.chr + "/" + t.color;
+  if (g_fx_for != slot) return false;
+  std::map<std::string, std::array<float, 3>> rows;
+  for (const std::string& l : readLines(file)) {
+    const size_t tab = l.find('\t');
+    if (l.empty() || l[0] == '#' || tab == std::string::npos) continue;
+    std::array<float, 3> c{};
+    if (sscanf_s(l.c_str() + tab + 1, "%f %f %f", &c[0], &c[1], &c[2]) != 3) continue;
+    if (std::all_of(c.begin(), c.end(), [](float f) { return std::isfinite(f) && f >= 0.0f && f <= 1000.0f; }) && c[0] + c[1] + c[2] > 0.0f)
+      rows[l.substr(0, tab)] = c;  // (not a black one: it would black out every color of that table)
+  }
+  int set = 0;
+  for (FxColor& f : fxList()) {
+    auto it = rows.find(f.label);
+    if (it == rows.end() || std::equal(it->second.begin(), it->second.end(), f.rgb, [](float a, float b) { return std::fabs(a - b) <= 1e-4f * (std::max)(1.0f, std::fabs(b)); })) continue;  // (the file has 6 digits)
+    if (!set) { pushUndo(t, kFx, -1); g_snap_kind = -1; }
+    std::memcpy(f.rgb, it->second.data(), sizeof(f.rgb));
+    f.edited = true;
+    g_fx_saved[slot][f.label] = it->second;
+    set++;
+  }
+  if (set) {
+    takeAllByName("");  // (every loaded effect taking any of them, once)
+    for (FxColor& f : fxList()) if (rows.count(f.label)) fxApply(f);
+    markUnsaved(t);
+    g_unsaved_slots.insert(slot);
+  }
+  g_status = set ? "Imported " + fname + " (" + std::to_string(set) + " effect colors)." : fname + " has no changes to import (the effect colors).";
+  COMBO_LOG("color editor: " + g_status);
+  return set > 0;
+}
+// An export's <Part>_material_colors.txt onto the shown part: each row's color on the material color with its label
+// (the part's material colors have to be found already). True if any changed.
+bool importMatColorsNow(const Target& t, const std::filesystem::path& file) {
+  const std::string fname = narrow(file.filename().wstring());
+  std::map<std::string, std::array<float, 4>> rows;  // label -> color
+  for (const std::string& l : readLines(file)) {
+    if (l.empty() || l[0] == '#') continue;
+    std::vector<std::string> col;
+    for (size_t a = 0, b; a <= l.size(); a = b + 1) { b = l.find('\t', a); if (b == std::string::npos) b = l.size(); col.push_back(l.substr(a, b - a)); }
+    if (col.size() < 4) continue;
+    std::array<float, 4> c{};
+    if (sscanf_s(col[3].c_str(), "%f %f %f %f", &c[0], &c[1], &c[2], &c[3]) != 4) continue;
+    if (std::all_of(c.begin(), c.end(), [](float f) { return std::isfinite(f) && f >= 0.0f && f <= 1000.0f; })) rows[col[1]] = c;
+  }
+  if (rows.empty()) { g_status = fname + " has no material colors in it."; COMBO_LOG("color editor: " + g_status); return false; }
+  int set = 0;
+  bool undo = false;
+  for (VecGroup& g : g_vecs) {
+    auto it = rows.find(g.label);
+    if (it == rows.end() || g.label == kDecalLabel) continue;
+    if (std::equal(it->second.begin(), it->second.end(), g.cur, [](float a, float b) { return std::fabs(a - b) <= 1e-4f * (std::max)(1.0f, std::fabs(b)); })) continue;  // (the file has 6 digits)
+    if (!undo) { pushUndo(t, kVec, -1); g_snap_kind = -1; undo = true; }  // (its own step, never merged with the next)
+    std::memcpy(g.cur, it->second.data(), sizeof(g.cur));
+    g.edited = true;
+    g_vec_saved[keyOf(t)][g.label] = it->second;
+    for (size_t k = 0; k < g.mids.size(); k++) vecSet(g.mids[k], g.paramOf(k), g.cur);
+    set++;
+  }
+  if (set) markUnsaved(t);
+  g_status = set ? "Imported " + fname + " (" + std::to_string(set) + " material colors)." : fname + " has no changes to import (the material colors).";
+  COMBO_LOG("color editor: " + g_status);
+  return set > 0;
+}
+bool importTexturesNow(const Target& t, const std::filesystem::path& file) {  // (game thread) True if it changed the part
+  if (file.empty()) return false;
+  const std::string fname = narrow(file.filename().wstring());
+  const std::wstring stem = file.stem().wstring();
+  int named_m = 0;
+  bool many = false;
+  const Target* named = texPartOf(t, file, named_m, many);  // The part a new export's name says
+  if (many) { g_status = fname + ": which part? Its name fits more than one."; COMBO_LOG("color editor: " + g_status); return false; }
+  if (named && named != &t) { g_status = fname + " is " + partName(named->kind) + "'s texture: show that part first."; COMBO_LOG("color editor: " + g_status); return false; }
   finishStrokes();
   const Worn& w = *g_worn;
   PaintPart* pp = paintFor(t, w.base.w, w.base.h);
-  if (!pp) { g_status = "Couldn't import on this part."; return; }
+  if (!pp) { g_status = "Couldn't import on this part."; return false; }
   PaintPart& p = *pp;
   paintRefresh(p, t, true);  // The picture as it is now
   std::wstring lower = file.filename().wstring();
@@ -7845,11 +8053,11 @@ void importTexturesNow(const Target& t) {  // (game thread)
   const char* names[2] = {"BaseMap", "SssMap"};
   const char* says[2] = {"the lit color", "the shadow color"};
   Image im;
-  if (!decodePng(file, im)) { g_status = "Couldn't read " + fname + " (PNG, BMP or TIFF)."; return; }
+  if (!decodePng(file, im)) { g_status = "Couldn't read " + fname + " (PNG, BMP or TIFF)."; return false; }
   const paint::Image& now = p.comp[m];
   if (im.w != now.w || im.h != now.h) {
     g_status = fname + " is the wrong size (needs " + std::to_string(now.w) + "x" + std::to_string(now.h) + ").";
-    return;
+    return false;
   }
   const std::filesystem::path dir = g_dir / "export" / t.chr / t.color;
   const std::string prefix = t.kind == "MAIN" ? std::string() : t.kind + "_";
@@ -7867,7 +8075,7 @@ void importTexturesNow(const Target& t) {  // (game thread)
     const bool own_name = lower.rfind(std::wstring(own.begin(), own.end()), 0) == 0;
     if (!own_name && (says_base || says_sss)) {  // An exported name, but another part's, like WEP_BaseMap with the body shown
       g_status = fname + " is another part's texture: show that part first.";
-      return;
+      return false;
     }
     const std::wstring stem = file.stem().wstring();
     const bool plain = _wcsicmp(stem.c_str(), std::wstring(own_case.begin(), own_case.end()).c_str()) == 0 || _wcsicmp(stem.c_str(), (std::wstring(own_case.begin(), own_case.end()) + L"_view").c_str()) == 0;
@@ -7890,12 +8098,69 @@ void importTexturesNow(const Target& t) {  // (game thread)
       if (im.px[i + 3] == 0) std::memcpy(&im.px[i], &base.px[i], 3);
   const paint::Image want{im.w, im.h, std::move(im.px)};
   const paint::Map map = m ? paint::Map::Shadow : paint::Map::Lit;
-  if (!p.canvas.set_texels(map, base, want)) { g_status = "Couldn't take in " + fname + "."; return; }
+  // The regions take the picture's colors (this map's: lit or shadow), so the list shows the imported look
+  bool regions = false;
+  paint::Image shown;  // the picture with the new region colors and the paint as it is
+  std::vector<Edit> ed_before, ed = g_edits[keyOf(t)];  // (the new colors go in only once the paint has taken the file)
+  if (!from_export) {  // (an edited copy of this slot's own export keeps its compare: only what was changed in it comes in)
+    const int R = static_cast<int>(w.lit.size());
+    if (static_cast<int>(ed.size()) < R) ed.resize(static_cast<size_t>(R));
+    if (w.owner.size() == static_cast<size_t>(want.w) * want.h && w.base.w == want.w && w.base.h == want.h) {
+      std::vector<std::unordered_map<uint32_t, uint32_t>> counts(static_cast<size_t>(R));
+      std::vector<std::array<uint64_t, 3>> sums(static_cast<size_t>(R), {0, 0, 0});
+      std::vector<uint32_t> n(static_cast<size_t>(R), 0);
+      const Image& own = m ? w.sss : w.base;
+      for (size_t i = 0; i < w.owner.size(); i += 2) {  // (every other texel is plenty) its own-color texels only
+        const uint16_t r = w.owner[i];
+        if (r >= R || rgbAt(own, i) != (m ? w.shadow[r] : w.lit[r])) continue;
+        const uint32_t c = uint32_t(want.px[i * 4]) << 16 | uint32_t(want.px[i * 4 + 1]) << 8 | want.px[i * 4 + 2];
+        counts[r][c]++;
+        sums[r][0] += want.px[i * 4]; sums[r][1] += want.px[i * 4 + 1]; sums[r][2] += want.px[i * 4 + 2];
+        n[r]++;
+      }
+      std::vector<std::pair<int, uint32_t>> set;
+      for (int r = 0; r < R; r++) {
+        if (!n[r]) continue;
+        const uint32_t c = regionColor(counts[r], sums[r].data(), n[r]);
+        const std::pair<uint32_t, uint32_t> now_pair = pairOf(r, ed);
+        if (c != (m ? now_pair.second : now_pair.first)) set.push_back({r, c});
+      }
+      if (!set.empty()) {
+        ed_before = ed;
+        for (const auto& [r, c] : set) {
+          Edit& e = ed[static_cast<size_t>(r)];
+          if (m) { e.has_shadow = true; e.shadow = c; }
+          else { e.has_lit = true; e.lit = c; e.derive = false; }
+        }
+        regions = true;
+        Image ob, os;
+        buildW(w, g_follow, ed, {}, ob, os);
+        Image& im2 = m ? os : ob;
+        const paint::Image fresh{im2.w, im2.h, std::move(im2.px)};
+        if (!p.canvas.compose(map, fresh, shown)) shown = fresh;
+      }
+    }
+  }
+  if (!p.canvas.set_texels(map, regions ? shown : base, want)) { g_status = "Couldn't take in " + fname + "."; return false; }
   const bool changed = p.canvas.last_changed();
-  paintStep(t, changed ? 1 : 0);
+  if (regions) {  // The colors and the paint are one undo step
+    g_edits[keyOf(t)] = ed;
+    auto& u = g_undo[slotOf(t)];
+    if (changed) u.push_back(Snap{keyOf(t), ed_before, {}, {}, 1, true});
+    else { Snap sn = snapOf(t); sn.ed = ed_before; u.push_back(std::move(sn)); }
+    if (u.size() > 100) u.erase(u.begin());
+    g_redo[slotOf(t)].clear();
+    g_snap_kind = -1;
+    markUnsaved(t);
+    g_dirty = true;
+    g_last_change = Clock::now() - std::chrono::seconds(1);
+  } else {
+    paintStep(t, changed ? 1 : 0);
+  }
   if (changed) paintChanged(p, t);
-  g_status = changed ? "Imported " + fname + "." : fname + " has no changes to import (" + says[m] + ").";
-  COMBO_LOG("color editor: " + g_status);
+  g_status = changed || regions ? "Imported " + fname + "." : fname + " has no changes to import (" + says[m] + ").";
+  COMBO_LOG("color editor: " + g_status + (regions ? " The regions took its colors." : ""));
+  return changed || regions;
 }
 void previewTick(const Target& t) {
   if (g_prev_job.valid()) {
@@ -8138,9 +8403,413 @@ void face(const float p[3], const Vec& feet) {
   g_cam.gpitch = std::clamp(std::asin(std::clamp(d[2] / n, -1.0f, 1.0f)) * 57.2958f, -85.0f, 85.0f);
   g_cam.gyaw = g_cam.yaw + angleTo(g_cam.yaw, std::atan2(d[1], d[0]) * 57.2958f);
 }
+namespace {
+  // ---- The bone atlas (StriveLabs_colors/atlas/<CHR>.bin, made from the game's own mesh files by make_atlas.py).
+  // For each mesh and material slot, a grid over the texture whose cells hold where the surface drawn there is: the
+  // bone it moves with, the point in that bone's space and the way it faces. A mirrored part (both legs on one
+  // texture) has a point per side. Joined with a part's regions, every region the model draws has places. --------
+  struct AtlasPoint { uint16_t cx = 0, cy = 0, bone = 0; int16_t p[3] = {}; int8_t n[3] = {}; };
+  struct AtlasMesh {
+    int grid = 0;
+    std::vector<std::string> bones, slot_names;
+    std::vector<int16_t> parent;               // (v2) each bone's parent, -1 for none
+    std::vector<std::array<float, 7>> rest;    // (v2) each bone's rest location x y z and rotation x y z w, in the mesh's space
+    std::vector<std::vector<AtlasPoint>> slots;
+  };
+  std::map<std::string, std::map<std::string, AtlasMesh>> g_atlas;  // by character ("SOL", "ANJ_C02"), then mesh name in lower case
+  std::string lowered(std::string s) { for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); return s; }
+  const std::map<std::string, AtlasMesh>& atlasOf(const std::string& chr) {  // Read once a session (empty if there's none or it's bad)
+    auto it = g_atlas.find(chr);
+    if (it != g_atlas.end()) return it->second;
+    std::map<std::string, AtlasMesh>& out = g_atlas[chr];
+    const std::vector<uint8_t> b = readBytes(g_dir / "atlas" / (chr + ".bin"));
+    if (b.empty()) return out;
+    size_t o = 0;
+    auto take = [&](void* d, size_t n) { if (n > b.size() - o) return false; std::memcpy(d, b.data() + o, n); o += n; return true; };
+    auto str = [&](std::string& v) {
+      uint16_t n = 0;
+      if (!take(&n, 2) || n > b.size() - o) return false;
+      v.assign(reinterpret_cast<const char*>(b.data() + o), n);
+      o += n;
+      return true;
+    };
+    uint32_t magic = 0, ver = 0, grid = 0, meshes = 0;
+    bool ok = take(&magic, 4) && magic == 0x54414C53 /* "SLAT" */ && take(&ver, 4) && (ver == 1 || ver == 2) && take(&grid, 4) && grid >= 8 && grid <= 1024 &&
+              take(&meshes, 4) && meshes <= 4096;
+    size_t points = 0;
+    for (uint32_t m = 0; ok && m < meshes; m++) {
+      std::string name;
+      uint16_t nb = 0;
+      uint32_t ns = 0;
+      AtlasMesh am;
+      am.grid = static_cast<int>(grid);
+      ok = str(name) && take(&nb, 2);
+      am.bones.resize(ok ? nb : 0);
+      if (ver == 2) { am.parent.assign(am.bones.size(), -1); am.rest.assign(am.bones.size(), {}); }
+      for (size_t k = 0; ok && k < am.bones.size(); k++) {
+        ok = str(am.bones[k]);
+        if (ver == 2) ok = ok && take(&am.parent[k], 2) && am.parent[k] < static_cast<int>(nb) && take(am.rest[k].data(), 28) &&
+                           std::all_of(am.rest[k].begin(), am.rest[k].end(), [](float f) { return std::isfinite(f); });
+      }
+      ok = ok && take(&ns, 4) && ns <= 256;
+      for (uint32_t k = 0; ok && k < ns; k++) {
+        std::string slot;
+        uint32_t n = 0;
+        ok = str(slot) && take(&n, 4) && n <= (b.size() - o) / 15;
+        std::vector<AtlasPoint> pts(ok ? n : 0);
+        for (AtlasPoint& q : pts)
+          ok = ok && take(&q.cx, 2) && take(&q.cy, 2) && take(&q.bone, 2) && take(q.p, 6) && take(q.n, 3) && q.bone < nb && q.cx < grid && q.cy < grid;
+        points += pts.size();
+        am.slots.push_back(std::move(pts));
+        am.slot_names.push_back(slot);
+      }
+      if (ok) out.emplace(lowered(name), std::move(am));  // (the first of a name)
+    }
+    if (!ok) out.clear();  // A bad file is never trusted: the part is scanned as before
+    COMBO_LOG("color editor: bone atlas for " + chr + ": " + (ok ? std::to_string(out.size()) + " meshes, " + std::to_string(points) + " points" : std::string("couldn't be read")));
+    return out;
+  }
+  const AtlasMesh* atlasMesh(const std::string& chr, const std::string& mesh) {  // (a second costume borrows the first's meshes)
+    for (const std::string& c : {chr, codeOf(chr)}) {
+      const auto& a = atlasOf(c);
+      auto it = a.find(mesh);
+      if (it != a.end()) return &it->second;
+    }
+    return nullptr;
+  }
+  UObject* shownComp(UObject* c) { return standIn(c) ? standIn(c) : c; }  // A hidden model being previewed is on screen in another component
+  std::string meshNameOf(UObject* c) { UObject* m = c ? meshOf(shownComp(c)) : nullptr; return m ? lowered(narrow(m->GetName())) : std::string(); }
+  // The part's mesh components that are still there (a mesh the game let go mid-round is never asked anything)
+  std::vector<UObject*> liveComps(const Target& t) {
+    std::vector<UObject*> out;
+    if (t.items.size() != t.mids.size() + t.comps.size()) return out;
+    for (size_t j = 0; j < t.comps.size(); j++)
+      if (t.comps[j] && Kept{t.comps[j], t.items[t.mids.size() + j]}.alive()) out.push_back(t.comps[j]);
+    return out;
+  }
+  // The meshes and material slots wearing the part now, as drawnTick finds them
+  struct Wear { UObject* comp = nullptr; std::string mesh; int slot = 0; };
+  std::vector<Wear> wearing(const Target& t) {
+    std::vector<Wear> out;
+    for (UObject* c : liveComps(t)) {
+      const std::string mesh = meshNameOf(c);
+      if (mesh.empty()) continue;
+      const int n = numMaterials(c);
+      for (int i = 0; i < n && i < 64; i++)
+        if (std::string n0, k0; std::find(t.mids.begin(), t.mids.end(), material(c, i)) != t.mids.end() &&
+                                !(outlineOnly(material(c, i)) && !colorSource(material(c, i), n0, k0)))
+          out.push_back({c, mesh, i});
+    }
+    return out;
+  }
+  int slotIndex(UObject* comp, const std::string& slot) {  // The mesh's material index for a slot name, -1 if it hasn't one
+    static UFunction* f = fn(STR("/Script/Engine.PrimitiveComponent:GetMaterialIndex"));
+    if (!f || !comp) return -2;  // (can't tell)
+    const std::wstring w(slot.begin(), slot.end());
+    const FName name(w.c_str(), FNAME_Add);
+    alignas(8) uint8_t p[16] = {};  // MaterialSlotName at 0, ReturnValue at 8
+    std::memcpy(p, &name, sizeof(FName));
+    comp->ProcessEvent(f, p);
+    return *reinterpret_cast<int32_t*>(p + 8);
+  }
+  // A part mapped by hand with Remap goes by that mapping from then on, not the atlas (a mod's own model can keep the
+  // stock names): a marker beside its parts file says so
+  std::map<std::string, bool> g_by_hand;  // by map key, looked at once a session
+  std::filesystem::path byHandFile(const std::string& key, const std::string& chr, const std::string& kind) {
+    std::filesystem::path f = partsFile(key, chr, kind);
+    f.replace_extension(".remapped");
+    return f;
+  }
+  bool byHand(const Target& t) {
+    const std::string key = mapKey(t);
+    auto it = g_by_hand.find(key);
+    if (it == g_by_hand.end()) {
+      std::error_code ec;
+      it = g_by_hand.emplace(key, std::filesystem::exists(byHandFile(key, t.chr, t.kind), ec)).first;
+    }
+    return it->second;
+  }
+  // Whether the atlas has every mesh and slot wearing the part, at that slot. Why not, for the log
+  bool coveredBy(const Target& t, const std::vector<Wear>& wear, std::string* why) {
+    if (byHand(t)) { if (why) *why = "it was mapped with Remap"; return false; }
+    if (wear.empty()) { if (why) *why = "nothing wears it now"; return false; }
+    for (const Wear& w : wear) {
+      const AtlasMesh* am = atlasMesh(t.chr, w.mesh);
+      if (!am) { if (why) *why = w.mesh + " isn't in it"; return false; }
+      if (w.slot >= static_cast<int>(am->slots.size())) { if (why) *why = w.mesh + " has no slot " + std::to_string(w.slot) + " in it"; return false; }
+      const int at = slotIndex(w.comp, am->slot_names[static_cast<size_t>(w.slot)]);
+      if (at != -2 && at != w.slot) {
+        if (why) *why = w.mesh + "'s slot " + std::to_string(w.slot) + " isn't " + am->slot_names[static_cast<size_t>(w.slot)] + " in the game";
+        return false;
+      }
+    }
+    return true;
+  }
+  struct PlacesFor {
+    std::weak_ptr<CharMap> map;  // (watched, not held: a map made again is never taken for this one, and an old one is freed)
+    std::string wear;
+    Clock::time_point checked;
+    int grid = 0;
+    std::vector<std::vector<std::pair<uint16_t, int>>> cells;  // per atlas cell, the regions in it and their texels
+    std::vector<uint16_t> centre;                              // per cell, the region at its middle texel (where the atlas has its point)
+    std::vector<std::vector<Place>> by_region;
+  };
+  std::map<std::string, PlacesFor> g_places;  // by map key
+// Each region's places, worked out when the part's regions or what wears it change. Null when the part isn't all
+// in an atlas, and then it's mapped by scanning as before.
+const std::vector<std::vector<Place>>* placesFor(const Target& t) {
+  auto mp = g_maps.find(mapKey(t));
+  if (mp == g_maps.end() || !mp->second || mp->second->regions <= 0) return nullptr;
+  PlacesFor& pf = g_places[mapKey(t)];
+  const bool same_map = pf.map.lock() == mp->second;
+  if (same_map && Clock::now() - pf.checked < std::chrono::milliseconds(250))
+    return pf.by_region.empty() ? nullptr : &pf.by_region;
+  pf.checked = Clock::now();
+  const auto wear = wearing(t);
+  std::string sig;
+  for (const Wear& w : wear) sig += w.mesh + "#" + std::to_string(w.slot) + ";";
+  if (same_map && pf.wear == sig) return pf.by_region.empty() ? nullptr : &pf.by_region;
+  const auto t0 = Clock::now();
+  if (!same_map) { pf.cells.clear(); pf.centre.clear(); pf.grid = 0; }
+  pf.map = mp->second;
+  pf.wear = sig;
+  pf.by_region.clear();
+  std::string why;
+  if (!coveredBy(t, wear, &why)) {
+    COMBO_LOG("color editor: " + mapKey(t) + " isn't placed from a bone atlas (" + why + "), so it's mapped by scanning");
+    return nullptr;
+  }
+  const CharMap& m = *mp->second;
+  const int G = atlasMesh(t.chr, wear.front().mesh)->grid;
+  if (pf.grid != G) {  // The regions in each cell, once per map
+    pf.grid = G;
+    pf.cells.assign(static_cast<size_t>(G) * G, {});
+    pf.centre.assign(static_cast<size_t>(G) * G, 0xFFFF);
+    for (int cy = 0; cy < G; cy++)
+      for (int cx = 0; cx < G; cx++) {
+        const int x0 = cx * m.w / G, x1 = (cx + 1) * m.w / G, y0 = cy * m.h / G, y1 = (cy + 1) * m.h / G;
+        auto& in = pf.cells[static_cast<size_t>(cy) * G + cx];
+        for (int y = y0; y < y1; y++)
+          for (int x = x0; x < x1; x++) {
+            const uint16_t r = m.owner[static_cast<size_t>(y) * m.w + x];
+            if (r >= m.regions) continue;
+            auto c = std::find_if(in.begin(), in.end(), [&](const auto& e) { return e.first == r; });
+            if (c == in.end()) in.push_back({r, 1});
+            else c->second++;
+          }
+        const int mx = (std::min)(m.w - 1, (x0 + x1) / 2), my = (std::min)(m.h - 1, (y0 + y1) / 2);
+        pf.centre[static_cast<size_t>(cy) * G + cx] = m.owner[static_cast<size_t>(my) * m.w + mx];
+      }
+  }
+  // Each region keeps up to 128 places, spread over all it has: counted first, then every k-th kept
+  std::vector<int> total(static_cast<size_t>(m.regions), 0), seen(static_cast<size_t>(m.regions), 0);
+  for (int pass = 0; pass < 2; pass++)
+    for (const Wear& w : wear) {
+      const AtlasMesh* am = atlasMesh(t.chr, w.mesh);
+      if (am->grid != G) continue;
+      for (const AtlasPoint& q : am->slots[static_cast<size_t>(w.slot)]) {
+        const size_t cell = static_cast<size_t>(q.cy) * G + q.cx;
+        for (const auto& [r, n] : pf.cells[cell]) {
+          if (pass == 0) { total[r]++; continue; }
+          const int every = (total[r] + 127) / 128;
+          if (seen[r]++ % every) continue;
+          if (pf.by_region.empty()) pf.by_region.resize(static_cast<size_t>(m.regions));
+          Place pl;
+          pl.mesh = w.mesh;
+          pl.bone = am->bones[q.bone];
+          pl.am = am;
+          pl.bi = q.bone;
+          for (int k = 0; k < 3; k++) { pl.p[k] = q.p[k] * 0.1f; pl.n[k] = q.n[k] / 127.0f; }
+          pl.own = pf.centre[cell] == r;
+          pf.by_region[r].push_back(std::move(pl));
+        }
+      }
+    }
+  int placed = 0;
+  for (const auto& l : pf.by_region) placed += l.empty() ? 0 : 1;
+  COMBO_LOG("color editor: " + mapKey(t) + " placed from the bone atlas: " + std::to_string(placed) + " of " + std::to_string(m.regions) + " regions (" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()) + " ms)");
+  if (!placed) pf.by_region.clear();
+  return pf.by_region.empty() ? nullptr : &pf.by_region;
+}
+bool atlasCovers(const Target& t) { return coveredBy(t, wearing(t), nullptr); }
+  // A bone's place in the world now (its rotation x y z w, location and scale), or false if the mesh hasn't that bone
+  bool boneWorld(UObject* comp, const std::string& bone, float q[4], float loc[3], float scale[3]) {
+    static UFunction* gi = fn(STR("/Script/Engine.SkinnedMeshComponent:GetBoneIndex"));
+    static UFunction* gst = fn(STR("/Script/Engine.SceneComponent:GetSocketTransform"));
+    if (!comp || !gi || !gst) return false;
+    const std::wstring w(bone.begin(), bone.end());
+    const FName name(w.c_str(), FNAME_Add);
+    alignas(8) uint8_t pi[16] = {};  // BoneName at 0, ReturnValue at 8
+    std::memcpy(pi, &name, sizeof(FName));
+    comp->ProcessEvent(gi, pi);
+    if (*reinterpret_cast<int32_t*>(pi + 8) < 0) return false;
+    alignas(16) uint8_t p[96] = {};  // InSocketName at 0, TransformSpace at 8 (RTS_World), ReturnValue (FTransform) at 16
+    std::memcpy(p, &name, sizeof(FName));
+    comp->ProcessEvent(gst, p);
+    const float* x = reinterpret_cast<const float*>(p + 16);  // rotation x y z w, location x y z _, scale x y z _
+    for (int k = 0; k < 4; k++) q[k] = x[k];
+    for (int k = 0; k < 3; k++) { loc[k] = x[4 + k]; scale[k] = x[8 + k]; }
+    return std::isfinite(loc[0]) && std::isfinite(loc[1]) && std::isfinite(loc[2]);
+  }
+  void rotateBy(const float q[4], const float v[3], float out[3]) {  // v + 2 u x (u x v + w v)
+    const float u[3] = {q[0], q[1], q[2]}, w = q[3];
+    const float c1[3] = {u[1] * v[2] - u[2] * v[1] + w * v[0], u[2] * v[0] - u[0] * v[2] + w * v[1], u[0] * v[1] - u[1] * v[0] + w * v[2]};
+    out[0] = v[0] + 2.0f * (u[1] * c1[2] - u[2] * c1[1]);
+    out[1] = v[1] + 2.0f * (u[2] * c1[0] - u[0] * c1[2]);
+    out[2] = v[2] + 2.0f * (u[0] * c1[1] - u[1] * c1[0]);
+  }
+  // The places' components: those drawn now, by mesh name (a hidden mesh keeps its bones wherever they were left),
+  // or all of them if none is
+  struct Comps { std::map<std::string, UObject*> by_mesh; std::vector<UObject*> drawn; };
+  Comps compsByMesh(const Target& t) {
+    Comps all, drawn;
+    for (UObject* c : liveComps(t))
+      if (const std::string mesh = meshNameOf(c); !mesh.empty()) {
+        if (all.by_mesh.emplace(mesh, shownComp(c)).second) all.drawn.push_back(shownComp(c));
+        if (drawnLately(shownComp(c)) && drawn.by_mesh.emplace(mesh, shownComp(c)).second) drawn.drawn.push_back(shownComp(c));
+      }
+    return drawn.drawn.empty() ? all : drawn;
+  }
+  std::set<std::string> drawnMeshes(const Target& t) {  // (really drawn: none if none is)
+    std::set<std::string> out;
+    for (UObject* c : liveComps(t))
+      if (const std::string mesh = meshNameOf(c); !mesh.empty() && drawnLately(shownComp(c))) out.insert(mesh);
+    return out;
+  }
+  // A place in the world now, with the way it faces. A place on a mesh not drawn now (the close-up head) goes by a
+  // drawn one with the same bone (the head on screen)
+  bool placeAt(const Place& pl, const Comps& comps, float pos[3], float nrm[3]) {
+    float q[4], loc[3], sc[3];
+    auto real = [&](UObject* comp) {  // the bone there, at a real size (a bone scaled to nothing isn't shown)
+      return boneWorld(comp, pl.bone, q, loc, sc) && std::fabs(sc[0]) >= 0.01f && std::fabs(sc[1]) >= 0.01f && std::fabs(sc[2]) >= 0.01f;
+    };
+    auto c = comps.by_mesh.find(pl.mesh);
+    bool have = c != comps.by_mesh.end() && real(c->second);
+    for (size_t i = 0; !have && c == comps.by_mesh.end() && i < comps.drawn.size(); i++) have = real(comps.drawn[i]);
+    float lp[3] = {pl.p[0], pl.p[1], pl.p[2]}, ln[3] = {pl.n[0], pl.n[1], pl.n[2]};
+    if (!have && c == comps.by_mesh.end() && pl.am && pl.bi >= 0 && pl.bi < static_cast<int>(pl.am->rest.size())) {
+      // A bone only a hidden mesh has (the close-up head's): the nearest bone above it that a drawn mesh has, with the
+      // point moved into that bone's space by their rest places
+      const auto& r = pl.am->rest[static_cast<size_t>(pl.bi)];
+      float mp[3], mn[3];
+      rotateBy(&r[3], pl.p, mp);
+      for (int k = 0; k < 3; k++) mp[k] += r[k];
+      rotateBy(&r[3], pl.n, mn);
+      // (not the root: a point placed by it alone doesn't move with the head)
+      for (int a = pl.am->parent[static_cast<size_t>(pl.bi)], hops = 0; !have && a >= 0 && pl.am->parent[static_cast<size_t>(a)] >= 0 && hops < 64;
+           a = pl.am->parent[static_cast<size_t>(a)], hops++) {
+        const std::string& up = pl.am->bones[static_cast<size_t>(a)];
+        auto real_up = [&](UObject* comp) {
+          return boneWorld(comp, up, q, loc, sc) && std::fabs(sc[0]) >= 0.01f && std::fabs(sc[1]) >= 0.01f && std::fabs(sc[2]) >= 0.01f;
+        };
+        for (size_t i = 0; !have && i < comps.drawn.size(); i++) have = real_up(comps.drawn[i]);
+        if (!have) continue;
+        const auto& ra = pl.am->rest[static_cast<size_t>(a)];
+        const float inv[4] = {-ra[3], -ra[4], -ra[5], ra[6]};
+        const float d[3] = {mp[0] - ra[0], mp[1] - ra[1], mp[2] - ra[2]};
+        rotateBy(inv, d, lp);
+        rotateBy(inv, mn, ln);
+      }
+    }
+    if (!have) return false;
+    const float sp[3] = {lp[0] * sc[0], lp[1] * sc[1], lp[2] * sc[2]};
+    const float sn[3] = {sc[0] < 0 ? -ln[0] : ln[0], sc[1] < 0 ? -ln[1] : ln[1], sc[2] < 0 ? -ln[2] : ln[2]};  // (a mirrored fighter)
+    rotateBy(q, sp, pos);
+    for (int k = 0; k < 3; k++) pos[k] += loc[k];
+    rotateBy(q, sn, nrm);
+    return true;
+  }
+  // The selection's places to look at: its own ones first, at most cap, spread over all of them
+  // (only those on the meshes in drawn, when given)
+  std::vector<const Place*> placesOfSel(const std::vector<std::vector<Place>>& pl, const std::vector<int>& sel, size_t cap, const Comps* drawn = nullptr) {
+    std::vector<const Place*> own, rest, out;
+    for (int r : sel)
+      if (r >= 0 && r < static_cast<int>(pl.size()))
+        for (const Place& p : pl[static_cast<size_t>(r)])
+          if (!drawn || drawn->by_mesh.count(p.mesh)) (p.own ? own : rest).push_back(&p);
+    const auto& from = own.empty() ? rest : own;
+    const size_t step = (std::max<size_t>)(1, (from.size() + cap - 1) / cap);
+    for (size_t i = 0; i < from.size() && out.size() < cap; i += step) out.push_back(from[i]);
+    return out;
+  }
+}  // namespace
+// Where the selection is on the fighter now, from the atlas (from the feet): the middle of its places on the bone
+// most of them move with, and how much of the view it takes. False if it has no places.
+bool anchorFromAtlas(const Target& t, const std::vector<std::vector<Place>>& pl, const std::vector<int>& sel, const Vec& feet, float out[3], float& frac, float& dist) {
+  const auto comps = compsByMesh(t);
+  std::map<std::pair<std::string, std::string>, std::vector<const Place*>> groups;  // by (mesh, bone), on meshes drawn now if any
+  for (const Place* p : placesOfSel(pl, sel, 4096, &comps)) groups[{p->mesh, p->bone}].push_back(p);
+  if (groups.empty())
+    for (const Place* p : placesOfSel(pl, sel, 4096)) groups[{p->mesh, p->bone}].push_back(p);
+  std::string drawn_names;
+  for (const auto& [m, c] : comps.by_mesh) drawn_names += " " + m;
+  if (groups.empty()) {
+    COMBO_LOG("color editor: atlas: the selection has no places (meshes drawn now:" + drawn_names + ")");
+    return false;
+  }
+  const auto most = std::max_element(groups.begin(), groups.end(), [](const auto& a, const auto& b) { return a.second.size() < b.second.size(); });
+  Place mid = *most->second.front();
+  float sum[3] = {};
+  for (const Place* p : most->second) for (int k = 0; k < 3; k++) sum[k] += p->p[k];
+  for (int k = 0; k < 3; k++) mid.p[k] = sum[k] / static_cast<float>(most->second.size());
+  float reach = 5.0f;  // its size around the middle, in cm (not less than 5)
+  for (const Place* p : most->second) {
+    const float dx = p->p[0] - mid.p[0], dy = p->p[1] - mid.p[1], dz = p->p[2] - mid.p[2];
+    reach = (std::max)(reach, std::sqrt(dx * dx + dy * dy + dz * dz));
+  }
+  float pos[3], nrm[3];
+  if (!placeAt(mid, comps, pos, nrm)) {
+    std::string have;
+    for (UObject* c : comps.drawn) {
+      float q[4], loc[3], sc[3];
+      const std::string mesh = c && meshOf(c) ? lowered(narrow(meshOf(c)->GetName())) : std::string("?");
+      have += " " + mesh + (boneWorld(c, mid.bone, q, loc, sc) ? ": scale " + std::to_string(sc[0]) + " " + std::to_string(sc[1]) + " " + std::to_string(sc[2])
+                                                                : std::string(": no such bone"));
+    }
+    COMBO_LOG("color editor: atlas: " + std::to_string(groups.size()) + " groups, the biggest on " + mid.mesh + " bone " + mid.bone + " (" +
+              std::to_string(most->second.size()) + " places) couldn't be placed. Meshes drawn now:" + drawn_names + ";" + have);
+    return false;
+  }
+  out[0] = pos[0] - feet.x;
+  out[1] = pos[1] - feet.y;
+  out[2] = pos[2] - feet.z;
+  dist = (std::max)(g_cam.dist, 40.0f);
+  frac = std::clamp(2.0f * reach / (2.0f * dist * std::tan(g_cam_fov * 0.5f / 57.2958f)), 0.02f, 1.0f);
+  return true;
+}
+// The selection's place for its label (from the feet): the one facing the camera most, on screen. 1 found, 0 none
+// of them faces it (it's round the other side), -1 none of them could be found in the game now.
+int spotFromAtlas(const Target& t, const std::vector<int>& sel, const Vec& feet, float out[3]) {
+  const auto* pl = placesFor(t);
+  if (!pl) return -1;
+  const auto comps = compsByMesh(t);
+  float best = 0.2f;  // (facing it at least a little)
+  int found = -1;
+  std::vector<const Place*> look = placesOfSel(*pl, sel, 96, &comps);  // (on meshes drawn now if it has any there)
+  if (look.empty()) look = placesOfSel(*pl, sel, 96);
+  for (const Place* p : look) {
+    float pos[3], nrm[3];
+    if (!placeAt(*p, comps, pos, nrm)) continue;
+    if (found < 0) found = 0;
+    const float to[3] = {g_cam_pose[0] - pos[0], g_cam_pose[1] - pos[1], g_cam_pose[2] - pos[2]};
+    const float tl = std::sqrt(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]), nl = std::sqrt(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+    if (tl < 1.0f || nl < 0.5f) continue;
+    const float facing_cam = (to[0] * nrm[0] + to[1] * nrm[1] + to[2] * nrm[2]) / (tl * nl);
+    float sx, sy, d;
+    if (facing_cam <= best || !project(Vec{pos[0], pos[1], pos[2]}, g_aspect, sx, sy, d) || sx < 0.02f || sx > 0.98f || sy < 0.02f || sy > 0.98f) continue;
+    best = facing_cam;
+    out[0] = pos[0] - feet.x;
+    out[1] = pos[1] - feet.y;
+    out[2] = pos[2] - feet.z;
+    found = 1;
+  }
+  return found;
+}
 // Where the selection is on the fighter now, from the mapping (from the feet). False if any of it isn't
 // mapped.
 bool anchorOf(const Target& t, const std::vector<int>& sel, const Vec& feet, float out[3], float& frac, float& dist) {
+  if (const auto* pl = placesFor(t); pl && anchorFromAtlas(t, *pl, sel, feet, out, frac, dist)) return true;
   std::vector<Part>* parts = partsFor(t);
   if (!parts || sel.empty()) return false;
   const auto& bones = bonesOf(t);
@@ -8257,6 +8926,11 @@ void finishMapping(Target& t, const Vec& feet) {
   if (placed > 0) {  // Otherwise nothing was seen (every side timed out). What was there stays, and it maps again next time
     g_parts[m.key] = std::move(parts);
     saveParts(m.key, t.chr, t.kind);
+    if (m.remap) {  // Mapped by hand: this part goes by it from now on, not the atlas
+      std::ofstream(byHandFile(m.key, t.chr, t.kind), std::ios::trunc) << "mapped with Remap\n";
+      g_by_hand[m.key] = true;
+      g_places.erase(m.key);
+    }
   }
   COMBO_LOG("color editor: mapped " + m.key + ": " + std::to_string(placed) + " of " + std::to_string(R) + " regions placed" +
             (placed ? "" : " (not kept)"));
@@ -8276,6 +8950,7 @@ void finishMapping(Target& t, const Vec& feet) {
 void startMapping(Target& t) {
   const int R = (std::min)(g_maps[mapKey(t)]->regions, static_cast<int>(g_worn->lit.size()));
   g_map_tried.insert(mapKey(t));
+  const bool remap = g_map_force == mapKey(t);
   g_map_force.clear();
   if (R <= 0) return;
   stopFocus(&t);
@@ -8284,6 +8959,8 @@ void startMapping(Target& t) {
   if (!scanBuild(t, group, R, 2048)) { COMBO_LOG("color editor: couldn't make the mapping's frames"); return; }  // Full size, so thin lines get seen
   g_mapping = std::make_unique<Mapping>();
   Mapping& m = *g_mapping;
+  m.remap = remap;
+  if (!remap && !g_setup_off && g_setup_home.empty()) g_setup_home = keyOf(t);  // The first-time setup starts here (no gap before the next part)
   m.key = mapKey(t);
   m.yaw0 = g_cam.gyaw;
   m.rays.resize(static_cast<size_t>(R));
@@ -8384,7 +9061,7 @@ void afterBattleUpdate() {
   const float mdx = g_cam_dx.exchange(0.0f), mdy = g_cam_dy.exchange(0.0f), wheel = g_cam_wheel.exchange(0.0f);
   const float pdx = g_pan_dx.exchange(0.0f), pdy = g_pan_dy.exchange(0.0f);
   const bool still = g_scan_on;                    // held still while a scan's frames are grabbed
-  const bool locked = still || g_mapping != nullptr;  // the mapping steers the camera itself
+  const bool locked = still || g_mapping != nullptr || setupRunning();  // the mapping steers the camera itself (and the setup's between parts)
   if (!locked) {
     const float fast = keyDown(VK_SHIFT) ? 3.0f : 1.0f, step = 3.0f * fast, turn = 1.2f * fast;
     float dyaw = mdx * 0.3f, dpitch = mdy * 0.3f;
@@ -8433,7 +9110,7 @@ void afterBattleUpdate() {
   const bool ready = g_worn && g_worn_key == keyOf(*t);
   // ---- The parts of the model, mapped once (three sides, a scan each) ----
   if (!g_mapping && !g_pick_wanted && !g_pick_scanning && g_open && ready &&
-      (g_map_force == mapKey(*t) || (!g_map_tried.count(mapKey(*t)) && !partsFor(*t))))
+      (g_map_force == mapKey(*t) || (!g_map_tried.count(mapKey(*t)) && !partsFor(*t) && !placesFor(*t))))
     startMapping(*t);
   if (g_mapping) {
     Mapping& m = *g_mapping;
@@ -8441,7 +9118,7 @@ void afterBattleUpdate() {
       g_cam.gyaw = m.yaw0 + 90.0f * m.view;
       if (settled() || Clock::now() - m.since > std::chrono::milliseconds(1500)) {
         m.dist = g_cam.dist;
-        scanRun(*t);
+        scanRun(*t, true);
         m.scanning = true;
         m.since = Clock::now();
       }
@@ -8563,7 +9240,8 @@ void afterBattleUpdate() {
       g_look = 1;  // Once there, find its pixels and put the label and the camera on them
       g_cam_info = kCamHelp;
       g_view_dirty = true;
-    } else {  // Not mapped, so find it on screen
+    } else {  // Not mapped (or its places can't be found in the game now), so find it on screen
+      if (placesFor(*t)) COMBO_LOG("color editor: the selection's atlas places couldn't be found in the game now, so it's looked for on screen");
       g_focus = Focus::Settle;
       g_focus_retry = false;
       g_focus_since = Clock::now();
@@ -8640,8 +9318,34 @@ void afterBattleUpdate() {
     }
   }
   if (g_focus == Focus::Move && !g_mapping && settled()) {
-    if (g_look && sel_ready) startProbe(true);  // Arrived, so look for its pixels
-    else { g_focus = Focus::Idle; g_look = 0; }
+    float spot[3];
+    const int atlas_spot = g_look && sel_ready && placesFor(*t) ? spotFromAtlas(*t, selRows(), feet, spot) : -1;
+    if (atlas_spot >= 0) {  // Arrived. The label on its place facing the camera, else look from the other side
+      if (atlas_spot == 1) {
+        std::memcpy(g_tag_point, spot, sizeof(spot));
+        g_tag_found = true;
+        g_tag_yaw = facing(*t);
+        const bool stay = g_look == 3;  // At 3 the camera stays where the user has it
+        if (!stay) face(spot, feet);
+        g_look = 0;
+        g_focus = stay ? Focus::Idle : Focus::Move;
+      } else if (g_look == 1) {
+        g_cam.gyaw += 180.0f;
+        g_look = 2;
+        g_focus = Focus::Move;
+      } else {
+        if (g_look == 2) g_cam_info = "Not visible. Turn the camera.";
+        g_look = 0;
+        g_focus = Focus::Idle;
+      }
+      g_view_dirty = true;
+    } else if (g_look && sel_ready) {
+      if (placesFor(*t)) COMBO_LOG("color editor: the selection's atlas places couldn't be found in the game now, so its label is looked for on screen");
+      startProbe(true);  // Arrived, so look for its pixels
+    } else {
+      g_focus = Focus::Idle;
+      g_look = 0;
+    }
   }
   // ---- the camera ----
   const Vec pivot{feet.x + g_cam.pivot[0], feet.y + g_cam.pivot[1], feet.z + g_cam.pivot[2]};
@@ -8787,7 +9491,8 @@ void hookEffects() {
 void update(bool round_started) {
   hookEffects();  // Once, in the first fight. Each fight's own pool scan finds what was made before it
   Timed timed{g_time.update};
-  struct ExportLast { ~ExportLast() { try { exportTick(); } catch (...) { COMBO_LOG("color editor: export step failed"); } } } export_last;  // An export carries on, editor open or not. Last, so the editor's own encodes take the free slot first
+  Laps laps;
+  struct ExportLast { Laps& l; ~ExportLast() { l.mark("before export"); try { exportTick(); } catch (...) { COMBO_LOG("color editor: export step failed"); } l.mark("export"); } } export_last{laps};  // An export carries on, editor open or not. Last, so the editor's own encodes take the free slot first
   timingTick();
   static bool key_was_down = false;
   const bool key = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000) && (GetAsyncKeyState('E') & 0x8000);
@@ -8892,7 +9597,11 @@ void update(bool round_started) {
   std::vector<Req> reqs;
   { std::lock_guard<std::mutex> lock(g_m); reqs.swap(g_reqs); }
   if (!reqs.empty()) g_smear_stale = true;
+  laps.mark("start");
   for (const Req& q : reqs) {
+    struct SlowReq { int kind; Clock::time_point t0 = Clock::now(); ~SlowReq() {
+      const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+      if (ms >= 100) COMBO_LOG("color editor: request " + std::to_string(kind) + " took " + std::to_string(ms) + " ms"); } } slow_req{q.kind};
     Target* t = target();
     const bool ready = t && g_worn && g_worn_key == keyOf(*t);
     std::vector<Edit>* ed = ready ? &g_edits[keyOf(*t)] : nullptr;
@@ -8941,11 +9650,30 @@ void update(bool round_started) {
       g_view_dirty = true;
       continue;
     }
+    if (q.kind == kNext) {  // The other fighter gets its own setup (Switch can't be pressed during one: its window is up)
+      g_setup_home.clear();
+      g_setup_off = false;
+    }
+    if ((q.kind == kPart && q.rgb != 1) || q.kind == kRemap || q.kind == kLit || q.kind == kShadow || q.kind == kPairs ||
+        q.kind == kPaintBegin || q.kind == kPaintFill || q.kind == kPaintShape || q.kind == kPickAt || (q.kind == kSelect && !q.regions.empty()) ||
+        q.kind == kReset || q.kind == kUndo || q.kind == kRedo || q.kind == kReread || q.kind == kImportTex || q.kind == kCopySlot ||
+        q.kind == kPaletteLoad || q.kind == kImportRecolor || q.kind == kResetColor || q.kind == kVec || q.kind == kVecReset || q.kind == kFx ||
+        q.kind == kFxReset || q.kind == kFxOne || q.kind == kFxOneReset || q.kind == kCap || q.kind == kCapReset || q.kind == kMat ||
+        q.kind == kMatReset || q.kind == kCamera) {
+      g_setup_off = true;
+      g_setup_home.clear();
+    }
     switch (q.kind) {
       case kToggle:
         if (g_open && (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_cap_unsaved || !g_cap_restore.empty())) { g_confirm_close = true; break; }  // Asks Save / Discard / Cancel
         g_open = !g_open;
         g_confirm_close = false;
+        g_setup_off = false;
+        if (g_open) g_setup_seen.clear();  // (a part cut off last time gets its visit again)
+        if (!g_open && !g_setup_home.empty()) {  // Closed mid-way through the first-time setup: the part it started on is shown again
+          const int home = targetIndex(g_setup_home);
+          if (home >= 0 && home != g_target && t && g_targets[static_cast<size_t>(home)].pawn == t->pawn) { leave(home); t = target(); }
+        }
         if (!g_open) refreshDrop();  // Closed, so the saved recolors' queue makes what's left
         if (g_open) autoStop();
         else if (!g_auto_paused.empty()) {  // Closed, so the leftover saved recolors go on now
@@ -8955,8 +9683,15 @@ void update(bool round_started) {
           autoNext();
         }
         if (g_open && g_targets.empty()) discover();
+        else if (g_open) g_find_due = true;  // (searched again below if the last search is 5 s old or more)
 
         if (!g_open) {  // Closed. No selection, no flashing, and the fighter's own look comes back
+          g_setup_home.clear();  // (the first-time setup goes on when it's opened again, from the part shown then)
+          g_setup_busy = false;
+          { std::lock_guard<std::mutex> lk(g_tex_pick_m); g_tex_pick.clear(); g_tex_added = 0; }  // (textures picked and not in yet are dropped)
+          g_tex_home.clear();
+          g_tex_front.clear();
+          g_tex_all = g_tex_done = 0;
           finishStrokes();
           hideShowAll(true);  // Effects hidden to find one are shown again
           g_on_screen.clear();
@@ -9048,6 +9783,13 @@ void update(bool round_started) {
         }
         break;
       case kNext:  // the other fighter's body
+        {  // A texture import going on stops (what's in stays)
+          std::lock_guard<std::mutex> lk(g_tex_pick_m);
+          if (!g_tex_pick.empty()) { g_tex_pick.clear(); g_tex_added = 0; g_status = "Import stopped (the other fighter was picked)."; }
+          g_tex_front.clear();
+          g_tex_home.clear();
+          g_tex_all = g_tex_done = 0;
+        }
         if (t)
           for (size_t k = 1; k < g_targets.size(); k++) {
             const int i = static_cast<int>((g_target + k) % g_targets.size());
@@ -9058,6 +9800,14 @@ void update(bool round_started) {
             if (g_targets[i].pawn != t->pawn) { leave(static_cast<int>(i)); break; }
         break;
       case kPart:  // another of this fighter's color materials (its target index, as published)
+        if (q.rgb == 1 && (!g_open || g_setup_off)) break;  // The first-time setup's, queued before the editor closed or the user took over
+        if (q.rgb == 0) {  // The user's own: a texture import going on stops (what's in stays)
+          std::lock_guard<std::mutex> lk(g_tex_pick_m);
+          if (!g_tex_pick.empty()) { g_tex_pick.clear(); g_tex_added = 0; g_status = "Import stopped (another part was picked)."; }
+          g_tex_front.clear();
+          g_tex_home.clear();
+          g_tex_all = g_tex_done = 0;
+        }
         if (t && q.region >= 0 && q.region < static_cast<int>(g_targets.size()) && q.region != g_target &&
             g_targets[static_cast<size_t>(q.region)].pawn == t->pawn)
           leave(q.region);
@@ -9125,6 +9875,14 @@ void update(bool round_started) {
               auto pp = g_paint.find(s.key);
               if (pp != g_paint.end() && pp->second.ready) {
                 for (int i = 0; i < s.paint; i++) { if (q.kind == kUndo) pp->second.canvas.undo(); else pp->second.canvas.redo(); }
+                if (s.with_ed) {  // An import's region colors go back (or forward) with its paint, as one step
+                  Snap back = s;
+                  back.ed = g_edits[s.key];
+                  g_edits[s.key] = s.ed;
+                  to.push_back(std::move(back));
+                } else {
+                  to.push_back(s);
+                }
                 pp->second.snap_stale = true;
                 pp->second.gen++;  // The texture view's picture is made again
                 g_unsaved.insert(s.key);
@@ -9132,8 +9890,9 @@ void update(bool round_started) {
                 g_recovery_change = Clock::now();
                 if (s.key == keyOf(*t)) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }
                 else if (g_worn_key == s.key) g_worn_key.clear();
+              } else {
+                to.push_back(s);
               }
-              to.push_back(s);
               break;
             }
             to.push_back(snapOf(fromKey(s.key)));  // The same part as it is now
@@ -9520,8 +10279,7 @@ void update(bool round_started) {
           }
         if (ready) markUnsaved(*t);  // Saved with Save
         break;
-      case kImportTex:
-        if (ready && g_worn) importTexturesNow(*t);
+      case kImportTex:  // (the picked files go in below, each on its part)
         break;
       case kExport:
         if (t) exportStart(*t);  // Every part of the slot. Ones not ready yet are named
@@ -9569,10 +10327,11 @@ void update(bool round_started) {
     g_view_dirty = true;
   }
 
+  laps.mark("requests");
   // A position reset keeps the fighters' meshes and materials. They're found again if any of them is gone, else
   // at most every 5 s, which picks up effect copies of the color materials that appeared since.
   static Clock::time_point last_find;
-  const bool targets_there = round_started && Clock::now() - last_find < std::chrono::seconds(5) && std::all_of(g_targets.begin(), g_targets.end(), [](const Target& t) {
+  const bool all_alive = round_started && std::all_of(g_targets.begin(), g_targets.end(), [](const Target& t) {
     if (t.items.size() != t.mids.size() + t.comps.size()) return false;
     for (size_t i = 0; i < t.items.size(); i++) {
       UObject* o = i < t.mids.size() ? t.mids[i] : t.comps[i - t.mids.size()];
@@ -9580,7 +10339,16 @@ void update(bool round_started) {
     }
     return true;
   });
-  if (round_started && !g_targets.empty() && !(targets_there && asw_engine::get() == g_fight)) {
+  // The every-5-s search is for effect copies of a recolored part; with the editor closed and no fighter wearing a
+  // recolor there's nothing for it to find, so a reset costs nothing
+  const bool recolor_on = g_open || std::any_of(g_targets.begin(), g_targets.end(), [](const Target& t) {
+    auto sh = g_shown.find(keyOf(t));
+    return sh != g_shown.end() && sh->second.base;
+  });
+  const bool targets_there = all_alive && (Clock::now() - last_find < std::chrono::seconds(5) || !recolor_on);
+  const bool find_on_open = g_find_due && Clock::now() - last_find >= std::chrono::seconds(5);  // (the editor just opened)
+  g_find_due = false;
+  if ((round_started && !g_targets.empty() && !(targets_there && asw_engine::get() == g_fight)) || (find_on_open && !g_targets.empty())) {
     last_find = Clock::now();
     stopPreview(asw_engine::get() == g_fight);  // Started again below if still wanted
     if (asw_engine::get() == g_fight) undressSmears();  // Only the live ones. They're dressed again next update
@@ -9699,9 +10467,44 @@ void update(bool round_started) {
   if (!t) { g_status = "No fighter wearing a color found."; publish(); return; }
   UObject* world = t->mids.empty() ? nullptr : t->mids.front();
 
+  laps.mark("fight");
   // 1. Read the character's colors (of the body or the weapon), one per frame, then build the map on a worker.
   std::string mkey = mapKey(*t);
   const auto cached = cachedPrefixesNow(t->chr, t->kind);
+  {  // The first-time setup's "please wait": while a part is mapped (not for Remap), between parts, and while the part
+     // shown, never mapped, gets ready to be
+    bool pending = false;
+    if (g_open && !g_setup_off && g_map_force != mkey && !g_map_tried.count(mkey) && !g_map_failed.count(mkey) && !g_worn_failed.count(keyOf(*t))) {
+      if (g_worn && g_worn_key == keyOf(*t)) pending = !partsFor(*t) && !placesFor(*t);
+      else {  // (it'll be placed from the atlas: looked at 4 times a second)
+        static Clock::time_point when;
+        static std::string what;
+        static bool covers = false;
+        if (what != keyOf(*t) || Clock::now() - when > std::chrono::milliseconds(250)) { what = keyOf(*t); when = Clock::now(); covers = atlasCovers(*t); }
+        if (!covers) {
+          std::error_code ec;
+          const auto pa = g_parts.find(mkey);  // (an empty list: not on disk)
+          pending = pa != g_parts.end() ? pa->second.empty() : !std::filesystem::exists(partsFile(mkey, t->chr, t->kind), ec);
+        }
+      }
+    }
+    bool busy = g_open && ((g_mapping && !g_mapping->remap) || (!g_setup_off && (!g_setup_home.empty() || pending)));
+    const std::string sig = keyOf(*t) + "/" + std::to_string(g_mapping ? g_mapping->view * 2 + (g_mapping->scanning ? 1 : 0) : -1) + "/" +
+                            std::to_string(g_map_tried.size()) + "/" + std::to_string(g_reading ? g_reading->next : -1) + "/" + g_worn_key;
+    if (!busy || sig != g_setup_sig || g_map_job.valid() || g_worn_job.valid()) { g_setup_sig = sig; g_setup_moved = Clock::now(); }
+    else if (Clock::now() - g_setup_moved > std::chrono::seconds(30)) {  // Stuck: the editor is given back
+      COMBO_LOG("color editor: first-time setup stopped, nothing moved for 30 s on " + keyOf(*t));
+      g_setup_off = true;
+      g_setup_home.clear();
+      g_map_tried.insert(mkey);  // (not again by itself this session: Remap maps it)
+      if (g_mapping) { g_map_tried.insert(g_mapping->key); stopMapping(t); }
+      g_status = "The setup stopped here. Press Remap to scan this part.";
+      g_setup_moved = Clock::now();
+      busy = false;
+    }
+    if (busy != g_setup_busy) { g_setup_busy = busy; g_view_dirty = true; }
+    g_setup_busy_ms = GetTickCount64();
+  }
   if (world && !g_export && !g_reading && !g_map_job.valid() && !g_worn_job.valid() && !g_tex_job.valid() &&
       std::find(cached.begin(), cached.end(), prefixOf(srcOf(*t), t->kind)) != cached.end()) {  // 0. If its textures aren't the ones read, read that slot again
     const std::string tried = t->chr + "/" + t->kind + "/" + prefixOf(srcOf(*t), t->kind);
@@ -9862,6 +10665,7 @@ void update(bool round_started) {
     g_view_dirty = true;
     mkey = mapKey(*t);  // This slot's map may be its own now, with its job next update
   }
+  laps.mark("colors");
   // 2. The worn color, ready to edit (worker).
   auto mp = g_maps.find(mkey);
   if (mp != g_maps.end() && g_edits_loaded.insert(keyOf(*t)).second) {  // The map is in, so its stamp checks the file
@@ -9946,13 +10750,124 @@ void update(bool round_started) {
   }
   if (false) {  // Saving is by hand now, with Save
   }
+  {  // Picked textures go in one by one, each on the part its name says (shown first, so it's ready to take it)
+    std::filesystem::path next;
+    size_t queued = 0;
+    {
+      std::lock_guard<std::mutex> lk(g_tex_pick_m);
+      if (!g_open && !g_tex_pick.empty()) { g_tex_pick.clear(); g_tex_added = 0; }  // (picked after the editor closed)
+      if (g_tex_added) {  // New files: a new batch if none was going
+        if (g_tex_all == 0) { g_tex_done = 0; g_tex_home = keyOf(*t); }
+        g_tex_all += g_tex_added;
+        g_tex_added = 0;
+      }
+      if (!g_tex_pick.empty()) next = g_tex_pick.front();
+      queued = g_tex_pick.size();
+    }
+    if (!next.empty() && (g_export || g_mapping || g_scan_on)) g_tex_front_at = Clock::now();  // (its time doesn't run while the editor is busy)
+    if (!next.empty() && g_open && !g_export && !g_confirm_close) {
+      if (next != g_tex_front) { g_tex_front = next; g_tex_front_at = Clock::now(); g_tex_switched = false; }
+      const std::string fname = narrow(next.filename().wstring());
+      auto pop = [&](bool ok, const std::string& why) {
+        if (!ok && !why.empty()) { g_status = why; COMBO_LOG("color editor: " + why); }
+        if (ok) g_tex_done++;
+        std::lock_guard<std::mutex> lk(g_tex_pick_m);
+        if (!g_tex_pick.empty() && g_tex_pick.front() == next) g_tex_pick.pop_front();
+        queued = g_tex_pick.size();
+        g_tex_front.clear();
+        g_view_dirty = true;
+      };
+      int m = 0;
+      bool many = false;
+      const Target* named = texPartOf(*t, next, m, many);
+      const std::wstring stem = next.stem().wstring();
+      const bool export_name = named || m == 2 || (stem.size() > 4 && (_wcsicmp(stem.c_str() + stem.size() - 4, L"_Lit") == 0 || (stem.size() > 7 && _wcsicmp(stem.c_str() + stem.size() - 7, L"_Shadow") == 0)));
+      const bool settled_here = !ready || (!g_dirty && !g_tex_job.valid());  // this part's new textures are made and on (a part not ready has none to make)
+      if (Clock::now() - g_tex_front_at > std::chrono::seconds(30)) {
+        pop(false, fname + ": couldn't import it (its part didn't get ready).");
+      } else if (many) {
+        pop(false, fname + ": which part? Its name fits more than one.");
+      } else if (!named && export_name && g_tex_all > 1) {
+        pop(false, fname + ": no part of this fighter has that name, so it's left out.");
+      } else if (named && named != t) {  // Its part first, once this one's textures are on
+        if (!g_tex_switched && settled_here && !g_mapping && !g_scan_on) {
+          g_tex_switched = true;
+          std::lock_guard<std::mutex> lock(g_m);
+          g_reqs.push_back({kPart, targetIndex(keyOf(*named)), 2});
+        }
+      } else if (_wcsicmp(next.filename().wstring().c_str(), L"effects.txt") == 0) {  // The slot's effect colors, once they're read
+        if (ready && g_fx_for == t->chr + "/" + t->color) {
+          const bool ok = importFxNow(*t, next);
+          pop(ok, ok ? std::string() : g_status);
+        }
+      } else if (m == 2) {  // Material colors, once the part's are found
+        if (ready && g_vecs_for == keyOf(*t)) {
+          const bool ok = importMatColorsNow(*t, next);
+          pop(ok, ok ? std::string() : g_status);
+        }
+      } else if (ready && g_worn && !g_mapping && !g_scan_on) {
+        const bool ok = importTexturesNow(*t, next);
+        pop(ok, ok ? std::string() : g_status);
+      }
+    }
+    if (g_tex_all > 0 && queued == 0 && g_tex_front.empty() && (!ready || (!g_dirty && !g_tex_job.valid()))) {  // Done, and the last part's textures are on
+      if (g_tex_all > 1) {
+        g_status = "Imported " + std::to_string(g_tex_done) + " of " + std::to_string(g_tex_all) + " textures (the rest had no changes or didn't fit: see the log).";
+        COMBO_LOG("color editor: " + g_status);
+        const int home = targetIndex(g_tex_home);
+        if (g_open && home >= 0 && home != g_target) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kPart, home, 2}); }
+      }
+      g_tex_home.clear();
+      g_tex_all = g_tex_done = 0;
+      g_view_dirty = true;
+    }
+  }
+  laps.mark("worn and effects");
   // The parts of the model aren't mapped yet, so the free camera does it (once per character).
-  if (g_open && ready && !g_cam.on && !g_mapping && (g_map_force == mkey || (!g_map_tried.count(mkey) && !partsFor(*t)))) {
+  if (g_open && ready && !g_cam.on && !g_mapping && (g_map_force == mkey || (!g_map_tried.count(mkey) && !partsFor(*t) && !placesFor(*t)))) {
     g_cam.on = true;
     g_cam.ready = false;
     g_view_dirty = true;
   }
+  // Once this part is mapped (or can't be), the fighter's next part that isn't mapped yet is shown, so it's mapped
+  // too. When none is left, the part it started on comes back. (Looked at once a second: it checks files.)
+  if (g_open && !g_setup_off && !g_mapping && !g_pick_wanted && !g_pick_scanning && !g_scan_on && !g_reading && !g_map_job.valid() &&
+      !g_worn_job.valid() && !g_confirm_close && !g_export && g_map_force != mkey &&
+      (g_map_failed.count(mkey) || g_worn_failed.count(keyOf(*t)) || (ready && (g_map_tried.count(mkey) || partsFor(*t) || placesFor(*t))))) {
+    static Clock::time_point checked;
+    if (Clock::now() - checked >= std::chrono::seconds(1)) {
+      checked = Clock::now();
+      int next = -1;
+      for (int i = 0; next < 0 && i < static_cast<int>(g_targets.size()); i++) {
+        const Target& o = g_targets[static_cast<size_t>(i)];
+        if (i == g_target || o.pawn != t->pawn) continue;
+        const std::string k = mapKey(o);
+        if (g_map_tried.count(k) || g_map_failed.count(k) || g_setup_seen.count(k) || atlasCovers(o)) continue;
+        std::error_code ec;
+        const auto pa = g_parts.find(k);  // (an empty list: not on disk)
+        if (pa != g_parts.end() ? !pa->second.empty() : std::filesystem::exists(partsFile(k, o.chr, o.kind), ec)) continue;
+        next = i;
+      }
+      int to = -1;
+      if (next >= 0) {
+        if (g_setup_home.empty()) g_setup_home = keyOf(*t);
+        to = next;
+        g_setup_seen.insert(mapKey(g_targets[static_cast<size_t>(next)]));
+        COMBO_LOG("color editor: first-time setup goes on to " + keyOf(g_targets[static_cast<size_t>(next)]));
+      } else if (!g_setup_home.empty()) {
+        to = targetIndex(g_setup_home);
+        if (to == g_target) to = -1;
+        g_setup_home.clear();
+        COMBO_LOG("color editor: first-time setup done");
+      }
+      if (to >= 0) {
+        std::lock_guard<std::mutex> lock(g_m);
+        g_reqs.push_back({kPart, to, 1});  // (1: the setup's, not the user's)
+      }
+    }
+  }
 
+  laps.mark("setup");
   // 3. Edits go into the game's material shortly after the last change (not during a scan). The textures are
   // made on a worker (images and PNGs are the slow part) and put on here when they're done.
   std::future<Pngs>& tex_job = g_tex_job;

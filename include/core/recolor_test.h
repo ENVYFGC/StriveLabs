@@ -52,6 +52,8 @@ namespace recolor_test {
     std::string status;
     float progress = -1;      // 0..1 while the character's colors are read
     float mapping = -1;       // 0..1 while the parts of the model are mapped
+    bool setup = false;       // the first-time setup is running (its "please wait" is up and the editor can't be used)
+    std::string setup_part;   // the part it's on ("Weapon")
     bool can_switch = false;  // another fighter is on screen
     std::vector<std::string> parts;  // this fighter's color materials: "MAIN" (the body), "WEP" (the weapon), others by name
     int picked = -1, pick_serial = 0;  // the region last picked on the fighter, with a new serial each time
@@ -98,7 +100,9 @@ namespace recolor_test {
   struct Pick { int region = -1; uint32_t lit = 0; int shadow_mode = 0; uint32_t shadow = 0; };  // shadow_mode 3 goes back to the game's color (no edit)
   View view();  // safe from any thread, returns a copy
   bool isOpen();
-  bool holdsFight();  // game thread: the editor is scanning the fighter, so the fight is held
+  bool holdsFight();    // game thread: the editor is scanning the fighter or running its first-time setup, so the fight is held
+  bool setupRunning();  // any thread: the first-time setup's "please wait" is up, so the keys and the fight are held
+  bool setupShown();    // the same for drawing it, allowing a slow frame
   // Called from the UI (any thread), done on the game thread.
   void toggle();
   void setLit(int region, uint32_t rgb);
@@ -115,7 +119,9 @@ namespace recolor_test {
   void remap();             // map where the regions are again
   std::string partName(const std::string& kind);  // "MAIN" -> "Body", "DI_FLARE_UNIQUEC" -> "DI wing" (the UI's and the export's file names)
   void exportTextures();  // exports every part of the shown slot into export/<CHR>/<ColorNN>/<date_time>/ (worker, progress in the status)
-  void importTextures();  // opens a file picker to bring an edited texture of the shown part back in (changed texels become paint)
+  std::wstring textureDir();  // where Import's window opens (the slot's newest export, else the export folder)
+  std::wstring exportsDir();  // the export folder
+  void importTextureFiles(const std::vector<std::wstring>& files);  // edited textures in, each on the part its name says (changed texels become paint)
   void groupSame(bool on);  // one row for regions that look exactly the same in the shown color (an edit goes to all of them)
   void logDrawn();  // logs every mesh drawn now (effects too), with its materials and their parameters
   void renameRegion(int region, const std::string& name);  // "" clears it. Kept per character and part
@@ -192,6 +198,7 @@ namespace recolor_test {
   // as samples (a few dozen per region), in screen pixels.
   struct ScanSample { uint16_t id, x, y; };
   bool scanWanted(int& id, int& frame, int& frames, int& groups);
+  bool scanWhole();  // the scan is of a part that's one region by itself (Sol's DI wing flare), read even as it flickers
   void scanGrabbed(int id, int frame);
   void scanResult(int id, int screen_w, int screen_h, std::vector<ScanSample>& samples);
   void scanFailed(int id, const std::string& why);  // the screen couldn't be read, and why is told to the user

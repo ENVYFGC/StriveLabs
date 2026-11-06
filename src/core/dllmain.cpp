@@ -10,7 +10,7 @@
 #include "imgui_overlay.h"
 namespace crash_log { void install(const std::filesystem::path& dir); }
 namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
-namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); }
+namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); bool setupRunning(); }
 #include "menu.h"
 #include "recordings.h"
 #include "replay_manager.h"
@@ -460,6 +460,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 {
     handshake::onBattleInput(Analyzer, static_cast<uint32_t>(recFlag));
+    if (game_state.checkModeTraining() && recolor_test::setupRunning()) recFlag = static_cast<RECFLG_ENUM>(0);  // The editor's first-time setup holds the pad too
     // Menu open: swallow pad/keyboard so the D-pad drives the menu, not the character.
     // In a replay only the side being taken over is the player's; every other side
     // is fed from the replay itself, and zeroing it froze both characters and
@@ -579,6 +580,13 @@ void hook_UpdateSystem(uintptr_t System)
         combo_trials::idle();     // left training: the trial doesn't carry on
         damage_panel::release();  // the game's panel goes with the fight
         game_menu::release();
+    }
+    {  // Each time a fight counts as over, with how long there was no battle update (stalls show up here)
+      static bool was_fight = false;
+      if (was_fight && !g_any_fight)
+        COMBO_LOG("fight over: " + std::to_string(GetTickCount64() - g_any_battle_update) + " ms and " + std::to_string(g_no_battle_updates) +
+                  " system updates without a battle update");
+      was_fight = g_any_fight;
     }
     if (!g_any_fight) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
     // Saved recolors on the menus' models (character select), only with no fight at all.
