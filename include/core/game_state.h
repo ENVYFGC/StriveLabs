@@ -16,6 +16,7 @@ public:
     PAD_ID getMainQuadrant();
     bool checkModeReplay() const;
     bool checkModeTraining() const;
+    int currentMode() const;  // the game's mode now (-1 before the game's common object is known); changes nothing
     void checkRound();
 
     bool mode_battle_logged = false;  // logs which game modes run the mod, for user reports

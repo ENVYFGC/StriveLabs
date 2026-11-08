@@ -138,6 +138,19 @@ namespace recolor_test {
   // Recolors: everything saved for the shown slot (regions, material and effect colors, region names).
   void listRecolors();                          // fills View::slots and View::recolor_files
   void saveRecolor();                           // writes the changes to disk (nothing is saved until this)
+  void bakeRecolor();                           // the shown slot's saved recolor written into a pak and mounted (training)
+  // A bake's result, for the window that shows it until the user clicks OK (UI thread)
+  struct BakeResult { bool ok = false; std::string title; std::vector<std::string> baked, not_baked; };
+  bool bakeResult(BakeResult& out);  // true while one waits to be seen
+  // The saved slots that could be baked (UI thread, read when asked): what each holds and what can't be baked yet
+  struct BakeCandidate { std::string chr, color, parts, missing; bool effects = false; };
+  std::vector<BakeCandidate> bakeCandidates();
+  void bakeSlots(const std::vector<std::string>& slots);  // only these ("SOL/Color01"), from their saved files
+  void unbake(const std::string& chr, const std::string& color);  // the game's own back (the bake's files go at the next start)
+  struct BakedSlot { std::string chr, color, when; double mb = 0; bool unbaked = false, stale = false; };  // stale: made before a game update, not on
+  std::vector<BakedSlot> bakedSlots();  // the latest bake of each slot (UI thread)
+  int bakeQueueLeft();                  // slots still to bake (0 when none runs)
+  void bakeResultSeen();
   void discardAndClose();                       // goes back to what's saved and closes the editor
   void cancelClose();
   void restoreRecovery(bool restore);           // brings the kept unsaved changes back (still unsaved), or throws them away
@@ -189,6 +202,9 @@ namespace recolor_test {
   void cameraInput(float dx, float dy, float wheel);
   void cameraPan(float dx, float dy);  // right drag moves what the camera looks at
   bool freeCameraKeys();               // the free camera owns WASD, Q/E, R and the arrows
+  void toggleCamera();                 // the Free camera bind (game thread): the editor's camera, or with it closed one of its own
+  bool soloCamera();                   // the free camera is on without the editor
+  void soloCameraOff();                // (game thread) left training, a new fight...
   void overlayFrame(bool typing, int screen_w, int screen_h);  // called each frame with typing (the camera's keys are off) and the frame's size
   void setFollow(bool on);
   bool tagAt(float& x, float& y);      // where the selection is on screen (0..1), while the free camera shows it

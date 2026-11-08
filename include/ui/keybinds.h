@@ -9,7 +9,7 @@
 
 namespace binds {
   enum Action { FRAMEBAR, HITBOXES, PAUSE, ADVANCE, MENU, SAVE, TAKEOVER_P1, TAKEOVER_P2, LOAD, UP, DOWN, LEFT, RIGHT,
-                TRAINING_RECORD, TRAINING_PLAYBACK, TRAINING_RESET, ONLINE_VERSION, COUNT };
+                TRAINING_RECORD, TRAINING_PLAYBACK, TRAINING_RESET, ONLINE_VERSION, BOX_PAUSE, BOX_STEP, FREE_CAMERA, COUNT };
   extern const char* const NAMES[COUNT];      // config ids
   extern const wchar_t* const LABELS[COUNT];  // menu labels
   extern int key[COUNT];                      // VK code (+ BindWatcherI::KEY_* for Ctrl/Shift/Alt), 0 = none

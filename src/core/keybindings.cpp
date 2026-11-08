@@ -67,7 +67,7 @@ void Keybinds::checkBinds(bool await)
         const int key = input & ~BindWatcherI::REPEAT;
         if (binds::capturing >= 0) { if (!repeat) binds::offerKey(key); }
         // Held keys repeat only for frame step and the menu arrows (hold to keep stepping or scrolling).
-        else if (!repeat || key == ADVANCE_BUTTON || key == MENU_UP_BUTTON || key == MENU_DOWN_BUTTON
+        else if (!repeat || key == ADVANCE_BUTTON || key == binds::key[binds::BOX_STEP] || key == MENU_UP_BUTTON || key == MENU_DOWN_BUTTON
                  || key == MENU_LEFT_BUTTON || key == MENU_RIGHT_BUTTON)
             setButtonState(key, true);
     }

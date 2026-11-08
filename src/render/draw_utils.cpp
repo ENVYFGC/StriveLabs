@@ -94,6 +94,8 @@ bool DrawTool::update(void *actual_hud) {
 
   screen_width = size_data.SizeX;
   screen_height = size_data.SizeY;
+  view_width = screen_width;
+  view_height = screen_height;
 
   // Strive always renders to a 16:9 region, we need to fix this here since our size data is the "true" screen space window size
   const double actual_ratio = screen_width / screen_height;

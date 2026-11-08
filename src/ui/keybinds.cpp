@@ -8,12 +8,13 @@
 namespace binds {
   const char* const NAMES[COUNT] = {"framebar", "hitboxes", "pause", "advance", "menu", "save",
                                     "takeover_1p", "takeover_2p", "load", "up", "down", "left", "right",
-                                    "training_record", "training_playback", "training_reset", "online_version"};
+                                    "training_record", "training_playback", "training_reset", "online_version",
+                                    "box_pause", "box_step", "free_camera"};
   const wchar_t* const LABELS[COUNT] = {L"Frame bar", L"Hitboxes", L"Pause", L"Advance Frame",
                                         L"Menu", L"Rewind point & takeover", L"Takeover 1P", L"Takeover 2P",
                                         L"Rewind", L"Menu Up", L"Menu Down", L"Menu Left", L"Menu Right",
                                         L"Record dummy", L"Play dummy", L"Reset position",
-                                        L"Online window"};
+                                        L"Online window", L"Freeze fight", L"Step frozen fight", L"Free camera"};
   int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0,
                     BindWatcherI::KEY_CTRL | 'O'};
   unsigned short pad[COUNT] = {0, 0, 0, 0, XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START, 0, 0, 0, 0,

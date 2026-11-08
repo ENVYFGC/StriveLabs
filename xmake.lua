@@ -1,5 +1,7 @@
 local projectName = "StriveLabs"
 
+add_requires("zlib", {configs = {shared = false}})  -- (zlib license: the baked recolor paks are compressed, as the game's are)
+
 target(projectName)
     add_rules("ue4ss.mod")
 
@@ -37,6 +39,10 @@ target(projectName)
     add_files("src/core/recolor_share.cpp")  -- (sharing recolors in online matches)
     add_files("src/core/paint_layer.cpp")  -- (the color editor's painting)
     add_files("src/core/update_check.cpp")  -- (says when a newer release is out)
+    add_files("src/core/bake_core.cpp")  -- (baking recolors: DXT5, mips, the pak file)
+    add_files("src/core/bake_pkg.cpp")  -- (baking recolors: the material and texture packages)
+    add_files("src/core/pak_mount.cpp")  -- (mounting baked recolor paks while the game runs)
+    add_files("src/core/box_editor.cpp")  -- (Script & boxes: the fighters' boxes and scripts, live)
 
     -- Dear ImGui (MIT, third_party/imgui/LICENSE.txt), drawn through a DirectX 11 Present hook
     add_includedirs("third_party/imgui")
@@ -45,7 +51,8 @@ target(projectName)
               "third_party/imgui/backends/imgui_impl_dx11.cpp", "third_party/imgui/backends/imgui_impl_win32.cpp")
     add_syslinks("d3d11", "dxgi", "d3dcompiler", "windowscodecs")
 
-    add_syslinks("ole32", "user32", "comdlg32", "winhttp")
+    add_syslinks("ole32", "user32", "comdlg32", "winhttp", "bcrypt")
+    add_packages("zlib")
 
     -- Keep local folder paths out of the release DLL: the debug record only names
     -- the .pdb file, and no_source_paths.h compiles out the asserts that embed
@@ -53,3 +60,4 @@ target(projectName)
     add_cxflags("/Z7-", "/Zo-", {force = true})
     add_shflags("/PDBALTPATH:%_PDB%", {force = true})
     add_cxflags("/FIno_source_paths.h", {force = true})
+    add_cxflags("/bigobj", {force = true})  -- (the color editor is one large file)

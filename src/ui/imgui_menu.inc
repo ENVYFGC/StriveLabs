@@ -1141,7 +1141,9 @@ namespace menu_ui {
     const bool result_line = !rx_info.empty() && (confirm || !saved.empty());
     const int ver = combo_trials::onlineVersion();
     const bool share_on = recolor_share::enabled();
-    const float h = HEAD * S + pad + bh + 6 * S + (ver ? lh : 0.0f) + pad + bh + 6 * S + (share_on ? lh : 0.0f) + (rx_info.empty() ? 0.0f : 6 * S + bh) + (result_line ? 6 * S + lh : 0.0f) + pad;
+    const bool share_shown = recolor_share::available();  // (sharing is off in this build: no switch)
+    const float h = HEAD * S + pad + bh + 6 * S + (ver ? lh : 0.0f) + (share_shown ? pad + bh + 6 * S + (share_on ? lh : 0.0f) : 0.0f) +
+                    (rx_info.empty() ? 0.0f : 6 * S + bh) + (result_line ? 6 * S + lh : 0.0f) + pad;
     const ImVec2 size(440 * S, h);
     Frame f = begin_window("Online version##sl_online", "StriveLabs Online", ImVec2((io.DisplaySize.x - size.x) * 0.5f, io.DisplaySize.y * 0.3f),
                            size, ImVec2(360 * S, size.y), true);
@@ -1170,9 +1172,10 @@ namespace menu_ui {
         text(f.dl, f_body, ImVec2(f.o.x + pad, y), MUTED, "Park and rooms only. Opponent must match.");
         y += lh;
       }
+      // Recolor sharing, with its switch, what it's doing, and the opponent's recolor to keep.
+      if (share_shown) {
       y += pad;
       f.dl->AddLine(ImVec2(f.o.x + pad, y - pad * 0.5f), ImVec2(f.o.x + f.w - pad, y - pad * 0.5f), DIVIDER);
-      // Recolor sharing, with its switch, what it's doing, and the opponent's recolor to keep.
       const bool on = share_on;
       const std::string label = std::string("Recolor sharing: ") + (on ? "On" : "Off");
       if (chip("share", ImVec2(f.o.x + pad, y), ImVec2(f.o.x + pad + text_w(f_bold, label) + 20 * S, y + bh), label, on ? RED_TEXT : TEXT))
@@ -1212,6 +1215,7 @@ namespace menu_ui {
         if (confirm) text(f.dl, f_body, ImVec2(f.o.x + pad, y), RED_TEXT, "Replaces your " + slot_shown + ".");
         else if (!saved.empty()) text(f.dl, f_body, ImVec2(f.o.x + pad, y), MUTED, saved);
       }
+      }  // (share_shown)
     }
     end_window();
   }
@@ -1565,7 +1569,7 @@ namespace menu_ui {
   bool g_clip_set = false;                   // Set once a color pair has been copied
   uint32_t g_clip_lit = 0, g_clip_shadow = 0;
   bool g_grad_open = false;
-  int g_tab = 0;  // The editor's tab (0 Regions, 1 Auto, 2 Effects, 3 Save & share), kept while closed
+  int g_tab = 0;  // The editor's tab (0 Regions, 1 Auto, 2 Effects, 3 Save & share, 4 Bake), kept while closed
   float g_grad_from[3] = {0.55f, 0.05f, 0.08f}, g_grad_to[3] = {1.0f, 0.75f, 0.2f}, g_grad_mid[3] = {0.95f, 0.30f, 0.10f};
   bool g_grad_use_mid = false;  // The custom gradient also has a middle color
   bool g_grad_each = true;      // Every region gets its own step, a row's look-alikes too, instead of one step per row
@@ -2738,6 +2742,841 @@ namespace menu_ui {
     }
     pop_widget_style();
   }
+  // ---- Script & boxes. Each fighter's state, sprite, boxes (editable) and the state's script ----
+  void draw_box_editor(const MenuView& mv) {
+    use(E_MENU);
+    const box_editor::View v = box_editor::view();
+    ImGuiIO& io = ImGui::GetIO();
+    const float pad = PAD * S;
+    const ImVec2 size(540 * S, 780 * S);
+    Frame f = begin_window("Script & boxes##sl_boxes", "Script & boxes", ImVec2(24 * S, io.DisplaySize.y * 0.08f), size, ImVec2(380 * S, 320 * S), true);
+    if (f.closed) box_editor::toggle();
+    static int side = 0, picked = -1;  // the side shown, and the box picked (in the table or on the fighter)
+    static std::string picked_of;
+    if (!f.collapsed) {
+      ImGui::SetCursorScreenPos(ImVec2(f.o.x + pad, f.o.y + f.head + 6 * S));
+      push_widget_style();
+      ImGui::BeginChild("be_body", ImVec2(f.w - 2 * pad, f.h - f.head - 12 * S), false);
+      // Fixed places: every item on a line at a fixed x, numbers right-aligned in a fixed slot, so nothing moves as values
+      // change (a line starting with a slot begins with an empty item)
+      auto at = [&](float x) { ImGui::SameLine((std::max)(1.0f, x * S)); };
+      auto right = [&](float x_end, const std::string& t, bool dim) {
+        ImGui::SameLine((std::max)(1.0f, x_end * S - ImGui::CalcTextSize(t.c_str()).x));
+        if (dim) ImGui::TextDisabled("%s", t.c_str());
+        else ImGui::TextUnformatted(t.c_str());
+      };
+      auto line_start = [&]() { ImGui::Dummy(ImVec2(1, ImGui::GetTextLineHeight())); };
+      auto wid = [&](const char* t) { return ImGui::CalcTextSize(t).x / S; };  // (in the units at() takes)
+      // Fields on one line: each a label, then a value slot as wide as the widest value given; returns where each label
+      // starts and where its value ends. (Measured with the font in use, so nothing overlaps.)
+      struct Slot { float label = 0, value_from = 0, value_end = 0; };
+      auto slots = [&](std::initializer_list<std::pair<const char*, const char*>> fields, float x0) {
+        std::vector<Slot> out;
+        float x = x0;
+        for (const auto& [lab, widest] : fields) {
+          Slot sl;
+          sl.label = x;
+          sl.value_from = x + (lab[0] ? wid(lab) + 6 : 0);
+          sl.value_end = sl.value_from + wid(widest);
+          out.push_back(sl);
+          x = sl.value_end + 14;
+        }
+        return out;
+      };
+      auto after_item = [&](float gap) { return (ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x) / S + gap; };  // (x just past the last item)
+      auto field = [&](const Slot& sl, const char* lab, const std::string& val, bool num) {  // its label, its value
+        if (lab[0]) { at(sl.label); ImGui::TextDisabled("%s", lab); }
+        if (num) right(sl.value_end, val, false);
+        else { at(sl.value_from); ImGui::TextUnformatted(val.c_str()); }
+      };
+      if (ImGui::RadioButton("P1", side == 0)) side = 0;
+      ImGui::SameLine();
+      if (ImGui::RadioButton("P2", side == 1)) side = 1;
+      const box_editor::SideView& s = v.side[side];
+      if (s.present && !s.objects.empty()) {  // the fighter, or one of its objects (a projectile...)
+        at(110);
+        auto label = [](const box_editor::ObjView& o) { return (o.state.empty() ? std::string("object") : o.state) + " (" + o.sprite + ")"; };
+        const std::string now = s.object >= 0 ? label(s.objects[static_cast<size_t>(s.object)]) : std::string("Fighter");
+        ImGui::SetNextItemWidth(220 * S);
+        if (ImGui::BeginCombo("##be_obj", now.c_str())) {
+          if (ImGui::Selectable("Fighter", s.object < 0)) box_editor::showObject(side, nullptr);
+          for (size_t k = 0; k < s.objects.size(); k++) {
+            ImGui::PushID(static_cast<int>(k));
+            if (ImGui::Selectable(label(s.objects[k]).c_str(), static_cast<int>(k) == s.object)) box_editor::showObject(side, s.objects[k].id);
+            ImGui::PopID();
+          }
+          ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show one of this fighter's objects (a projectile...) instead.\nPause first: most are only out for a moment.");
+      } else {
+        at(110);
+        ImGui::Dummy(ImVec2(220 * S, ImGui::GetFrameHeight()));  // (its place, kept when there are no objects)
+      }
+      if (!s.present) {
+        ImGui::TextDisabled("No fighter on this side yet.");
+      } else {
+        at(340);
+        ImGui::TextUnformatted(s.chr.c_str());
+        {  // the move playing, on a row of its own (names run to 32 letters)
+          const auto r = slots({{"Move", ""}}, 1);
+          line_start();
+          field(r[0], "Move", s.state.empty() ? std::string("?") : s.state, false);
+        }
+        bool sprite_edited = false;
+        for (const box_editor::BoxView& b : s.boxes) sprite_edited |= b.edited;
+        {  // pause and step first (one fixed width each), then the sprite and its frame in fixed slots
+          auto bound = [](int a) {  // what it's bound to in Controls
+            const std::wstring k = binds::key[a] ? binds::keyName(binds::key[a]) : binds::pad[a] ? binds::padName(binds::pad[a]) : std::wstring();
+            return k.empty() ? std::string("(bind it in Controls: ") + tb_narrow(binds::LABELS[a]) + ")" : tb_narrow(k);
+          };
+          const float bw = (std::max)({ImGui::CalcTextSize("Pause").x, ImGui::CalcTextSize("Play").x, ImGui::CalcTextSize("Step").x}) + 2 * ImGui::GetStyle().FramePadding.x + 4 * S;
+          const ImVec2 bsz(bw, 0);
+          ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 0));
+          if (ImGui::Button(mv.paused ? "Play##be_pp" : "Pause##be_pp", bsz)) ModMenu::instance().click(MenuClick{MenuClick::Type::TlPlay});
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", bound(binds::BOX_PAUSE).c_str());
+          at(after_item(6));  // (Pause is one fixed width, so Step's place is fixed)
+          ImGui::BeginDisabled(!mv.paused);
+          if (ImGui::Button("Step##be_st", bsz)) ModMenu::instance().click(MenuClick{MenuClick::Type::TlStep});
+          if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", bound(binds::BOX_STEP).c_str());
+          ImGui::EndDisabled();
+          ImGui::PopStyleVar();
+          const auto r = slots({{"Sprite", "sol000_00_ex_00_abcdefgh *"}, {"frame", "9999"}, {"of", "9999"}}, after_item(14));
+          field(r[0], "Sprite", s.sprite + (sprite_edited ? " *" : ""), false);
+          field(r[1], "frame", std::to_string(s.sprite_frame), true);
+          field(r[2], "of", std::to_string(s.sprite_frames), true);
+        }
+        {  // each in its own fixed slot, blank when off; the row is always there (the game keeps these in game units,
+           // 1000 to a box unit)
+          char t[96];
+          const auto r1 = slots({{"", "strike invulnerable"}, {"", "throw invulnerable"}}, 1);
+          line_start();
+          if (s.strike_invuln) { at(r1[0].label); ImGui::TextDisabled("strike invulnerable"); }
+          if (s.throw_invuln) { at(r1[1].label); ImGui::TextDisabled("throw invulnerable"); }
+          const auto r2 = slots({{"throw range", "9999.9"}, {"collision", "9999.9 x 9999.9"}}, 1);
+          line_start();
+          if (s.throw_range >= 0) { snprintf(t, sizeof(t), "%g", s.throw_range / 1000.0); field(r2[0], "throw range", t, true); }
+          if (s.push_on) {
+            snprintf(t, sizeof(t), "%g x %g", std::abs(s.push[2] - s.push[0]) / 1000.0, std::abs(s.push[1] - s.push[3]) / 1000.0);
+            field(r2[1], "collision", t, true);
+          }
+        }
+        ImGui::Separator();
+        ImGui::TextUnformatted("Boxes");
+        {
+          const auto r = slots({{"", "999"}, {"", "(?)"}}, after_item(6));
+          right(r[0].value_end, std::to_string(s.boxes.size()), true);
+          at(r[1].label);
+          ImGui::TextDisabled("(?)");
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("X, Y is a corner of the box; W, H reach from it, in the game's box units.\n+Y is down, the feet are at 0.\nW grows the box forward and H grows it up (X and Y move so the back and bottom stay).\nDrag a value, or Ctrl+click to type. Shift drags faster, Alt slower.\nWith Hitboxes on: hover a hurtbox or hitbox on the fighter to light it, click to pick it, drag an edge or corner to resize, the middle to move.\nHover a row to light its box; click its name to keep it lit.");
+        if (picked_of != s.sprite + "|" + std::to_string(side)) { picked = -1; picked_of = s.sprite + "|" + std::to_string(side); }
+        int hovered = -1;
+        // Where an edit to a box goes: 0 this frame only, 1 also the rest of the move, 2 the whole move (the move open in
+        // the Move panel, else the one playing; its frames are its sprite lines)
+        static int scope = 0;
+        {  // (back to this sprite only when another move is opened: a choice never carries over unseen)
+          static std::string scope_move;
+          const std::string m = std::to_string(side) + "|" + std::to_string(s.object) + "|" + s.selected;  // (the move opened, not the one playing: that flips with every action)
+          if (m != scope_move) { scope = 0; scope_move = m; }
+        }
+        const std::vector<box_editor::InstrView>& scope_sc = s.selected.empty() ? s.script : s.sel_script;
+        std::vector<std::string> scope_to;
+        bool scope_has = false;  // the move shows this sprite at all
+        {
+          bool after = false;
+          for (const box_editor::InstrView& in : scope_sc) {
+            if (in.op != 2) continue;  // sprite: s32'name', frames
+            const size_t a = in.args.find('\''), b = a == std::string::npos ? a : in.args.find('\'', a + 1);
+            if (b == std::string::npos) continue;
+            const std::string name = in.args.substr(a + 1, b - a - 1);
+            if (name == s.sprite) { after = scope_has = true; continue; }
+            if ((scope == 2 || (scope == 1 && after)) && std::find(scope_to.begin(), scope_to.end(), name) == scope_to.end()) scope_to.push_back(name);
+          }
+        }
+        auto spread = [&](int index, int fields) {  // the edit just made, to the other frames chosen (in its undo step)
+          if (scope > 0 && !scope_to.empty() && fields) box_editor::copyBox(side, s.sprite, index, fields, scope_to, true);
+        };
+        static ImGuiID drag_id = 0;  // the value being dragged: one undo step for the whole drag
+        if (!ImGui::IsAnyItemActive()) drag_id = 0;
+        const float cell_y = 2 * ImGui::GetStyle().CellPadding.y;  // the header and 8 rows, always (more scroll)
+        const float box_rows_h = ImGui::GetTextLineHeight() + cell_y + 8 * (ImGui::GetFrameHeight() + cell_y) + 2 * S;  // (+2: rounding never adds a scrollbar)
+        if (ImGui::BeginTable("be_boxes", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY, ImVec2(0, box_rows_h))) {
+          ImGui::TableSetupScrollFreeze(0, 1);
+          {  // fixed, measured widths: a scrollbar coming or going never moves them
+            const float name_w = ImGui::CalcTextSize("Combo hit 9 (invulnerable)").x + 8 * S, num_w = ImGui::CalcTextSize("-99999").x + 12 * S;
+            ImGui::TableSetupColumn("Box", ImGuiTableColumnFlags_WidthFixed, name_w);
+            for (const char* c : {"X", "Y", "W", "H"}) ImGui::TableSetupColumn(c, ImGuiTableColumnFlags_WidthFixed, num_w);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 22 * S);
+          }
+          ImGui::TableHeadersRow();
+          ImGui::PushID(s.sprite.c_str());  // (another sprite, other IDs: a drag can't carry over into it)
+          int of_kind[19] = {};
+          for (int i = 0; i < static_cast<int>(s.boxes.size()); i++) {
+            const box_editor::BoxView& b = s.boxes[static_cast<size_t>(i)];
+            const int nth = b.kind >= 0 && b.kind < 19 ? ++of_kind[b.kind] : 0;
+            ImGui::PushID(i);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            const ImVec4 col = b.kind == 0 ? ImVec4(0.21f, 0.84f, 0.42f, 1) : b.kind == 1 || b.kind == 18 ? ImVec4(0.95f, 0.30f, 0.30f, 1) : b.kind == 5 ? ImVec4(1.0f, 0.9f, 0.3f, 1) : ImVec4(0.7f, 0.7f, 0.7f, 1);
+            const std::string name = std::string(b.kind == 0 ? "Hurt" : b.kind == 1 ? "Hit" : b.kind == 5 ? "Push" : b.kind == 18 ? "Combo hit" : box_editor::kindName(b.kind)) + " " + std::to_string(nth) +
+                                     (b.kind == 0 && s.strike_invuln ? " (invulnerable)" : "");
+            ImGui::PushStyleColor(ImGuiCol_Text, col);
+            if (ImGui::Selectable(name.c_str(), picked == i)) picked = picked == i ? -1 : i;
+            ImGui::PopStyleColor();
+            const bool can = box_editor::editable(b.kind);
+            const float now[4] = {b.x, b.y, b.w, b.h}, was[4] = {b.ox, b.oy, b.ow, b.oh};
+            static const char* const ids[4] = {"##x", "##y", "##w", "##h"};
+            for (int c = 0; c < 4; c++) {
+              ImGui::TableNextColumn();
+              if (!can) { ImGui::TextDisabled("%g", now[c]); continue; }
+              const bool changed_here = b.edited && now[c] != was[c];
+              if (changed_here) ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.55f, 0.32f, 0.08f, 1));
+              float val = now[c];
+              ImGui::SetNextItemWidth(-FLT_MIN);
+              if (ImGui::DragFloat(ids[c], &val, 1.0f, 0.0f, 0.0f, "%g", ImGuiSliderFlags_NoRoundToFormat) && std::isfinite(val)) {
+                box_editor::BoxView nb = b;
+                // W grows the front and H the top: the back and bottom edges stay, X and Y move with them (on screen
+                // the box reaches toward -x and -y from X, Y, when W, H and the fighter's scale have the same sign)
+                if (c == 0) nb.x = val;
+                else if (c == 1) nb.y = val;
+                else if (c == 2) { if (b.w == 0 ? s.sx > 0 : b.w * s.sx > 0) nb.x -= val - b.w; nb.w = val; }  // (from 0: as a box of that facing would)
+                else { if (b.h == 0 ? s.sy > 0 : b.h * s.sy > 0) nb.y -= val - b.h; nb.h = val; }
+                const ImGuiID id = ImGui::GetItemID();
+                box_editor::editBox(side, s.sprite, i, nb, id != drag_id);
+                drag_id = id;
+              }
+              if (ImGui::IsItemDeactivatedAfterEdit()) spread(i, c == 0 ? 1 : c == 1 ? 2 : c == 2 ? 4 | 1 : 8 | 2);
+              if (changed_here) {
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ImGui::SetTooltip("was %g", was[c]);
+              }
+            }
+            ImGui::TableNextColumn();
+            if (b.edited) {
+              if (ImGui::SmallButton("x")) box_editor::resetBox(side, s.sprite, i);
+              if (ImGui::IsItemHovered()) ImGui::SetTooltip("Put this box back as the game has it");
+            }
+            if (ImGui::TableGetHoveredRow() == ImGui::TableGetRowIndex()) hovered = i;
+            ImGui::PopID();
+          }
+          ImGui::PopID();
+          ImGui::EndTable();
+        }
+        {  // On the fighter: hover a box to light it, click to pick it, drag an edge or corner to resize, the middle to move
+          struct Drag { bool on = false, first = false; int index = -1, edges = 0, side = 0; ImVec2 from; box_editor::BoxView start; std::string sprite; };
+          static Drag drag;
+          if (drag.on && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {  // let go: the change goes to the other frames chosen
+            drag.on = false;
+            if (drag.side == side && drag.sprite == s.sprite && drag.index < static_cast<int>(s.boxes.size())) {
+              const int e = drag.edges;  // what the drag moves: the whole box, or its sides
+              spread(drag.index, (e & 16 ? 1 | 2 : 0) | (e & 1 ? 1 | 4 : 0) | (e & 2 ? 4 : 0) | (e & 4 ? 2 | 8 : 0) | (e & 8 ? 8 : 0));
+            }
+          }
+          box_editor::ScreenMap m;
+          if (box_editor::screenMap(side, m)) {
+            const ImVec2 D = io.DisplaySize, mp = io.MousePos;
+            auto at = [&](float x, float y) { return ImVec2((m.ox + m.ax * x + m.bx * y) * D.x, (m.oy + m.ay * x + m.by * y) * D.y); };
+            auto near_seg = [&](ImVec2 a, ImVec2 b, float tol) {
+              const float dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+              const float t = l2 > 0 ? (std::max)(0.0f, (std::min)(1.0f, ((mp.x - a.x) * dx + (mp.y - a.y) * dy) / l2)) : 0.0f;
+              const float ex = a.x + t * dx - mp.x, ey = a.y + t * dy - mp.y;
+              return ex * ex + ey * ey < tol * tol;
+            };
+            // edges: 1 the X side, 2 the X+W side, 4 the Y side, 8 the Y+H side, 16 the whole box
+            auto cursor = [&](const box_editor::BoxView& b, int edges) {
+              if (edges & 16) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll); return; }
+              const bool xs = (edges & 3) != 0, ys = (edges & 12) != 0;
+              if (xs && ys) {
+                const ImVec2 c = at((edges & 1) ? b.x : b.x + b.w, (edges & 4) ? b.y : b.y + b.h), mid = at(b.x + b.w / 2, b.y + b.h / 2);
+                ImGui::SetMouseCursor((c.x - mid.x) * (c.y - mid.y) > 0 ? ImGuiMouseCursor_ResizeNWSE : ImGuiMouseCursor_ResizeNESW);
+              } else {
+                const ImVec2 d = xs ? ImVec2(m.ax * D.x, m.ay * D.y) : ImVec2(m.bx * D.x, m.by * D.y);  // the way that edge moves on screen
+                ImGui::SetMouseCursor(std::fabs(d.x) >= std::fabs(d.y) ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+              }
+            };
+            const int n = static_cast<int>(s.boxes.size());
+            if (drag.on && (drag.side != side || drag.sprite != s.sprite || drag.index >= n)) drag.on = false;  // (the sprite changed under it)
+            if (drag.on) {
+              const ImVec2 d(mp.x - drag.from.x, mp.y - drag.from.y);
+              const float ax = m.ax * D.x, ay = m.ay * D.y, bx = m.bx * D.x, by = m.by * D.y, det = ax * by - bx * ay;
+              if (std::fabs(det) > 1e-9f) {
+                const float du = std::round((d.x * by - bx * d.y) / det), dv = std::round((ax * d.y - d.x * ay) / det);  // the mouse's move, in box units
+                box_editor::BoxView nb = drag.start;
+                if (drag.edges & 16) { nb.x += du; nb.y += dv; }
+                if (drag.edges & 1) { nb.x += du; nb.w -= du; }
+                if (drag.edges & 2) nb.w += du;
+                if (drag.edges & 4) { nb.y += dv; nb.h -= dv; }
+                if (drag.edges & 8) nb.h += dv;
+                const box_editor::BoxView& cur = s.boxes[static_cast<size_t>(drag.index)];
+                if (nb.x != cur.x || nb.y != cur.y || nb.w != cur.w || nb.h != cur.h) { box_editor::editBox(side, s.sprite, drag.index, nb, drag.first); drag.first = false; }
+              }
+              cursor(drag.start, drag.edges);
+              hovered = drag.index;
+            } else if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && !ImGui::IsAnyItemActive()) {
+              const float tol = 7 * S;
+              int hit = -1, hit_edges = 0;
+              float hit_area = FLT_MAX;
+              for (int i = 0; i < n; i++) {
+                const box_editor::BoxView& b = s.boxes[static_cast<size_t>(i)];
+                // (on the fighter: the boxes the overlay draws - hurt, hit, combo hit - and the one picked in the table; the
+                // other kinds aren't drawn and many are tiny, so they'd snatch drags meant for a hurtbox)
+                if (!box_editor::editable(b.kind) || !(b.kind == 0 || b.kind == 1 || b.kind == 18 || i == picked)) continue;
+                const ImVec2 c[4] = {at(b.x, b.y), at(b.x + b.w, b.y), at(b.x + b.w, b.y + b.h), at(b.x, b.y + b.h)};
+                float x0 = c[0].x, x1 = c[0].x, y0 = c[0].y, y1 = c[0].y;
+                for (const ImVec2& q : c) { x0 = (std::min)(x0, q.x); x1 = (std::max)(x1, q.x); y0 = (std::min)(y0, q.y); y1 = (std::max)(y1, q.y); }
+                if (mp.x < x0 - tol || mp.x > x1 + tol || mp.y < y0 - tol || mp.y > y1 + tol) continue;
+                int edges = (near_seg(c[0], c[3], tol) ? 1 : 0) | (near_seg(c[1], c[2], tol) ? 2 : 0) | (near_seg(c[0], c[1], tol) ? 4 : 0) | (near_seg(c[3], c[2], tol) ? 8 : 0);
+                if ((edges & 3) == 3) edges &= ~2;  // (a box too thin to tell its sides apart)
+                if ((edges & 12) == 12) edges &= ~8;
+                const bool inside = mp.x >= x0 && mp.x <= x1 && mp.y >= y0 && mp.y <= y1;
+                if (!edges && !inside) continue;
+                const float area = i == picked ? -1.0f : (x1 - x0) * (y1 - y0);  // the picked box first, then the smallest
+                const bool point = b.w == 0 && b.h == 0;  // (a point box: dragging it moves it, there's no side to pull)
+                if (area < hit_area) { hit = i; hit_edges = edges && !point ? edges : 16; hit_area = area; }
+              }
+              if (hit >= 0) {
+                hovered = hit;
+                cursor(s.boxes[static_cast<size_t>(hit)], hit_edges);
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                  picked = hit;
+                  drag.on = true;
+                  drag.first = true;
+                  drag.index = hit;
+                  drag.edges = hit_edges;
+                  drag.side = side;
+                  drag.from = mp;
+                  drag.start = s.boxes[static_cast<size_t>(hit)];
+                  drag.sprite = s.sprite;
+                }
+              }
+            }
+            const int shown = hovered >= 0 ? hovered : picked >= 0 && picked < n ? picked : -1;
+            if (shown >= 0 && box_editor::editable(s.boxes[static_cast<size_t>(shown)].kind)) {  // handles: the corners and the sides' middles
+              const box_editor::BoxView& b = s.boxes[static_cast<size_t>(shown)];
+              ImDrawList* bg = ImGui::GetBackgroundDrawList();
+              const float r = 4 * S;
+              for (float fx : {0.0f, 0.5f, 1.0f})
+                for (float fy : {0.0f, 0.5f, 1.0f}) {
+                  if (fx == 0.5f && fy == 0.5f) continue;
+                  const ImVec2 p = at(b.x + b.w * fx, b.y + b.h * fy);
+                  bg->AddRectFilled(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), IM_COL32(255, 255, 255, 255));
+                  bg->AddRect(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), IM_COL32(0, 0, 0, 255));
+                }
+            }
+          }
+        }
+        const int lit = hovered >= 0 ? hovered : picked < static_cast<int>(s.boxes.size()) ? picked : -1;
+        box_editor::setHighlight(lit >= 0 ? side : -1, lit);
+        if (lit >= 0) {  // where the box reaches, from the fighter's feet: + is forward and up
+          const box_editor::BoxView& b = s.boxes[static_cast<size_t>(lit)];
+          const float x0 = -b.x * s.sx, x1 = -(b.x + b.w) * s.sx, y0 = -b.y * s.sy, y1 = -(b.y + b.h) * s.sy;
+          char t[32];
+          const auto r = slots({{"front", "-9999.9"}, {"back", "-9999.9"}, {"top", "-9999.9"}, {"bottom", "-9999.9"}}, 1);
+          ImGui::BeginGroup();
+          line_start();
+          snprintf(t, sizeof(t), "%g", (std::max)(x0, x1)); field(r[0], "front", t, true);
+          snprintf(t, sizeof(t), "%g", (std::min)(x0, x1)); field(r[1], "back", t, true);
+          snprintf(t, sizeof(t), "%g", (std::max)(y0, y1)); field(r[2], "top", t, true);
+          snprintf(t, sizeof(t), "%g", (std::min)(y0, y1)); field(r[3], "bottom", t, true);
+          ImGui::EndGroup();
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the box reaches, from the fighter's feet: + is forward and up.");
+        } else {
+          ImGui::TextDisabled("Hover a box to see where it reaches%s.", ModMenu::instance().hitboxEnabled() ? " and light it on the fighter" : " (turn on Hitboxes to see it on the fighter)");
+        }
+        {  // which frames an edit goes to
+          const std::string& move = s.selected.empty() ? s.state : s.selected;
+          ImGui::TextUnformatted("Edits apply to:");
+          ImGui::SameLine();
+          ImGui::RadioButton("this sprite", &scope, 0);
+          ImGui::SameLine();
+          ImGui::RadioButton("the rest of the move", &scope, 1);
+          ImGui::SameLine();
+          ImGui::RadioButton("the whole move", &scope, 2);
+          if (scope > 0)
+            ImGui::TextDisabled("%s", !v.db ? "The move's frames need the instruction database (StriveLabs_scripts/db)."
+                                      : !scope_has ? (move + " doesn't use " + s.sprite + ". Open a move that does, or close the Move panel to use the one playing.").c_str()
+                                      : scope_to.empty() ? ("No other sprites in " + move + ".").c_str()
+                                                       : ("Also " + std::to_string(scope_to.size()) + (scope_to.size() == 1 ? " other sprite" : " other sprites") + " of " + move +
+                                                          ", when you let go of a drag or finish typing.").c_str());
+          if (scope > 0) {  // or now, with the picked box as it is (the row is there whenever a range is chosen)
+            const bool ok = !scope_to.empty() && picked >= 0 && picked < static_cast<int>(s.boxes.size()) && box_editor::editable(s.boxes[static_cast<size_t>(picked)].kind);
+            ImGui::BeginDisabled(!ok);
+            if (ImGui::SmallButton("Apply to those sprites now")) {
+              const box_editor::BoxView& pb = s.boxes[static_cast<size_t>(picked)];
+              const int fields = pb.edited ? (pb.x != pb.ox ? 1 : 0) | (pb.y != pb.oy ? 2 : 0) | (pb.w != pb.ow ? 4 : 0) | (pb.h != pb.oh ? 8 : 0) : 15;
+              box_editor::copyBox(side, s.sprite, picked, fields ? fields : 15, scope_to);
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+              ImGui::SetTooltip("%s", ok ? "Copies the picked box's changed values (all four if none changed) to those sprites now"
+                                    : scope_to.empty() ? "No other sprites to apply to" : "Click a box first (its name, or on the fighter)");
+          }
+        }
+        if (sprite_edited || !v.edits.empty())
+          ImGui::TextWrapped("Box edits belong to the sprite: every move that uses it changes, on both sides in a mirror match.");
+        {  // Save / load everything edited (boxes, script lines, versions), by name
+          static char save_name[64] = "";
+          if (ImGui::SmallButton("Save edits...")) ImGui::OpenPopup("be_save");
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Load edits...")) ImGui::OpenPopup("be_load");
+          if (ImGui::BeginPopup("be_save")) {
+            ImGui::TextUnformatted("Save every edit (boxes, script lines, versions) as:");
+            ImGui::SetNextItemWidth(220 * S);
+            const bool enter = ImGui::InputTextWithHint("##be_save_name", "name", save_name, sizeof(save_name), ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            std::string nm = save_name;
+            for (char& ch : nm) if (std::strchr("\\/:*?\"<>|", ch)) ch = '_';
+            ImGui::BeginDisabled(nm.empty());
+            if ((ImGui::SmallButton("Save") || enter) && !nm.empty()) { box_editor::saveEdits(nm); ImGui::CloseCurrentPopup(); }
+            ImGui::EndDisabled();
+            ImGui::EndPopup();
+          }
+          if (ImGui::BeginPopup("be_load")) {
+            const std::vector<std::string> saved = box_editor::savedEdits();
+            if (saved.empty()) ImGui::TextDisabled("Nothing saved yet (StriveLabs_scripts/edits/).");
+            for (const std::string& nm : saved)
+              if (ImGui::Selectable(nm.c_str())) { box_editor::loadEdits(nm); ImGui::CloseCurrentPopup(); }
+            ImGui::EndPopup();
+          }
+        }
+        if (ImGui::SmallButton("Export boxes (COL JSON)")) box_editor::exportBoxes(side);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Export move (.bbs)")) box_editor::exportState(side);
+        ImGui::BeginDisabled(!v.can_undo);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Undo")) box_editor::undo();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Ctrl+Z");
+        ImGui::EndDisabled();
+        if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false) &&
+            (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow)))  // (also after a drag on the fighter)
+          box_editor::undo();
+        {
+          bool keep = v.keep;
+          if (ImGui::Checkbox("Keep edits for new fights", &keep)) box_editor::setKeep(keep);
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts your edits back on when a new training fight loads.\nEdits stay when this window closes. Reset all puts the game's boxes back.");
+        }
+        if (!v.edits.empty()) {
+          int boxes = 0;
+          for (const box_editor::EditedView& ev : v.edits) boxes += 1 + static_cast<int>(std::count(ev.boxes.begin(), ev.boxes.end(), ','));
+          const std::string head = "Edited (" + std::to_string(v.edits.size()) + (v.edits.size() == 1 ? " sprite, " : " sprites, ") + std::to_string(boxes) + (boxes == 1 ? " box)" : " boxes)") + "###be_edited";
+          if (ImGui::TreeNode(head.c_str())) {
+            for (size_t k = 0; k < v.edits.size(); k++) {
+              const box_editor::EditedView& ev = v.edits[k];
+              ImGui::PushID(static_cast<int>(k));
+              if (ImGui::SmallButton("Reset")) box_editor::resetSprite(ev.chr, ev.sprite);
+              ImGui::SameLine();
+              ImGui::Text("%s  %s", ev.sprite.c_str(), ev.boxes.c_str());
+              ImGui::PopID();
+            }
+            if (ImGui::SmallButton("Reset all")) box_editor::resetAll();
+            ImGui::TreePop();
+          }
+        }
+        ImGui::Separator();
+        static char filter[64] = "";
+        ImGui::TextUnformatted("Moves");
+        right(80, std::to_string(s.states.size()), true);
+        at(95);
+        ImGui::SetNextItemWidth(160 * S);
+        ImGui::InputTextWithHint("##be_filter", "Search", filter, sizeof(filter));
+        if (!s.note.empty()) ImGui::TextDisabled("%s", s.note.c_str());
+        const float foot = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
+        if (ImGui::BeginChild("be_moves", ImVec2(0, -foot), true)) {
+          std::string low_f = filter;
+          for (auto& c : low_f) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          for (int i = 0; i < static_cast<int>(s.states.size()); i++) {
+            const std::string& n = s.states[static_cast<size_t>(i)];
+            if (!low_f.empty()) {
+              std::string low = n;
+              for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+              if (low.find(low_f) == std::string::npos) continue;
+            }
+            const bool running = n == s.state, open_one = n == s.selected;
+            if (running) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1));  // (the move playing, lit)
+            ImGui::PushID(i);
+            if (ImGui::Selectable(n.c_str(), open_one)) box_editor::selectState(side, open_one ? std::string() : n);
+            ImGui::PopID();
+            if (running) ImGui::PopStyleColor();
+          }
+          if (!s.routines.empty()) {  // the routines (RoundInit: the move definitions, inputs and follow-ups)
+            ImGui::Spacing();
+            ImGui::TextDisabled("Routines (%d)", static_cast<int>(s.routines.size()));
+            for (int i = 0; i < static_cast<int>(s.routines.size()); i++) {
+              const std::string& n = s.routines[static_cast<size_t>(i)];
+              if (!low_f.empty()) {
+                std::string low = n;
+                for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (low.find(low_f) == std::string::npos) continue;
+              }
+              ImGui::PushID(100000 + i);
+              if (ImGui::Selectable(n.c_str(), n == s.selected)) box_editor::selectState(side, n == s.selected ? std::string() : n);
+              if (n == "RoundInit" && ImGui::IsItemHovered()) ImGui::SetTooltip("The move definitions: each move's input, stance and whether it's a follow-up.");
+              ImGui::PopID();
+            }
+          }
+        }
+        ImGui::EndChild();
+      }
+      ImGui::TextDisabled("%s", v.status.empty() ? v.db_note.c_str() : v.status.c_str());
+      ImGui::EndChild();
+      pop_widget_style();
+      // The opened move, in a small panel of its own: its script, the running line lit while it plays
+      if (s.present && !s.selected.empty()) {
+        const ImVec2 msize(470 * S, 640 * S);  // (the frame data, the line editor and the script)
+        Frame m = begin_window("Move##sl_move", s.selected, ImVec2(f.o.x + f.w + 12 * S, f.o.y), msize, ImVec2(280 * S, 200 * S), true);
+        if (m.closed) box_editor::selectState(side, std::string());
+        if (!m.collapsed) {
+          ImGui::SetCursorScreenPos(ImVec2(m.o.x + pad, m.o.y + m.head + 6 * S));
+          push_widget_style();
+          ImGui::BeginChild("be_move", ImVec2(m.w - 2 * pad, m.h - m.head - 12 * S), false);
+          ImGui::TextDisabled("%s", s.sel_current >= 0 ? "Playing now" : "Not playing");
+          {  // (experimental) the move as it was in another battle version
+            const auto& vs = s.sel_versions;
+            if (vs.size() > 1) {
+              ImGui::SameLine(150 * S);
+              ImGui::TextDisabled("Version");
+              ImGui::SameLine(210 * S);
+              ImGui::SetNextItemWidth(150 * S);
+              std::string shown = s.sel_loaded.empty() ? "today's" : s.sel_loaded;
+              for (const auto& vv : vs) if (s.sel_loaded.empty() && vv.now) shown = vv.label + " (today's)";
+              if (ImGui::BeginCombo("##c2_ver", shown.c_str())) {
+                for (const auto& vv : vs) {
+                  const std::string item = vv.label + (vv.now ? " (today's)" : "");
+                  if (ImGui::Selectable(item.c_str(), vv.label == s.sel_loaded)) box_editor::loadVersion(side, s.selected, vv.now ? std::string() : vv.folder);
+                }
+                ImGui::EndCombo();
+              }
+              if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The move as it was in an older battle version (the game keeps every version's scripts).\nExperimental. Reset move puts today's back.");
+            }
+            if (!s.selected.empty()) {  // the move from a .bbs text file
+              ImGui::SameLine(370 * S);
+              static std::vector<std::pair<std::string, std::string>> files;
+              if (ImGui::SmallButton("From file...")) { files = box_editor::moveFiles(s.chr); ImGui::OpenPopup("be_from_file"); }
+              if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Load this move from a .bbs text file in StriveLabs_scripts/%s/ (Export move writes one to start from).\n"
+                                  "You can add and remove lines in it. Reset move puts today's back.", s.chr.c_str());
+              if (ImGui::BeginPopup("be_from_file")) {
+                int shown_files = 0;
+                for (const auto& [file, st] : files) {
+                  if (st != s.selected) continue;
+                  shown_files++;
+                  if (ImGui::Selectable((file + ".bbs").c_str())) { box_editor::loadMoveFile(side, s.selected, file); ImGui::CloseCurrentPopup(); }
+                }
+                if (!shown_files) ImGui::TextDisabled("No .bbs file for %s in StriveLabs_scripts/%s/ (Export move writes one).", s.selected.c_str(), s.chr.c_str());
+                ImGui::EndPopup();
+              }
+            }
+          }
+          static int pick_frame = -1;  // the frame clicked on the strip (its sprite line is lit below)
+          static std::string pick_of;
+          static int scrolled_to = -1;  // (the script below scrolls to the clicked frame's line once per click)
+          if (pick_of != s.selected) { pick_frame = -1; pick_of = s.selected; scrolled_to = -1; }
+          int pick_line = -1;
+          {  // The move's frames: a mini frame bar, colored as the frame bar is
+            const box_editor::FramesView& fr = s.sel_frames;
+            if (!fr.cells.empty()) {
+              const float q = 9 * S, gap = 1 * S, step = q + gap;
+              const float hgt = q + 2 * ImGui::GetStyle().WindowPadding.y + ImGui::GetStyle().ScrollbarSize + 2 * S;  // (fits: no vertical bar)
+              if (ImGui::BeginChild("be_strip", ImVec2(0, hgt), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 o = ImGui::GetCursorScreenPos();
+                static const int bar_state[] = {3, 4, 4, 6, 0};  // startup, active, on without hitbox, recovery, can act
+                int hover = -1;
+                const ImVec2 mp = ImGui::GetIO().MousePos;
+                const bool in_strip = ImGui::IsWindowHovered() && mp.y >= o.y && mp.y < o.y + q;
+                const float clip0 = ImGui::GetWindowPos().x - step, clip1 = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x;
+                for (const box_editor::CellView& c : fr.cells)
+                  for (int k = 0; k < c.dur; k++) {
+                    const int f = c.first + k;
+                    const ImVec2 a(o.x + f * step, o.y), b(a.x + q, a.y + q);
+                    if (f == pick_frame) pick_line = c.line;
+                    if (a.x < clip0 || a.x > clip1) continue;  // (off screen: not drawn)
+                    ImU32 col = mv.bar_colors[bar_state[c.phase]];
+                    if (c.phase == 2) col = (col & 0x00FFFFFF) | 0x70000000;  // (the attack is on, but this sprite has no hitbox)
+                    dl->AddRectFilled(a, b, col);
+                    if (k == 0) dl->AddLine(ImVec2(a.x - gap, a.y - 1 * S), ImVec2(a.x - gap, b.y + 1 * S), IM_COL32(0, 0, 0, 255), 1.5f * S);  // (a new sprite)
+                    if (f == fr.now) dl->AddRect(ImVec2(a.x - 1 * S, a.y - 1 * S), ImVec2(b.x + 1 * S, b.y + 1 * S), IM_COL32(255, 255, 255, 255), 0, 0, 1.5f * S);
+                    if (f == pick_frame) dl->AddRect(a, b, IM_COL32(255, 220, 80, 255), 0, 0, 1.5f * S);
+                    if (in_strip && mp.x >= a.x && mp.x < a.x + step) hover = f;
+                  }
+                ImGui::Dummy(ImVec2(fr.total * step, q));
+                if (hover >= 0) {
+                  for (const box_editor::CellView& c : fr.cells)
+                    if (hover >= c.first && hover < c.first + c.dur) {
+                      static const char* const ph[] = {"startup", "active", "attack on, but this sprite has no hitbox", "recovery", "can act again"};
+                      ImGui::SetTooltip("Frame %d: %s (frame %d of %d)\n%s%s\nboxes: %s", hover + 1, c.sprite.c_str(), hover - c.first + 1, c.dur, ph[c.phase], c.held ? " (held until an event)" : "",
+                                        c.hits < 0 ? "the box file wasn't found" : (std::to_string(c.hurts) + " hurt, " + std::to_string(c.hits) + " hit").c_str());
+                    }
+                  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { pick_frame = pick_frame == hover ? -1 : hover; scrolled_to = -1; }
+                }
+              }
+              ImGui::EndChild();
+              {  // the frame data it adds up to
+                int first_active = -1, last_active = -1, can_act = -1;
+                for (const box_editor::CellView& c : fr.cells) {
+                  if (c.phase == 1) { if (first_active < 0) first_active = c.first; last_active = c.first + c.dur - 1; }
+                  if (c.phase == 4 && can_act < 0) can_act = c.first;
+                }
+                const auto r = slots({{"", "9999"}, {"frames   startup", "999"}, {"active", "999-999"}, {"can act", "999"}}, 1);
+                ImGui::BeginGroup();  // (each in a measured slot)
+                line_start();
+                right(r[0].value_end, std::to_string(fr.total), false);
+                at(r[1].label); ImGui::TextDisabled("frames");
+                if (first_active >= 0) {
+                  at(r[1].label + wid("frames   ")); ImGui::TextDisabled("startup");
+                  right(r[1].value_end, std::to_string(first_active + 1), false);
+                  field(r[2], "active", std::to_string(first_active + 1) + "-" + std::to_string(last_active + 1), true);
+                }
+                if (can_act >= 0) field(r[3], "can act", std::to_string(can_act + 1), true);
+                ImGui::EndGroup();
+                if (!fr.linear) ImGui::TextDisabled("then %s", fr.note.c_str());  // (its own line, there for every move)
+                else ImGui::TextDisabled(" ");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Worked out from the script (sprite frames, hit, recoveryState) and which sprites have hitboxes.\nCheck it against the frame bar. Click a frame to light its sprite line below.");
+              }
+              {  // The frame data to edit, the attack level, and what it gives on block / on hit
+                const float x0 = ImGui::GetCursorPosX();
+                const float lw = ImGui::CalcTextSize("Level (other)").x + 8 * S, iw = 52 * S, colw = lw + iw + 16 * S;
+                auto num = [&](int col, const char* label, const char* id, int value, int lo, int hi, bool can, auto&& set) {
+                  ImGui::SetCursorPosX(x0 + col * colw);
+                  ImGui::AlignTextToFramePadding();
+                  ImGui::TextDisabled("%s", label);
+                  ImGui::SameLine(x0 + col * colw + lw);
+                  ImGui::SetNextItemWidth(iw);
+                  int val = value;
+                  ImGui::BeginDisabled(!can);
+                  ImGui::InputInt(id, &val, 0, 0);
+                  if (ImGui::IsItemDeactivatedAfterEdit() && can && val != value) set(std::clamp(val, lo, hi));
+                  ImGui::EndDisabled();
+                };
+                auto cellSet = [&](int cell, int delta) {  // a part's length: longer on its last sprite; shorter from its last sprite back
+                  const int phase = fr.cells[static_cast<size_t>(cell)].phase;
+                  std::vector<int> used;  // (a sprite line shown twice is changed once)
+                  for (int i = cell; i >= 0 && delta != 0; i--) {
+                    const box_editor::CellView& c = fr.cells[static_cast<size_t>(i)];
+                    if (c.phase != phase && !(phase == 1 && c.phase == 2)) break;  // (active: its gaps without a hitbox too)
+                    if (c.held || c.line < 0 || std::find(used.begin(), used.end(), c.line) != used.end()) continue;
+                    used.push_back(c.line);
+                    const int to = (std::max)(1, c.dur + delta);
+                    if (to != c.dur) box_editor::setFrames(side, s.selected, s.sel_script[static_cast<size_t>(c.line)].offset, to);
+                    delta -= to - c.dur;
+                  }
+                };
+                auto editable = [&](int cell) { return cell >= 0 && !fr.cells[static_cast<size_t>(cell)].held; };
+                if (fr.startup > 0) {
+                  num(0, "Startup", "##c1_su", fr.startup, 1, 999, editable(fr.last_startup), [&](int v) { cellSet(fr.last_startup, v - fr.startup); });
+                  ImGui::SameLine();
+                  num(1, "Active", "##c1_ac", fr.active, 1, 999, editable(fr.last_active), [&](int v) { cellSet(fr.last_active, v - fr.active); });
+                  ImGui::SameLine();
+                  num(2, "Recovery", "##c1_rc", fr.recovery, 1, 999, editable(fr.last_recovery), [&](int v) { cellSet(fr.last_recovery, v - fr.recovery); });
+                  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Longer: the part's last sprite gets the frames. Shorter: they come off its last sprite, then the ones before it (each keeps 1). Click a frame on the strip to change one sprite.");
+                  // the attack level of each hit that sets one, then on block / on hit
+                  for (size_t k = 0; k < fr.levels.size() && k < 3; k++) {
+                    const auto& lv = fr.levels[k];
+                    int own = 0, own_k = 0;  // (the move's own levels: numbered only if there are several, each a hit)
+                    for (size_t q = 0; q < fr.levels.size(); q++) if (fr.levels[q].event.empty()) { own++; if (q < k) own_k++; }
+                    const std::string label = !lv.event.empty() ? (lv.event == "HIT" ? std::string("Level (hit)") : std::string("Level (other)"))
+                                              : own > 1 ? "Level " + std::to_string(own_k + 1) : std::string("Level");
+                    num(static_cast<int>(k), label.c_str(), ("##c1_lv" + std::to_string(k)).c_str(), lv.level, 0, 4, true,
+                        [&](int v) { box_editor::setLevel(side, s.selected, s.sel_script[static_cast<size_t>(lv.line)].offset, v); });
+                    if (ImGui::IsItemHovered())
+                      ImGui::SetTooltip(lv.event.empty() ? "Attack level (0-4): sets hitstun, blockstun and hitstop."
+                                                         : "Attack level when %s happens (Sidewinder's clean hit, for one): (0-4), sets hitstun, blockstun and hitstop.",
+                                        lv.event.c_str());
+                    if (k + 1 < fr.levels.size() && k < 2) ImGui::SameLine();
+                  }
+                  if (fr.levels.empty()) ImGui::TextDisabled("Level: not set in this move's script");
+                  else if (fr.levels.size() > 3) { ImGui::SameLine(); ImGui::TextDisabled("(+%d more in the script)", static_cast<int>(fr.levels.size()) - 3); }
+                  auto adv = [](int v) { return (v > 0 ? "+" : "") + std::to_string(v); };
+                  ImGui::SetCursorPosX(x0);
+                  ImGui::TextDisabled("On block");
+                  ImGui::SameLine(x0 + lw);
+                  ImGui::TextUnformatted(fr.has_adv ? adv(fr.on_block).c_str() : fr.multi ? "multi-hit" : "varies");
+                  ImGui::SameLine(x0 + colw);
+                  ImGui::TextDisabled("On hit");
+                  ImGui::SameLine(x0 + colw + lw);
+                  ImGui::TextUnformatted(!fr.has_adv ? (fr.multi ? "multi-hit" : "varies") : fr.launches ? "launches" : adv(fr.on_hit).c_str());
+                  if (ImGui::IsItemHovered() && fr.multi) ImGui::SetTooltip("Several hits (or levels): not worked out here. The frame bar has it.");
+                  else if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", fr.launches ? "It has an attack angle, so the opponent floats: on hit depends on the float (see the frame bar)."
+                                                       : "Against a standing opponent, from the first level's hitstun. Crouching: +1.");
+                  ImGui::SameLine(x0 + 2 * colw);
+                  if (ImGui::SmallButton("Reset move")) box_editor::resetMove(side, s.selected);
+                  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts this move's script back as the game has it (edits, a loaded version or file)");
+                  // the picked frame's sprite: its length
+                  int pc = -1;
+                  for (size_t k = 0; k < fr.cells.size(); k++)
+                    if (pick_frame >= fr.cells[k].first && pick_frame < fr.cells[k].first + fr.cells[k].dur) pc = static_cast<int>(k);
+                  if (pc >= 0) {
+                    const box_editor::CellView& c = fr.cells[static_cast<size_t>(pc)];
+                    num(0, "Sprite", "##c1_sp", c.dur, 1, 999, !c.held, [&](int v) {
+                      box_editor::setFrames(side, s.selected, s.sel_script[static_cast<size_t>(c.line)].offset, v);
+                    });
+                    ImGui::SameLine(x0 + colw);
+                    ImGui::TextDisabled("frames of %s%s", c.sprite.c_str(), s.sel_script[static_cast<size_t>(c.line)].edited ? " (edited)" : "");
+                  } else {
+                    ImGui::SetCursorPosX(x0);
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextDisabled("Click a frame on the strip to change its sprite's length.");
+                  }
+                }
+              }
+            }
+          }
+          static int edit_line = -1;  // the script line picked to edit its numbers
+          static std::string edit_of;
+          if (edit_of != s.selected) { edit_line = -1; edit_of = s.selected; }
+          {  // The picked line's numbers (a fixed-height box: the list below never moves)
+            const float rowh = ImGui::GetFrameHeightWithSpacing();
+            if (ImGui::BeginChild("be_line_edit", ImVec2(0, rowh * 5 + 8 * S), true)) {
+              const box_editor::InstrView* in = edit_line >= 0 && edit_line < static_cast<int>(s.sel_script.size()) ? &s.sel_script[static_cast<size_t>(edit_line)] : nullptr;
+              if (!in) ImGui::TextDisabled("Click a line of the script below to change its numbers.");
+              else {
+                ImGui::TextUnformatted(in->name.c_str());
+                if (ImGui::IsItemHovered() && !in->desc.empty()) ImGui::SetTooltip("%s", in->desc.c_str());
+                const float lw = 320 * S, iw = 90 * S;
+                ImGui::SameLine(lw);
+                const std::string state_text = !in->replaced_from.empty() ? "replaced (was " + in->replaced_from + ")" : in->edited ? std::string("edited (Reset move puts it back)") : in->call;
+                ImGui::TextDisabled("%s", state_text.c_str());
+                {  // the line as another instruction of its size (the button at a fixed place on the right)
+                  const float bw = ImGui::CalcTextSize("Replace with...").x + ImGui::GetStyle().FramePadding.x * 2;
+                  ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - bw);
+                  static std::vector<std::pair<int, std::string>> repl;
+                  static char repl_find[48] = "";
+                  if (ImGui::SmallButton("Replace with...")) {
+                    const int base = in->replaced_op >= 0 ? in->replaced_op : in->op;  // (the instruction the line was)
+                    repl = box_editor::replacements(base);
+                    repl.erase(std::remove_if(repl.begin(), repl.end(), [&](const auto& x) { return x.first == in->op; }), repl.end());
+                    if (base != in->op) repl.insert(repl.begin(), {base, in->replaced_from + "  (put back)"});
+                    repl_find[0] = 0;
+                    ImGui::OpenPopup("be_replace");
+                  }
+                  if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Turns this line into another instruction of the same size, so nothing after it moves. Its numbers start at 0: set them here.\nBlock lines (if, upon, labels...), sprites, gotos and calls can't be replaced, and nothing that takes a name can go in.");
+                  if (ImGui::BeginPopup("be_replace")) {
+                    if (repl.empty()) ImGui::TextDisabled("This line can't be replaced (a block line, sprite, goto or call, or nothing else is its size).");
+                    else {
+                      ImGui::SetNextItemWidth(260 * S);
+                      if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                      ImGui::InputTextWithHint("##be_repl_find", "Search instructions", repl_find, sizeof(repl_find));
+                      std::string q = repl_find;
+                      for (auto& c : q) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                      if (ImGui::BeginChild("be_repl_list", ImVec2(320 * S, 260 * S), true)) {
+                        for (const auto& [o, n] : repl) {
+                          std::string low = n;
+                          for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                          if (!q.empty() && low.find(q) == std::string::npos) continue;
+                          ImGui::PushID(o);
+                          if (ImGui::Selectable(n.c_str())) { box_editor::replaceLine(side, s.selected, in->offset, o); ImGui::CloseCurrentPopup(); }
+                          ImGui::PopID();
+                        }
+                      }
+                      ImGui::EndChild();
+                    }
+                    ImGui::EndPopup();
+                  }
+                }
+                auto fit = [&](const std::string& t) {  // (a label cut to its column, "..." if longer: the tooltip has it whole)
+                  if (ImGui::CalcTextSize(t.c_str()).x <= lw - 10 * S) return t;
+                  std::string c = t;
+                  while (!c.empty() && ImGui::CalcTextSize((c + "...").c_str()).x > lw - 10 * S) c.pop_back();
+                  return c + "...";
+                };
+                for (size_t k = 0; k < in->argv.size(); k++) {
+                  const auto& a = in->argv[k];
+                  ImGui::PushID(static_cast<int>(k));
+                  ImGui::AlignTextToFramePadding();
+                  ImGui::TextUnformatted(fit(a.label).c_str());
+                  if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s\n%s", a.label.c_str(), !a.tip.empty() ? a.tip.c_str() : !in->desc.empty() ? in->desc.c_str() : "No description in the database.");
+                  ImGui::SameLine(lw);
+                  ImGui::SetNextItemWidth(iw);
+                  int val = a.value;
+                  ImGui::BeginDisabled(!a.editable);
+                  ImGui::InputInt("##v", &val, 0, 0);
+                  if (ImGui::IsItemDeactivatedAfterEdit() && a.editable && val != a.value) box_editor::setArg(side, s.selected, in->offset, a.field, val);
+                  ImGui::EndDisabled();
+                  if (!a.editable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("A variable (Mem), not a number: can't be edited.");
+                  ImGui::SameLine(lw + iw + 8 * S);
+                  ImGui::TextDisabled("%s", a.value_name.c_str());
+                  ImGui::PopID();
+                }
+                if (in->argv.empty()) ImGui::TextDisabled("No numbers on this line.");
+              }
+            }
+            ImGui::EndChild();
+          }
+          // Search the script: lines whose text (or description) holds it are lit; the current one is scrolled to
+          static char find[64] = "";
+          static int find_at = 0, find_scroll = -1;  // (which match is current; the line to scroll to once)
+          static std::string find_was, find_of;
+          std::vector<int> found;
+          {
+            auto low = [](std::string t) { for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return t; };
+            const std::string q = low(find);
+            if (!q.empty())
+              for (int i = 0; i < static_cast<int>(s.sel_script.size()); i++) {
+                const box_editor::InstrView& in = s.sel_script[static_cast<size_t>(i)];
+                if (low(in.name + ": " + in.args).find(q) != std::string::npos || low(in.desc).find(q) != std::string::npos) found.push_back(i);
+              }
+            if (find_was != q || find_of != s.selected) { find_was = q; find_of = s.selected; find_at = 0; find_scroll = found.empty() ? -1 : found[0]; }
+            const float x0 = ImGui::GetCursorPosX();
+            ImGui::SetNextItemWidth(200 * S);
+            const bool enter = ImGui::InputTextWithHint("##be_find", "Search the script", find, sizeof(find), ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine(x0 + 208 * S);
+            const std::string count = q.empty() ? std::string(" ") : found.empty() ? std::string("none") : std::to_string(find_at + 1) + " of " + std::to_string(found.size());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%s", count.c_str());
+            ImGui::SameLine(x0 + 208 * S + ImGui::CalcTextSize("999 of 999").x + 10 * S);
+            ImGui::BeginDisabled(found.empty());
+            const bool prev = ImGui::SmallButton("<");
+            ImGui::SameLine();
+            const bool next = ImGui::SmallButton(">") || (enter && !found.empty());
+            ImGui::EndDisabled();
+            if (enter) ImGui::SetKeyboardFocusHere(-1);  // (Enter keeps the box: Enter again for the next)
+            if (!found.empty() && (prev || next)) {
+              const int n = static_cast<int>(found.size());
+              find_at = ((find_at + (next ? 1 : -1)) % n + n) % n;
+              find_scroll = found[static_cast<size_t>(find_at)];
+            }
+          }
+          if (ImGui::BeginChild("be_move_lines", ImVec2(0, 0), true)) {
+            for (int i = 0; i < static_cast<int>(s.sel_script.size()); i++) {
+              const box_editor::InstrView& in = s.sel_script[static_cast<size_t>(i)];
+              const std::string line = std::string(static_cast<size_t>(in.depth) * 2, ' ') + in.name + ": " + in.args;
+              const bool hit = std::binary_search(found.begin(), found.end(), i);
+              const bool hit_now = hit && !found.empty() && found[static_cast<size_t>(find_at)] == i;
+              if (hit) {  // (a match: a band behind it, brighter for the current one)
+                const ImVec2 a = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddRectFilled(a, ImVec2(a.x + ImGui::GetContentRegionAvail().x, a.y + ImGui::GetTextLineHeight()),
+                                                         hit_now ? IM_COL32(90, 140, 40, 200) : IM_COL32(60, 90, 30, 140));
+              }
+              if (i == find_scroll) { ImGui::SetScrollHereY(0.3f); find_scroll = -1; }
+              const bool cur = i == s.sel_current;
+              const bool frame = in.op == 2;  // a sprite: a frame of the move
+              const bool picked = i == pick_line;
+              if (picked) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.86f, 0.31f, 1));
+              else if (cur) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1));
+              else if (in.edited) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1));  // (a script edit)
+              else if (frame) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.85f, 1.0f, 1));
+              ImGui::PushID(i);
+              if (ImGui::Selectable(line.c_str(), i == edit_line)) edit_line = i == edit_line ? -1 : i;  // (picked: its numbers above)
+              ImGui::PopID();
+              if (picked && scrolled_to != pick_frame) { ImGui::SetScrollHereY(0.3f); scrolled_to = pick_frame; }
+              if (cur || frame || picked || in.edited) ImGui::PopStyleColor();
+              if (ImGui::IsItemHovered() && !in.desc.empty()) ImGui::SetTooltip("%s (%d)\n%s", in.name.c_str(), in.op, in.desc.c_str());
+            }
+          }
+          ImGui::EndChild();
+          ImGui::EndChild();
+          pop_widget_style();
+        }
+        end_window();
+      }
+    }
+    end_window();
+  }
   void draw_colors() {
     use(E_MENU);
     const recolor_test::View v = recolor_test::view();
@@ -2837,13 +3676,15 @@ namespace menu_ui {
         y += 14 * S;
       }
       {  // Undo, redo and save (for every tab) on the right, unsaved on the left
-        float rx = x1 - small_button_w(v.unsaved ? "Save*" : "Save");
+        float rx = x1 - small_button_w(v.unsaved ? "Save*" : "Save");  // (baking is on its own tab)
         if (small_button(dl, "save", v.unsaved ? "Save*" : "Save", ImVec2(rx, y), v.unsaved, v.unsaved)) recolor_test::saveRecolor();
         rx -= 4 * S + small_button_w("Redo");
         if (small_button(dl, "redo", "Redo", ImVec2(rx, y), v.can_redo)) recolor_test::redo();
         rx -= 4 * S + small_button_w("Undo");
         if (small_button(dl, "undo", "Undo", ImVec2(rx, y), v.can_undo)) recolor_test::undo();
-        if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) { if (io.KeyShift) recolor_test::redo(); else recolor_test::undo(); }
+        if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false) && (!box_editor::isOpen() || ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))) {  // (Script & boxes has its own)
+          if (io.KeyShift) recolor_test::redo(); else recolor_test::undo();
+        }
         if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) recolor_test::redo();
         if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) recolor_test::saveRecolor();
         const char* hint = v.unsaved ? "Unsaved (Ctrl+S)" : "";
@@ -2851,9 +3692,9 @@ namespace menu_ui {
         y += CHIP_H * S + 8 * S;
       }
       {  // The tabs. The last one stays when the editor is closed and opened again
-        const char* const tabs[4] = {"Regions", "Auto", "Effects", "Save & share"};
+        const char* const tabs[5] = {"Regions", "Auto", "Effects", "Save & share", "Bake"};
         float tx = x0;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
           ImGui::PushID(i);
           if (small_button(dl, "tab", tabs[i], ImVec2(tx, y), true, g_tab == i) && g_tab != i) { g_tab = i; g_pick_armed = false; }  // An armed pick is dropped, since its button is gone
           ImGui::PopID();
@@ -3140,8 +3981,8 @@ namespace menu_ui {
       ImGui::SetCursorScreenPos(ImVec2(f.o.x + 1, y));
       ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
-      const char* const pages[4] = {"##sl_color_rows", "##sl_color_auto", "##sl_color_effects", "##sl_color_share"};  // Each has its own scroll
-      ImGui::BeginChild(pages[g_tab], ImVec2(f.w - 2, list_h), false);
+      const char* const pages[5] = {"##sl_color_rows", "##sl_color_auto", "##sl_color_effects", "##sl_color_share", "##sl_color_bake"};  // Each has its own scroll
+      ImGui::BeginChild(pages[(std::min)((std::max)(g_tab, 0), 4)], ImVec2(f.w - 2, list_h), false);
       ImDrawList* cl = ImGui::GetWindowDrawList();
       const float cw = ImGui::GetContentRegionAvail().x;
       if (g_tab == 0) {
@@ -3564,6 +4405,98 @@ namespace menu_ui {
           }
           pop_widget_style();
         }
+      } else if (g_tab == 4) {  // Bake: saved recolors written into paks, and the list of baked slots
+        const ImVec2 at0 = ImGui::GetCursorScreenPos();
+        float by = at0.y + 10 * S;
+        const float bx0 = at0.x + pad, bx1 = at0.x + cw - pad;
+        auto line = [&](const std::string& s, ImU32 col) {  // (wrapped, at a fixed x)
+          const float h = f_small->CalcTextSizeA(f_small->FontSize, FLT_MAX, bx1 - bx0, s.c_str()).y;
+          cl->AddText(f_small, f_small->FontSize, ImVec2(bx0, by), col, s.c_str(), nullptr, bx1 - bx0);
+          by += h + 4 * S;
+        };
+        line("Outside training, a recolor only shows once it's baked. Bake again after changing it.", MUTED);
+        by += 4 * S;
+        const int left = recolor_test::bakeQueueLeft();
+        ImGui::SetCursorScreenPos(ImVec2(bx0, by));
+        push_widget_style();
+        ImGui::BeginDisabled(left > 0 || v.unsaved);
+        if (ImGui::SmallButton("Bake this slot")) recolor_test::bakeRecolor();
+        ImGui::SameLine();
+        static std::vector<recolor_test::BakeCandidate> cands;
+        static std::vector<char> ticked;
+        if (ImGui::SmallButton("Bake saved slots...")) {  // (a list first: nothing is baked until it's ticked and Bake is pressed)
+          cands = recolor_test::bakeCandidates();
+          ticked.assign(cands.size(), 0);
+          for (size_t i = 0; i < cands.size(); i++) ticked[i] = (cands[i].chr + "/" + cands[i].color) == v.fx_slot;  // (the slot being edited)
+          ImGui::OpenPopup("bake_pick");
+        }
+        ImGui::EndDisabled();
+        if (ImGui::BeginPopup("bake_pick")) {
+          ImGui::TextUnformatted("Tick the slots to bake, then press Bake ticked.");
+          ImGui::TextDisabled("Only the slot you're editing starts ticked.");
+          if (cands.empty()) ImGui::TextDisabled("No saved recolors found.");
+          const float x_slot = 30 * S, x_what = x_slot + 120 * S, x_note = x_what + 260 * S;
+          if (ImGui::BeginChild("bake_pick_list", ImVec2(x_note + 380 * S, (std::min)(14.0f, static_cast<float>(cands.size()) + 0.5f) * ImGui::GetFrameHeightWithSpacing()), true)) {
+            for (size_t i = 0; i < cands.size(); i++) {
+              const auto& cd = cands[i];
+              ImGui::PushID(static_cast<int>(i));
+              const float x0 = ImGui::GetCursorPosX();
+              bool on = ticked[i] != 0;
+              if (ImGui::Checkbox("##t", &on)) ticked[i] = on;
+              ImGui::SameLine(x0 + x_slot);
+              ImGui::AlignTextToFramePadding();
+              ImGui::Text("%s %s", cd.chr.c_str(), recolor_test::slotLabel(cd.color).c_str());
+              ImGui::SameLine(x0 + x_what);
+              const std::string what = cd.parts + (cd.effects ? std::string(cd.parts.empty() ? "" : " + ") + "effect colors" : std::string());
+              ImGui::TextUnformatted(what.c_str());
+              ImGui::SameLine(x0 + x_note);
+              if (!cd.missing.empty()) ImGui::TextColored(ImVec4(0.95f, 0.7f, 0.3f, 1), "can't bake %s yet: open %s in the editor once", cd.missing.c_str(), cd.chr.c_str());
+              else ImGui::TextDisabled("ready");
+              ImGui::PopID();
+            }
+          }
+          ImGui::EndChild();
+          std::vector<std::string> pick;
+          for (size_t i = 0; i < cands.size(); i++) if (ticked[i]) pick.push_back(cands[i].chr + "/" + cands[i].color);
+          ImGui::BeginDisabled(pick.empty());
+          if (ImGui::Button(("Bake ticked (" + std::to_string(pick.size()) + ")").c_str())) { recolor_test::bakeSlots(pick); ImGui::CloseCurrentPopup(); }
+          ImGui::EndDisabled();
+          ImGui::SameLine();
+          if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+        pop_widget_style();
+        by += CHIP_H * S + 6 * S;
+        line(left > 0 ? std::to_string(left) + (left == 1 ? " slot" : " slots") + " to bake..." : v.unsaved ? "Save first." : " ", left > 0 ? TEXT : DIM);
+        line("Bake saved slots... lists your saved recolors. Only the ones you tick are baked.", DIM);
+        by += 6 * S;
+        const std::vector<recolor_test::BakedSlot> baked = recolor_test::bakedSlots();
+        line("Baked slots (" + std::to_string(baked.size()) + ")", LABEL);
+        // a table at fixed columns: character, slot, when, size, the button
+        const float c_chr = bx0, c_slot = bx0 + text_w(f_small, "ABA_C02") + 18 * S, c_when = c_slot + text_w(f_small, "Color 99") + 18 * S,
+                    c_size = c_when + text_w(f_small, "2026-11-07 17:44") + 18 * S, c_btn = c_size + text_w(f_small, "999.9 MB") + 18 * S;
+        const float rh = CHIP_H * S + 4 * S;
+        for (size_t i = 0; i < baked.size(); i++) {
+          const auto& b = baked[i];
+          const float ty = by + (CHIP_H * S - f_small->FontSize) * 0.5f;
+          text(cl, f_small, ImVec2(c_chr, ty), TEXT, b.chr);
+          text(cl, f_small, ImVec2(c_slot, ty), TEXT, recolor_test::slotLabel(b.color));
+          text(cl, f_small, ImVec2(c_when, ty), MUTED, b.when);
+          char mb[24];
+          snprintf(mb, sizeof mb, "%.1f MB", b.mb);
+          text(cl, f_small, ImVec2(c_size - text_w(f_small, mb) + text_w(f_small, "999.9 MB"), ty), MUTED, b.unbaked ? std::string() : std::string(mb));
+          if (b.unbaked) text(cl, f_small, ImVec2(c_btn, ty), DIM, "unbaked (its files go at the next start)");
+          else if (b.stale) text(cl, f_small, ImVec2(c_btn, ty), DIM, "game updated: bake again");
+          else {
+            ImGui::PushID(static_cast<int>(9000 + i));
+            if (small_button(cl, "unbake", "Unbake", ImVec2(c_btn, by), left == 0)) recolor_test::unbake(b.chr, b.color);
+            ImGui::PopID();
+          }
+          by += rh;
+        }
+        if (baked.empty()) line("None yet.", DIM);
+        ImGui::SetCursorScreenPos(ImVec2(at0.x, by + 6 * S));
+        ImGui::Dummy(ImVec2(cw, 1));  // The page's height, for its scroll
       } else {
         {  // The slot's whole recolor, saved to a file, loaded from one, or copied onto another slot
           ImGui::Dummy(ImVec2(cw, 10 * S));
@@ -3703,6 +4636,36 @@ namespace menu_ui {
       ImGui::PopStyleColor(2);
     }
     tex_browser_draw();
+    {  // A bake's result, until OK. Fixed size: the lists scroll, nothing moves as they fill
+      static recolor_test::BakeResult r;
+      const bool up = recolor_test::bakeResult(r);
+      if (up && !ImGui::IsPopupOpen("bake_result")) ImGui::OpenPopup("bake_result");
+      push_widget_style();
+      const float bw = 620 * S;
+      ImGui::SetNextWindowSize(ImVec2(bw, 0), ImGuiCond_Always);
+      ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+      if (ImGui::BeginPopupModal("bake_result", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+        ImGui::PushTextWrapPos(bw - ImGui::GetStyle().WindowPadding.x);
+        ImGui::TextUnformatted(r.title.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        auto list = [&](const char* id, const char* head, const std::vector<std::string>& lines, float h) {
+          ImGui::TextDisabled("%s (%d)", head, static_cast<int>(lines.size()));
+          ImGui::BeginChild(id, ImVec2(0, h), true);
+          if (lines.empty()) ImGui::TextDisabled("none");
+          for (const std::string& l : lines) ImGui::TextWrapped("%s", l.c_str());
+          ImGui::EndChild();
+        };
+        if (r.ok) list("bake_in", "Baked", r.baked, 170 * S);
+        list("bake_out", r.ok ? "Not baked" : "Why", r.not_baked, (r.ok ? 110 : 200) * S);
+        ImGui::Spacing();
+        const float okw = 90 * S;
+        ImGui::SetCursorPosX(bw - okw - ImGui::GetStyle().WindowPadding.x);
+        if (ImGui::Button("OK", ImVec2(okw, 0)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) { recolor_test::bakeResultSeen(); ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+      }
+      pop_widget_style();
+    }
     // The editor's questions, shown when the window is collapsed too
     static bool recovered_answered = false;
     if (v.offer_recovery.empty()) recovered_answered = false;
@@ -3784,6 +4747,28 @@ namespace menu_ui {
       if (was_open && !open) forget_selection();
       was_open = open;
       if (open && !behind_game_menu) draw_colors();
+      static bool solo_was = false;
+      static ULONGLONG solo_since = 0;
+      const bool solo_now = !open && recolor_test::soloCamera() && !behind_game_menu;
+      if (solo_now && !solo_was) solo_since = GetTickCount64();  // (its help shows for a few seconds each time it turns on)
+      solo_was = solo_now;
+      if (solo_now) {  // the free camera without the editor: its mouse, and how it works
+        ImGuiIO& cio = ImGui::GetIO();
+        if (!cio.WantCaptureMouse) {
+          if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) recolor_test::cameraInput(cio.MouseDelta.x, cio.MouseDelta.y, 0.0f);
+          if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) recolor_test::cameraPan(cio.MouseDelta.x, cio.MouseDelta.y);
+          if (cio.MouseWheel != 0.0f) recolor_test::cameraInput(0.0f, 0.0f, cio.MouseWheel);
+        }
+        if (GetTickCount64() - solo_since < 7000) {
+          const char* help = "Free camera: left drag orbits, right drag pans, wheel zooms. With the fight frozen, WASD, Q/E and the arrows move it and R shows the whole fighter.";
+          ImDrawList* fg = ImGui::GetForegroundDrawList();
+          const ImVec2 sz = ImGui::CalcTextSize(help);
+          const ImVec2 p((cio.DisplaySize.x - sz.x) * 0.5f, 60 * S);
+          fg->AddRectFilled(ImVec2(p.x - 10 * S, p.y - 6 * S), ImVec2(p.x + sz.x + 10 * S, p.y + sz.y + 6 * S), IM_COL32(0, 0, 0, 190), 4 * S);
+          fg->AddText(p, IM_COL32(255, 255, 255, 255), help);
+        }
+      }
+      if (box_editor::isOpen() && !behind_game_menu) draw_box_editor(v);
       if (open && !behind_game_menu && g_texview) draw_texture_view();
       else recolor_test::textureViewOpen(false);
     }

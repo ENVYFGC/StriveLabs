@@ -10,11 +10,14 @@
 #include "imgui_overlay.h"
 namespace crash_log { void install(const std::filesystem::path& dir); }
 namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
-namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); bool setupRunning(); }
+namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); bool setupRunning();
+                         void toggleCamera(); bool soloCamera(); void soloCameraOff(); }
+#include "box_editor.h"
 #include "menu.h"
 #include "recordings.h"
 #include "replay_manager.h"
 #include "sigscan.h"
+#include "pak_mount.h"
 #include "game_state.h"
 #include "timeline.h"
 #include "tension_overlay.h"
@@ -140,7 +143,7 @@ bool hook_KeyJustPressed(void* controller, uint32_t mask)
 
 // The pause's style is the mod's setting, but with the color editor open the fight stops while the game
 // keeps running (style 1), so the editor's free camera and picking work on the frozen frame.
-static int pauseStyle() { return recolor_test::isOpen() && game_state.checkModeTraining() ? 1 : ModMenu::instance().pauseType(); }  // training only, since a replay keeps feeding inputs
+static int pauseStyle() { return (recolor_test::isOpen() || recolor_test::soloCamera()) && game_state.checkModeTraining() ? 1 : ModMenu::instance().pauseType(); }  // training only, since a replay keeps feeding inputs (the free camera needs the game drawing too)
 
 class PauseManager
 {
@@ -356,7 +359,9 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     handshake::update(GameState);
     if (const int bv = combo_trials::battleVersion(); bv > 0)  // paused and online too
       imgui_overlay::setBattleVersion(battleVersionName(bv) + (combo_trials::onlineVersionInUse() ? " (online)" : ""));
-    if (!game_state.checkMode())
+    const bool mode_handled = game_state.checkMode();  // (also brings the mode up to date for the line below)
+    if (!game_state.checkModeTraining()) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); }  // (never Script & boxes' edits, or the free camera, outside training)
+    if (!mode_handled)
     {
         g_training_pending = 0;
         combo_trials::update(false);  // a trial's settings never go into other modes
@@ -382,6 +387,10 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (keybindings.takeAction(binds::TRAINING_RECORD)) pressed |= kFakeRecord;
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
     if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
+    // Freeze: the timeline's pause, which holds the fight and keeps the game drawing (F3's holds it all), in training
+    if (keybindings.takeAction(binds::BOX_PAUSE) && game_state.checkModeTraining()) ModMenu::instance().click(MenuClick{MenuClick::Type::TlPlay});
+    if (keybindings.takeAction(binds::BOX_STEP) && game_state.checkModeTraining()) ModMenu::instance().click(MenuClick{MenuClick::Type::TlStep});
+    if (keybindings.takeAction(binds::FREE_CAMERA) && game_state.checkModeTraining()) recolor_test::toggleCamera();  // (with or without the color editor)
     combo_trials::update(game_state.checkModeTraining());
     game_menu::update();
     if (game_state.checkModeTraining() && orig_KeyJustPressed) g_training_pending |= pressed;
@@ -394,7 +403,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if ((style == 0 && pause_manager.advancing()) ||
         (style == 1 && pause_manager.cinematicShouldAdvance()) || scan_hold)
     {
-        if (game_state.checkModeTraining()) { recolor_test::update(false); recolor_test::afterBattleUpdate(); }  // paused here too
+        if (game_state.checkModeTraining()) { recolor_test::update(false); recolor_test::afterBattleUpdate(); box_editor::tick(); }  // paused here too
         return;
     }
 
@@ -431,7 +440,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
     if (game_state.checkModeTraining()) damage_panel::update(round_started);
     if (game_state.checkModeTraining()) recolor_test::update(round_started);
-    if (game_state.checkModeTraining() && !Timeline::instance().canAdvanceFrame()) recolor_test::afterBattleUpdate();  // the free camera, paused
+    if (game_state.checkModeTraining() && !Timeline::instance().canAdvanceFrame()) { recolor_test::afterBattleUpdate(); box_editor::tick(); }  // the free camera, paused
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
     if (g_training_pending)
     {
@@ -441,7 +450,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
                   + (g_training_press & kFakeReset ? "reset " : "") + "bind");
     }
     orig_UpdateBattle(GameState, DeltaTime);
-    if (game_state.checkModeTraining()) recolor_test::afterBattleUpdate();
+    if (game_state.checkModeTraining()) { recolor_test::afterBattleUpdate(); box_editor::tick(); }
     ReplayManager::instance().onBattleFrameProcessed();
 
     if (game_state.matchStarted)
@@ -589,9 +598,10 @@ void hook_UpdateSystem(uintptr_t System)
       was_fight = g_any_fight;
     }
     if (!g_any_fight) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
+    if (const int mode = game_state.currentMode(); mode >= 0 && mode != 8) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); }  // (the menus too: never a Script & boxes edit while the next fight loads; 8 is training)
     // Saved recolors on the menus' models (character select), only with no fight at all.
     if (!g_any_fight) recolor_test::menuUpdate(false);
-    else if (!game_state.checkModeTraining()) recolor_test::menuUpdate(true);  // any other fight gets the saved recolors on the fighters
+    else if (!game_state.checkModeTraining()) recolor_test::menuUpdate(true);  // (any other fight: the saved recolors show by their bakes)
     else recolor_test::menuRelease();
     dropKeysOutsideFight();
     // The pads' key controllers share one vtable; its "just pressed" check is the
@@ -750,7 +760,9 @@ public:
         crash_log::install(working_dir);  // first hard fault -> combo_log.txt + StriveLabs_crash.dmp, for user reports
         select_memory::init(working_dir);
         recolor_test::init(working_dir);
+        box_editor::init(working_dir);
         recolor_share::init(working_dir);
+        pak_mount::probe(working_dir);  // (finds and checks the engine's pak mount and logs it; mounts nothing)
         ReplayManager::instance().logStatus();
     }
 };

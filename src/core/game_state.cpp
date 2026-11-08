@@ -116,6 +116,11 @@ bool GameState::checkModeReplay() const
     return last_mode == GAME_MODE_REPLAY;
 }
 
+int GameState::currentMode() const
+{
+    return GameCommon && orig_GetGameMode ? orig_GetGameMode(GameCommon) : -1;
+}
+
 bool GameState::checkModeTraining() const
 {
     return last_mode == GAME_MODE_TRAINING;

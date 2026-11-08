@@ -24,7 +24,11 @@
 #include "arcsys.h"
 #include "combo_log.h"
 #include "combo_trials.h"
+#include "timeline.h"
 #include "sigscan.h"
+#include "bake_core.h"
+#include "bake_pkg.h"
+#include "pak_mount.h"
 
 #include <Unreal/FString.hpp>
 #include <Unreal/Hooks.hpp>
@@ -52,6 +56,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -168,19 +173,48 @@ namespace {
     return nullptr;
   }
   std::vector<UObject*> fighters() {
+    // Found once per fight (a scan of every loaded object), then kept while every one of them is still alive: a
+    // position reset keeps the same fighters, a new fight's are found again
+    struct Held {  // (as Kept below: still in its slot of the object list, not being destroyed)
+      UObject* obj; const uint8_t* item;
+      bool alive() const { return item && *reinterpret_cast<UObject* const*>(item) == obj && !(*reinterpret_cast<const int32_t*>(item + 8) & ((1 << 28) | (1 << 29))); }
+    };
+    static std::vector<Held> kept;
+    static void* kept_for = nullptr;
+    void* const fight = asw_engine::get();
+    // (a slot reused by another object while updates paused is caught by its class; fewer than 2 fighters
+    // isn't trusted, as the second may spawn later)
+    auto isPawn = [](UObject* o) {
+      for (UStruct* k = o->GetClassPrivate(); k; k = k->GetSuperStruct()) if (k->GetName() == STR("REDPawnPlayer")) return true;
+      return false;
+    };
+    if (fight && fight == kept_for && kept.size() >= 2 && std::all_of(kept.begin(), kept.end(), [&](const Held& k) { return k.alive() && isPawn(k.obj); })) {
+      std::vector<UObject*> out;
+      for (const Held& k : kept) out.push_back(k.obj);
+      return out;
+    }
     std::vector<UObject*> pawns;
     UObjectGlobals::FindAllOf(STR("REDPawnPlayer"), pawns);
     pawns.erase(std::remove_if(pawns.begin(), pawns.end(), [](UObject* p) {
       return p->GetFullName().find(STR("PersistentLevel")) == StringType::npos;
     }), pawns.end());
     std::sort(pawns.begin(), pawns.end());
+    kept.clear();
+    for (UObject* p : pawns) kept.push_back({p, reinterpret_cast<const uint8_t*>(p->GetObjectItem())});
+    kept_for = pawns.empty() ? nullptr : fight;
     return pawns;
   }
-  std::vector<UObject*> fighterParts() {
-    std::vector<UObject*> pawns = fighters(), comps, out;
-    UObjectGlobals::FindAllOf(STR("SkeletalMeshComponent"), comps);
-    for (UObject* c : comps)
-      if (std::find(pawns.begin(), pawns.end(), c->GetOuterPrivate()) != pawns.end()) out.push_back(c);
+  std::vector<UObject*> fighterParts() {  // Each fighter's own meshes (asked of it, not a scan of every loaded object)
+    static UClass* skel = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.SkeletalMeshComponent"));
+    std::vector<UObject*> out;
+    if (!skel) return out;
+    for (UObject* pawn : fighters()) {
+      try {  // (UE4SS throws if the engine lacks the function: no meshes, never a throw out of the battle hook)
+        auto comps = static_cast<AActor*>(pawn)->K2_GetComponentsByClass(skel);
+        for (UObject* c : comps)
+          if (c && c->GetOuterPrivate() == pawn) out.push_back(c);  // (as the scan found them: the fighter's own)
+      } catch (...) {}
+    }
     return out;
   }
   UObject* renderLib() { static UObject* l = cdo(STR("/Script/Engine.Default__KismetRenderingLibrary")); return l; }
@@ -903,7 +937,7 @@ namespace {
   View g_view;
   struct Req { int kind; int region; uint32_t rgb; std::vector<Pick> picks = {}; std::vector<int> regions = {}; std::string text = {}; float f[4] = {};
                std::vector<float> nums = {}; };
-  enum { kToggle, kLit, kShadow, kSelect, kReset, kNext, kFollow, kPairs, kBlackout, kCamera, kFollowSel, kPart, kRemap, kExport, kVec, kVecReset, kRename, kLogDrawn, kFx, kFxReset, kCapture, kCap, kCapReset, kLists, kExportRecolor, kImportRecolor, kCopySlot, kReread, kSave, kDiscardClose, kCancelClose, kUndo, kRedo, kRecovery, kPickAt, kPaintBegin, kPaintTo, kPaintEnd, kPaintFill, kPaintClear, kImportTex, kGroupSame, kPaletteSave, kPaletteLoad, kPaletteEdit, kPaletteDelete, kListEffects, kMat, kMatReset, kHide, kOnScreen, kPaintShape, kResetColor, kFxOne, kFxOneReset };
+  enum { kToggle, kLit, kShadow, kSelect, kReset, kNext, kFollow, kPairs, kBlackout, kCamera, kFollowSel, kPart, kRemap, kExport, kVec, kVecReset, kRename, kLogDrawn, kFx, kFxReset, kCapture, kCap, kCapReset, kLists, kExportRecolor, kImportRecolor, kCopySlot, kReread, kSave, kDiscardClose, kCancelClose, kUndo, kRedo, kRecovery, kPickAt, kPaintBegin, kPaintTo, kPaintEnd, kPaintFill, kPaintClear, kImportTex, kGroupSame, kPaletteSave, kPaletteLoad, kPaletteEdit, kPaletteDelete, kListEffects, kMat, kMatReset, kHide, kOnScreen, kPaintShape, kResetColor, kFxOne, kFxOneReset, kBake, kBakeAll, kUnbake };
   std::vector<Req> g_reqs;
 
   bool g_open = false;
@@ -1818,15 +1852,6 @@ namespace {
     auto* n = m->GetValuePtrByPropertyNameInChain<FName>(STR("ColorPatternName"));
     return n ? narrow(n->ToString()) : std::string();
   }
-  std::set<UObject*> fxLiveModules() {
-    std::set<UObject*> out;
-    for (const auto& [cls, prop] : kFxClasses) {
-      std::vector<UObject*> all;
-      UObjectGlobals::FindAllOf(cls, all);
-      out.insert(all.begin(), all.end());
-    }
-    return out;
-  }
   void distWrite(uint8_t* d, const std::vector<float>& orig, const float* values) {  // values is laid out like orig (table, MinValueVec, MaxValueVec)
     if (!d) return;
     FArr* v = reinterpret_cast<FArr*>(d + 8);
@@ -1880,18 +1905,23 @@ namespace {
     }
   }
   void fxRestore() {  // Puts the game's values back on every slot (the asset was kept loaded, but it's still checked), then lets go
-    std::set<UObject*> live;  // The copies, only where the effect is still loaded
-    if (std::any_of(g_fx_slots.begin(), g_fx_slots.end(), [](const auto& kv) {
-          return std::any_of(kv.second.list.begin(), kv.second.list.end(), [](const FxColor& f) { return fxChanged(f) && !f.copies.empty(); });
-        }))
-      live = fxLiveModules();
+    // A copy only where its module is still loaded: in its slot of the object list, not being destroyed, and still an
+    // effect module (one check each, not a list of every loaded module: that took ~50 ms on leaving a fight)
+    auto loaded = [](const FxCopy& c) {
+      if (!c.k.alive()) return false;
+      for (UStruct* k = c.module->GetClassPrivate(); k; k = k->GetSuperStruct()) {  // (the class or a parent: as the scan matched them)
+        const auto name = k->GetName();
+        for (const auto& [cls, prop] : kFxClasses) if (name == cls) return true;
+      }
+      return false;
+    };
     for (auto& [key, slot] : g_fx_slots) {
       UObject* asset = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, slot.path.c_str());
       for (FxColor& f : slot.list) {
         if (f.edited && fxModuleListed(asset, f.module)) fxWrite(f, f.orig.data());
         if (fxChanged(f))
           for (const FxCopy& c : f.copies)
-            if (c.k.alive() && live.count(c.module)) distWrite(fxDist(c.module, c.prop), c.orig, c.orig.data());
+            if (loaded(c)) distWrite(fxDist(c.module, c.prop), c.orig, c.orig.data());
       }
       if (slot.held && asset == slot.held && slot.held->GetObjectItem()) slot.held->GetObjectItem()->UnsetRootSet();
     }
@@ -4602,11 +4632,32 @@ namespace {
     }
   }
   void shareSaveNow();
+  // A match's mesh scans, timed: each walks every object, so it's what a fight
+  // outside training pays. Logged every 10 s of a fight: how many, their average and slowest, and the material pool's.
+  struct MatchScans { int n = 0, pool_n = 0; double ms = 0, slowest = 0, pool_ms = 0; Clock::time_point since = Clock::now(); } g_match_scans;
+  struct ScanTimer {
+    Clock::time_point t0 = Clock::now();
+    ~ScanTimer() {
+      MatchScans& m = g_match_scans;
+      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      m.n++;
+      m.ms += ms;
+      m.slowest = (std::max)(m.slowest, ms);
+      if (Clock::now() - m.since < std::chrono::seconds(10)) return;
+      char b[200];
+      snprintf(b, sizeof(b), "perf (match): %d mesh scans, %.2f ms each, slowest %.2f ms; %d material pool scans, %.2f ms each", m.n, m.ms / m.n, m.slowest, m.pool_n,
+               m.pool_n ? m.pool_ms / m.pool_n : 0.0);
+      COMBO_LOG(b);
+      m = MatchScans{};
+    }
+  };
   void menuUpdateNow(bool in_fight) {
     shareSaveNow();  // A save asked for from the panel
     menuDropOrphans();
     if (asw_engine::get() && !in_fight) { menuRelease_(); return; }  // Training's fight belongs to the editor
     if (g_menu_tick++ % (in_fight ? 60 : 30)) return;  // Every half second or so, or every second in a fight since it looks through every mesh
+    std::optional<ScanTimer> timer;
+    if (in_fight) timer.emplace();
     std::set<UObject*> fight;  // Any fight's own materials are never touched from here
     for (const Target& t : g_targets) fight.insert(t.mids.begin(), t.mids.end());
     std::map<std::string, Target> found;
@@ -4661,7 +4712,12 @@ namespace {
         for (auto& [key, t] : found) {
           auto& c = g_menu_copies[key];
           if (c.first != t.mids) {
-            if (pool.empty()) UObjectGlobals::FindAllOf(STR("REDMaterialInstanceDynamic"), pool);
+            if (pool.empty()) {
+              const Clock::time_point p0 = Clock::now();
+              UObjectGlobals::FindAllOf(STR("REDMaterialInstanceDynamic"), pool);
+              g_match_scans.pool_n++;
+              g_match_scans.pool_ms += std::chrono::duration<double, std::milli>(Clock::now() - p0).count();
+            }
             c.first = t.mids;
             c.second.clear();
             for (UObject* m : poolCopies(t, pool, on_meshes, taken)) c.second.push_back(keep(m));
@@ -4865,9 +4921,18 @@ namespace {
     });
     return shared ? fileSafe(partName(o.kind) + " (" + o.kind + ")") : n;
   }
-  bool writeBytes(const std::filesystem::path& file, const std::vector<uint8_t>& bytes) {
-    std::ofstream f(file, std::ios::binary | std::ios::trunc);
-    return !bytes.empty() && f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())).good();
+  bool writeBytes(const std::filesystem::path& file, const std::vector<uint8_t>& bytes) {  // (whole or not at all: a temp file, then renamed)
+    if (bytes.empty()) return false;
+    std::filesystem::path tmp = file;
+    tmp += L".tmp";
+    std::error_code ec;
+    {
+      std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      if (!f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())).good()) { f.close(); std::filesystem::remove(tmp, ec); return false; }
+    }
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) { std::filesystem::remove(tmp, ec); return false; }
+    return true;
   }
   void writeMatColors(const std::vector<VecGroup>& rows, const std::filesystem::path& file) {  // the colors the materials draw with besides the textures (glow, edges)
     std::ofstream f(file, std::ios::trunc);
@@ -5400,7 +5465,12 @@ namespace {
     }
     if (!ready.empty()) g_look_note.clear();  // (a load's note, said already)
   }
+  void bakeTick();
+  void bakeMountAll();
+  std::atomic<int> g_bake_left{0};  // slots still to bake, for the UI (read off the game thread)
   void exportTick() {  // Game thread, every update. One part at a time when no other encode runs (each ~half a GB at 4K)
+    bakeMountAll();
+    bakeTick();
     g_bool_orphans.erase(std::remove_if(g_bool_orphans.begin(), g_bool_orphans.end(),
                                         [](auto& f) { return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }), g_bool_orphans.end());
     lookWaitTick();
@@ -5461,6 +5531,859 @@ namespace {
     }
     g_view_dirty = true;
     g_export.reset();
+  }
+
+  // ---- baking: the slot's saved recolor written into a pak and mounted (no scan, no runtime swap) ----------
+  // Every edited texture becomes a copy under <slot folder>/SL_baked/ (the game's own is never overwritten, so no
+  // other slot or character changes, shared textures included), and every material file of the slot folder that
+  // uses it is pointed at the copy. Material colors go into the slot's material files, effect colors into its
+  // palette. The game's files are read through the engine (pak_mount), on the game thread.
+  struct BakeTex { std::string path; bake::Texture tex; bool base = true; };  // ("/Game/.../SOL_base")
+  struct BakePart {
+    std::string kind;
+    ExportPart gather;
+    std::vector<BakeTex> texs;  // its BaseMap, then its SssMap
+  };
+  struct BakeMic { std::string path; bake::Bytes uasset, uexp; };
+  struct BakeVec { std::string mic, param, label; float rgba[4]; };
+  struct BakeFx { std::string label; float rgb[3]; };
+  struct BakeJob {
+    std::string chr, color, slot_dir;  // slot_dir "/Game/Chara/SOL/Costume01/Material/Color02"
+    std::vector<BakePart> parts;
+    std::vector<BakeMic> mics;
+    std::vector<BakeVec> vecs;
+    std::vector<BakeFx> fx;  // the slot's saved effect colors
+    BakeMic ptc;             // its palette, as the game ships it
+    std::vector<std::string> notes;  // what isn't baked, and why (for the status and the manifest)
+    bool follow = true;
+    std::filesystem::path pak;
+    std::wstring sig;
+    // results
+    std::vector<std::string> done;  // what went in
+    std::vector<std::pair<std::string, std::string>> moved;  // (game texture, our copy), for the manifest
+    std::string error;
+    std::future<bool> job;
+  };
+  std::unique_ptr<BakeJob> g_bake;
+  std::mutex g_bake_result_m;
+  recolor_test::BakeResult g_bake_result;
+  bool g_bake_result_up = false;
+  void showBakeResult(bool ok, const std::string& title, const std::vector<std::string>& baked, const std::vector<std::string>& not_baked) {
+    std::lock_guard<std::mutex> lk(g_bake_result_m);
+    g_bake_result = {ok, title, baked, not_baked};
+    g_bake_result_up = true;
+  }
+
+  std::string packageOf(UObject* o) {  // "Texture2D /Game/Chara/SOL/.../SOL_base.SOL_base" -> "/Game/Chara/SOL/.../SOL_base"
+    if (!o) return {};
+    std::string n = narrow(o->GetFullName());
+    const size_t sp = n.find(' '), dot = n.rfind('.');
+    if (sp == std::string::npos || dot == std::string::npos || dot < sp) return {};
+    return n.substr(sp + 1, dot - sp - 1);
+  }
+  std::wstring gameFile(const std::string& pkg, const char* ext) {  // "/Game/X" -> L"../../../RED/Content/X.uasset"
+    const std::string rel = "../../../RED/Content/" + pkg.substr(6) + ext;
+    return std::wstring(rel.begin(), rel.end());
+  }
+  std::string pakName(const std::string& pkg, const char* ext) { return "RED/Content/" + pkg.substr(6) + ext; }
+  std::filesystem::path bakedDir() { return g_dir / "baked"; }
+  std::mutex g_bake_stale_m;
+  std::set<std::string> g_bake_stale;  // ("CHR_ColorNN") bakes made on another build of the game: not mounted
+  std::string gameBuild() {  // the game's build as its pak shows it (size and time): changes with every game update
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const std::filesystem::path pak = std::filesystem::path(exe).parent_path().parent_path().parent_path() / "Content" / "Paks" / "pakchunk0-WindowsNoEditor.pak";
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(pak, ec);
+    if (ec) return {};
+    const auto t = std::filesystem::last_write_time(pak, ec);
+    if (ec) return {};
+    return std::to_string(size) + "_" + std::to_string(t.time_since_epoch().count());
+  }
+  // Our copy of a game texture: <slot folder>/SL_baked/<source character>_<source slot>/<name> (unique per source;
+  // the object name stays, as the package's own path must end in it)
+  std::string copyPath(const std::string& slot_dir, const std::string& src) {
+    const size_t c = src.find("/Chara/"), slash = src.rfind('/');
+    std::string chr = c == std::string::npos ? "X" : src.substr(c + 7, src.find('/', c + 7) - c - 7);
+    const size_t f = src.rfind('/', slash - 1);
+    const std::string folder = f == std::string::npos ? "X" : src.substr(f + 1, slash - f - 1);
+    return slot_dir + "/SL_baked/" + chr + "_" + folder + src.substr(slash);
+  }
+  // The latest manifest's copies for a slot: our copy -> the game texture it was made from
+  std::map<std::string, std::string> bakedCopies(const std::string& chr, const std::string& color) {
+    std::map<std::string, std::string> out;
+    std::map<int, std::filesystem::path> files;  // every manifest of the slot, oldest first (a later one wins)
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+      const std::string stem = e.path().stem().string();
+      if (e.path().extension() != ".txt" || stem.rfind(chr + "_" + color + "_", 0) != 0) continue;
+      files[std::atoi(stem.c_str() + chr.size() + color.size() + 2)] = e.path();
+    }
+    for (const auto& [n, file] : files)
+      for (const std::string& l : readLines(file)) {
+        if (l.rfind("moved\t", 0) != 0) continue;
+        const size_t t2 = l.find('\t', 6);
+        if (t2 != std::string::npos) out[l.substr(t2 + 1)] = l.substr(6, t2 - 6);
+      }
+    return out;
+  }
+  // A slot folder's material file as the game ships it. Once a bake of the slot is mounted, the engine returns
+  // ours, so the first bake keeps the game's own under baked/orig/ and later bakes start from those.
+  std::set<std::string> g_baked_slots;  // "CHR/ColorNN" with a bake mounted (this session or at the start)
+  bool gameOriginal(const std::string& slot, const std::string& pkg, const char* ext, bake::Bytes& out) {
+    const std::filesystem::path keep = bakedDir() / "orig" / (pkg.substr(6) + ext);
+    std::error_code ec;
+    auto ours = [](const bake::Bytes& b) {  // (a file of ours, whoever mounted it: it names one of our copies)
+      static const std::string tag = "/SL_baked/";
+      return std::search(b.begin(), b.end(), tag.begin(), tag.end()) != b.end();
+    };
+    if (std::filesystem::exists(keep, ec)) { out = readBytes(keep); return !out.empty() && !ours(out); }
+    if (g_baked_slots.count(slot)) {  // A bake of the slot is on: refused only if one of its paks holds this file (ours would come back)
+      const std::string want = "../../../" + pakName(pkg, ext);
+      const std::string prefix = slot.substr(0, slot.find('/')) + "_" + slot.substr(slot.find('/') + 1) + "_";
+      for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+        if (e.path().extension() != ".pak" || e.path().stem().string().rfind(prefix, 0) != 0) continue;
+        std::vector<std::string> names;
+        if (!bake::pakNames(e.path().wstring(), names)) return false;  // (can't tell: refuse)
+        if (std::find(names.begin(), names.end(), want) != names.end()) return false;
+      }
+    }
+    if (!pak_mount::readFile(gameFile(pkg, ext), out) || ours(out)) return false;
+    std::filesystem::create_directories(keep.parent_path(), ec);
+    return writeBytes(keep, out);
+  }
+
+  bool bakeWorker(BakeJob* j) {  // Worker. Reads only the job
+    struct Count { ~Count() { g_encoding--; } } count;
+    std::vector<bake::PakFile> files;
+    std::vector<std::pair<std::string, std::string>> moved;  // (game texture, our copy)
+    for (BakePart& bp : j->parts) {
+      ExportPart& p = bp.gather;
+      if (!p.worn) p.worn = prepareWorn(p.map, p.base, p.sss);
+      if (!p.worn) { j->notes.push_back(partName(bp.kind) + ": its colors couldn't be read"); continue; }
+      Image ob, os;
+      buildW(*p.worn, j->follow, p.ed, {}, ob, os);
+      paintOver(p.paint, ob, os);
+      for (BakeTex& bt : bp.texs) {
+        const Image& im = bt.base ? ob : os;
+        const Image& was = bt.base ? p.worn->base : p.worn->sss;
+        std::string why;
+        if (!bt.tex.parse(why)) { j->notes.push_back(partName(bp.kind) + ": " + bt.path + ": " + why); continue; }
+        if (im.w != bt.tex.mips[0].w || im.h != bt.tex.mips[0].h) { j->notes.push_back(partName(bp.kind) + ": the editor's picture isn't the texture's size"); continue; }
+        const size_t enc = bake::writeImage(bt.tex, im.px, was.px, why);
+        if (!why.empty()) { j->notes.push_back(partName(bp.kind) + ": " + why); continue; }
+        if (enc == 0) continue;  // (unchanged: the game's own stays)
+        const std::string copy = copyPath(j->slot_dir, bt.path);
+        bake::Package pk;
+        bake::Bytes a, e;
+        if (!pk.parse(bt.tex.uasset, bt.tex.uexp, why) || !bake::renameTexture(pk, copy, a, e, why) || !bake::verifyPackage(a, e, why)) {
+          j->notes.push_back(partName(bp.kind) + ": " + why);
+          continue;
+        }
+        files.push_back({pakName(copy, ".uasset"), std::move(a)});
+        files.push_back({pakName(copy, ".uexp"), std::move(e)});
+        files.push_back({pakName(copy, ".ubulk"), bt.tex.ubulk});
+        moved.push_back({bt.path, copy});
+        j->moved.push_back({bt.path, copy});
+        j->done.push_back(bt.path.substr(bt.path.rfind('/') + 1) + " (" + std::to_string(enc) + " blocks)");
+      }
+      p.worn.reset();
+    }
+    // Every material of the slot folder that uses a moved texture points at the copy; the colors go in
+    std::set<std::string> used, matched;
+    for (BakeMic& m : j->mics) {
+      bake::Bytes a = m.uasset, e = m.uexp;
+      bool changed = false;
+      std::string why;
+      bool ok = true;
+      for (const auto& [from, to] : moved) {
+        bake::Package pk;
+        if (!pk.parse(a, e, why)) { ok = false; break; }
+        bool imports = false, already = false;
+        for (const auto& imp : pk.imports) { imports |= pk.name(imp[5]) == from; already |= pk.name(imp[5]) == to; }
+        if (already) used.insert(from);
+        if (!imports) continue;
+        bake::Bytes a2, e2;
+        if (!bake::repoint(pk, from, to, a2, e2, why)) { ok = false; break; }
+        a.swap(a2); e.swap(e2);
+        changed = true;
+        used.insert(from);
+      }
+      for (const BakeVec& v : j->vecs) {
+        if (!ok || _stricmp(v.mic.c_str(), m.path.c_str()) != 0) continue;
+        matched.insert(v.mic + "\t" + v.param);
+        bake::Package pk;
+        if (!pk.parse(a, e, why)) { ok = false; break; }
+        bake::Bytes a2, e2;
+        bool added = false;
+        const uint8_t zero[16] = {};
+        if (!bake::setVector(pk, v.param, v.rgba, zero, a2, e2, added, why)) { j->notes.push_back(v.label + " (" + v.param + "): " + why); continue; }
+        a.swap(a2); e.swap(e2);
+        changed = true;
+        j->done.push_back(v.label + " on " + m.path.substr(m.path.rfind('/') + 1) + (added ? " (added)" : ""));
+      }
+      if (!ok || (changed && !bake::verifyPackage(a, e, why))) { j->error = m.path + ": " + why; return false; }  // A material we can't write right: nothing is baked
+      if (!changed) continue;
+      files.push_back({pakName(m.path, ".uasset"), std::move(a)});
+      files.push_back({pakName(m.path, ".uexp"), std::move(e)});
+    }
+    if (!j->fx.empty()) {  // The effect colors, into the slot's palette
+      bake::Bytes a = j->ptc.uasset, e = j->ptc.uexp;
+      std::string why;
+      bool any = false;
+      for (const BakeFx& f : j->fx) {
+        bake::Package pk;
+        bake::Bytes a2, e2;
+        if (!pk.parse(a, e, why)) { j->error = "the effect palette: " + why; return false; }
+        if (!bake::setEffectColor(pk, f.label, f.rgb, a2, e2, why)) { j->notes.push_back("effect color " + f.label + ": " + why); continue; }
+        a.swap(a2); e.swap(e2);
+        any = true;
+        j->done.push_back("effect color " + f.label);
+      }
+      if (any) {
+        if (!bake::verifyPackage(a, e, why)) { j->error = "the effect palette: " + why; return false; }
+        files.push_back({pakName(j->ptc.path, ".uasset"), std::move(a)});
+        files.push_back({pakName(j->ptc.path, ".uexp"), std::move(e)});
+      }
+    }
+    for (const auto& [from, to] : moved)
+      if (!used.count(from)) j->notes.push_back(from.substr(from.rfind('/') + 1) + ": no material in the slot's folder uses it, so it doesn't show");
+    for (const BakeVec& v : j->vecs)
+      if (!matched.count(v.mic + "\t" + v.param)) j->notes.push_back(v.label + ": its material file " + v.mic + " isn't among the slot's");
+    if (files.empty()) { j->error = "nothing to bake"; return false; }
+    std::string why;
+    std::error_code ec;
+    std::filesystem::create_directories(j->pak.parent_path(), ec);
+    const std::filesystem::path tmp = std::filesystem::path(j->pak).replace_extension(".tmp");  // (renamed to .pak only once whole and checked)
+    if (!bake::writePak(tmp.wstring(), files, why) || !bake::checkPak(tmp.wstring(), files, why)) {
+      std::filesystem::remove(tmp, ec);
+      j->error = "the pak: " + why;
+      return false;
+    }
+    std::filesystem::copy_file(j->sig, std::filesystem::path(j->pak).replace_extension(".sig"), std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) { std::filesystem::remove(tmp, ec); j->error = "the game's .sig couldn't be copied"; return false; }
+    std::filesystem::rename(tmp, j->pak, ec);
+    if (ec) { std::filesystem::remove(tmp, ec); std::filesystem::remove(std::filesystem::path(j->pak).replace_extension(".sig"), ec); j->error = "the pak couldn't be put in place"; return false; }
+    return true;
+  }
+
+  int bakeOrder() {  // Each bake mounts above every earlier one (and above every ~mods pak: those are 3 or 103)
+    int n = 1000;
+    for (const std::string& l : readLines(bakedDir() / "order.txt")) n = (std::max)(n, std::atoi(l.c_str()));
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+      const std::string stem = e.path().stem().string();
+      if (e.path().extension() == ".pak" && stem.rfind('_') != std::string::npos) n = (std::max)(n, std::atoi(stem.c_str() + stem.rfind('_') + 1));
+    }
+    return n + 1;
+  }
+
+  // The slot folder's material files, as the game ships them (game thread)
+  bool bakeReadFolder(BakeJob& j, const std::string& slot, std::string& err) {
+    const std::wstring dir = materialDir(j.chr, j.color);
+    std::vector<std::wstring> files;
+    if (!pak_mount::listDir(L"../../../RED/Content/" + dir.substr(6), files) || files.empty()) { err = "the slot's folder couldn't be listed"; return false; }
+    for (const std::wstring& f : files) {
+      const std::string n = narrow(f);
+      const size_t slash = n.rfind('/');
+      if (slash == std::string::npos || n.size() < 7 || n.compare(n.size() - 7, 7, ".uasset") != 0 || n.compare(slash + 1, 3, "MI_") != 0) continue;
+      if (n.find("/SL_baked/") != std::string::npos) continue;
+      BakeMic m;
+      m.path = j.slot_dir + "/" + n.substr(slash + 1, n.size() - 7 - slash - 1);
+      if (!gameOriginal(slot, m.path, ".uasset", m.uasset) || !gameOriginal(slot, m.path, ".uexp", m.uexp)) {
+        err = "the game's own " + m.path.substr(m.path.rfind('/') + 1) + " isn't known";
+        return false;
+      }
+      j.mics.push_back(std::move(m));
+    }
+    return true;
+  }
+  // The saved effect colors ("label<TAB>r g b"); "label@effect" is an effect's own, in an effect every slot uses
+  void bakeAddFx(BakeJob& j, const std::string& slot) {
+    for (const std::string& l : readLines(fxFile(j.chr, j.color))) {
+      const size_t tab = l.find('\t');
+      if (tab == std::string::npos) continue;
+      const std::string label = l.substr(0, tab);
+      BakeFx f{label, {}};
+      std::istringstream v(l.substr(tab + 1));
+      if (!(v >> f.rgb[0] >> f.rgb[1] >> f.rgb[2])) continue;
+      if (label.find('@') != std::string::npos) { j.notes.push_back("effect color " + label + ": in an effect every color of the character shares, so it isn't baked"); continue; }
+      j.fx.push_back(f);
+      // (Effects whose modules hold this color's values take it from the slot's palette when they load, e.g. Tyrant Rave,
+      // Volcanic Viper's ash and Heavy Mob Cemetery)
+    }
+    std::error_code fec;
+    if (std::filesystem::exists(capFile(slot), fec))
+      j.notes.push_back("captured effect colors: shared by every color of the character, so they stay training-only");
+    if (!j.fx.empty()) {
+      j.ptc.path = j.slot_dir + "/PTCColorAndMaterial";
+      if (!gameOriginal(slot, j.ptc.path, ".uasset", j.ptc.uasset) || !gameOriginal(slot, j.ptc.path, ".uexp", j.ptc.uexp)) {
+        j.notes.push_back("effect colors: the game's own palette isn't known");
+        j.fx.clear();
+      }
+    }
+  }
+  // The job onto a worker (it becomes g_bake); false if there's no thread
+  bool bakeLaunch(std::unique_ptr<BakeJob> j) {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    j->sig = (std::filesystem::path(exe).parent_path().parent_path().parent_path() / "Content" / "Paks" / "pakchunk0-WindowsNoEditor.sig").wstring();
+    const int order = bakeOrder();
+    j->pak = bakedDir() / (j->chr + "_" + j->color + "_" + std::to_string(order) + ".pak");
+    g_encoding++;
+    try { j->job = std::async(std::launch::async, bakeWorker, j.get()); }
+    catch (...) { g_encoding--; return false; }
+    COMBO_LOG("bake: " + j->chr + " " + j->color + ": " + std::to_string(j->parts.size()) + " parts, " + std::to_string(j->vecs.size()) + " material colors, " +
+              std::to_string(j->fx.size()) + " effect colors, " + std::to_string(j->mics.size()) + " material files in its folder");
+    g_status = "Baking " + j->chr + " " + j->color + "...";
+    g_bake = std::move(j);
+    g_view_dirty = true;
+    return true;
+  }
+
+  void bakeStart(const Target& t) {  // Game thread
+    if (g_bake || g_export || g_encoding != 0) { g_status = "Busy with an export, bake or picture. Try again in a moment."; return; }
+    if (!pak_mount::found()) { g_status = "Can't bake: the game's pak mount wasn't found (see combo_log.txt)."; return; }
+    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved) { g_status = "Save first: the bake takes the saved recolor."; return; }
+    const ULONGLONG t0 = GetTickCount64();
+    const std::string slot = t.chr + "/" + t.color;
+    auto j = std::make_unique<BakeJob>();
+    j->chr = t.chr;
+    j->color = t.color;
+    j->follow = g_follow;
+    j->slot_dir = narrow(materialDir(t.chr, t.color));
+    {
+      std::string err;
+      if (!bakeReadFolder(*j, slot, err)) { g_status = "Can't bake: " + err + "."; return; }
+    }
+    // each part with a saved edit or paint: its two textures, read from the game
+    std::set<std::string> kinds;
+    std::map<std::string, std::string> texs_taken;  // game texture -> the part it's baked from
+    const std::map<std::string, std::string> copies = bakedCopies(t.chr, t.color);
+    for (const Target& o : g_targets) {
+      if (o.chr != t.chr || o.color != t.color || !kinds.insert(o.kind).second) continue;
+      BakePart bp;
+      bp.kind = o.kind;
+      if (!gatherPart(o, bp.gather)) { j->notes.push_back(partName(o.kind) + ": not ready (open it once)"); continue; }
+      const bool edited = std::any_of(bp.gather.ed.begin(), bp.gather.ed.end(), [](const Edit& e) { return e.has_lit || e.has_shadow; }) ||
+                          (bp.gather.paint && !bp.gather.paint->empty());
+      if (!edited) continue;
+      std::string n, k;
+      UObject* mic = o.mids.empty() ? nullptr : colorSource(o.mids.front(), n, k);
+      if (!mic) { j->notes.push_back(partName(o.kind) + ": its color material wasn't found"); continue; }
+      bool ok = true;
+      for (const char* param : {"BaseMap", "SssMap"}) {
+        BakeTex bt;
+        bt.base = std::strcmp(param, "BaseMap") == 0;
+        bt.path = packageOf(micTexture(mic, param));
+        if (bt.path.empty() && !bt.base) continue;  // (a part with no shadow texture of its own)
+        if (bt.path.find("/SL_baked/") != std::string::npos) {  // Wearing our last bake: the game texture it came from
+          auto c = copies.find(bt.path);
+          if (c == copies.end()) { j->notes.push_back(partName(o.kind) + ": wears a bake whose record is gone"); ok = false; break; }
+          bt.path = c->second;
+        }
+        if (auto taken = texs_taken.find(bt.path); taken != texs_taken.end()) {  // Another part (or its other map) is the same texture: baked once, from the first
+          j->notes.push_back(partName(o.kind) + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
+          continue;
+        }
+        texs_taken[bt.path] = partName(o.kind);
+        if (bt.path.rfind("/Game/", 0) != 0 || !pak_mount::readFile(gameFile(bt.path, ".uasset"), bt.tex.uasset) ||
+            !pak_mount::readFile(gameFile(bt.path, ".uexp"), bt.tex.uexp)) { ok = false; break; }
+        pak_mount::readFile(gameFile(bt.path, ".ubulk"), bt.tex.ubulk);  // (none for a small texture)
+        bp.texs.push_back(std::move(bt));
+      }
+      if (!ok) { j->notes.push_back(partName(o.kind) + ": its textures couldn't be read"); continue; }
+      // its saved material colors, on the slot's own material files
+      const std::vector<VecGroup> rows = g_vecs_for == keyOf(o) ? g_vecs : vecsOf(o);
+      for (const VecGroup& g : rows) {
+        if (!g.edited) continue;
+        if (g.label == kDecalLabel) { j->notes.push_back(partName(o.kind) + ": decal line colors aren't baked (training only)"); continue; }
+        for (size_t i = 0; i < g.mids.size(); i++) {
+          UObject* m = g.mids[i];
+          UObject* src = isDynamic(m) ? parentOf(m) : m;
+          const std::string path = packageOf(src);
+          if (path.rfind(j->slot_dir + "/", 0) != 0 || path.find('/', j->slot_dir.size() + 1) != std::string::npos) {
+            j->notes.push_back(g.label + ": its material isn't in the slot's folder (" + path + ")");
+            continue;
+          }
+          BakeVec v{path, g.paramOf(i), g.label, {}};
+          std::memcpy(v.rgba, g.cur, sizeof v.rgba);
+          if (std::none_of(j->vecs.begin(), j->vecs.end(), [&](const BakeVec& x) { return x.mic == v.mic && x.param == v.param; })) j->vecs.push_back(v);
+        }
+      }
+      j->parts.push_back(std::move(bp));
+    }
+    bakeAddFx(*j, slot);
+    if (j->parts.empty() && j->vecs.empty() && j->fx.empty()) { g_status = "Nothing to bake: this slot has no saved recolor."; return; }
+    COMBO_LOG("bake: " + t.chr + " " + t.color + ": read in " + std::to_string(GetTickCount64() - t0) + " ms");
+    if (!bakeLaunch(std::move(j))) g_status = "Can't bake: no worker thread.";
+  }
+
+  // ---- baking without the fighter on stage (Bake all), and unbaking ---------------------------------------------
+  // What a part's colors are drawn from can only be seen on a live fighter: each part's color material, and each
+  // material color row's material file and parameter. The editor records them per character whenever it has that
+  // character open (cache/<CHR>/bake_map.txt), so every slot of a character opened once can be baked from files.
+  //   part<TAB>KIND<TAB>material (its name, if in the slot's folder, else its full path)<TAB>source folder ("" own)
+  //   vec<TAB>KIND<TAB>label<TAB>material name<TAB>parameter
+  std::filesystem::path bakeMapFile(const std::string& chr) { return g_dir / "cache" / chr / "bake_map.txt"; }
+  std::set<std::string> g_bake_mapped;  // "CHR/KIND" recorded this session
+  void recordBakeMap(const Target& o) {
+    if (o.mids.empty() || g_bake_mapped.count(o.chr + "/" + o.kind)) return;
+    std::string n, k;
+    UObject* mic = colorSource(o.mids.front(), n, k);
+    if (!mic) return;
+    const std::string dir = narrow(materialDir(o.chr, o.color)) + "/";
+    auto rel = [&](const std::string& path) { return path.rfind(dir, 0) == 0 && path.find('/', dir.size()) == std::string::npos ? path.substr(dir.size()) : path; };
+    std::vector<std::string> lines;
+    lines.push_back("part\t" + o.kind + "\t" + rel(packageOf(mic)) + "\t" + o.src);
+    const std::vector<VecGroup> rows = g_vecs_for == keyOf(o) ? g_vecs : vecsOf(o);
+    for (const VecGroup& g : rows) {
+      if (g.label == kDecalLabel) continue;
+      for (size_t i = 0; i < g.mids.size(); i++) {
+        UObject* src = isDynamic(g.mids[i]) ? parentOf(g.mids[i]) : g.mids[i];
+        const std::string r = rel(packageOf(src));
+        if (r.empty() || r[0] == '/') continue;  // (a material outside the slot's folder: not baked anyway)
+        lines.push_back("vec\t" + o.kind + "\t" + g.label + "\t" + r + "\t" + g.paramOf(i));
+      }
+    }
+    // merged into the file: this part's lines replace its old ones
+    std::vector<std::string> keep;
+    for (const std::string& l : readLines(bakeMapFile(o.chr))) {
+      const size_t a = l.find('\t'), b = a == std::string::npos ? a : l.find('\t', a + 1);
+      if (b == std::string::npos || l.substr(a + 1, b - a - 1) != o.kind) keep.push_back(l);
+    }
+    keep.insert(keep.end(), lines.begin(), lines.end());
+    std::error_code ec;
+    std::filesystem::create_directories(bakeMapFile(o.chr).parent_path(), ec);
+    std::ofstream f(bakeMapFile(o.chr), std::ios::trunc);
+    f << "# StriveLabs: what each part of " << o.chr << " is drawn from, for baking (written when the editor has it open)\n";
+    for (const std::string& l : keep) if (!l.empty() && l[0] != '#') f << l << "\n";
+    g_bake_mapped.insert(o.chr + "/" + o.kind);
+  }
+
+  // A material file's texture parameters: name -> the texture's package ("/Game/.../SOL_base")
+  std::map<std::string, std::string> micTexturesOf(const BakeMic& m) {
+    std::map<std::string, std::string> out;
+    bake::Package p;
+    std::string why;
+    std::vector<bake::Prop> props;
+    bake::Bytes tail;
+    size_t st = 0, sz = 0;
+    if (!p.parse(m.uasset, m.uexp, why) || !bake::parseExport(p, props, tail, st, sz, why)) return out;
+    for (const bake::Prop& q : props) {
+      if (q.name != "TextureParameterValues" || q.value.kind != bake::Value::StructArray) continue;
+      for (const bake::Value& e : q.value.elems) {
+        std::string param;
+        int32_t obj = 0;
+        for (const bake::Prop& x : e.props) {
+          if (x.name == "ParameterInfo")
+            for (const bake::Prop& y : x.value.props) if (y.name == "Name" && y.value.kind == bake::Value::Name) param = y.value.name.first;
+          if (x.name == "ParameterValue" && x.value.raw.size() == 4) std::memcpy(&obj, x.value.raw.data(), 4);
+        }
+        if (param.empty() || obj >= 0 || static_cast<size_t>(-obj - 1) >= p.imports.size()) continue;
+        const auto& imp = p.imports[static_cast<size_t>(-obj - 1)];
+        const int32_t outer = imp[4];
+        if (outer >= 0 || static_cast<size_t>(-outer - 1) >= p.imports.size()) continue;
+        out[param] = p.name(p.imports[static_cast<size_t>(-outer - 1)][5]);
+      }
+    }
+    return out;
+  }
+
+  // The parts with something saved in a slot's folder of saves ("Color01_MAIN.txt", "Color01_DI_paint.slpn")
+  std::set<std::string> savedKinds(const std::string& chr, const std::string& color) {
+    std::set<std::string> out;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(g_dir / "saved" / chr, ec)) {
+      std::string n = narrow(e.path().filename().wstring());
+      if (n.rfind(color + "_", 0) != 0) continue;
+      n = n.substr(color.size() + 1);
+      std::string kind;
+      if (n.size() > 11 && n.compare(n.size() - 11, 11, "_paint.slpn") == 0) kind = n.substr(0, n.size() - 11);
+      else if (n.size() > 4 && n.compare(n.size() - 4, 4, ".txt") == 0) kind = n.substr(0, n.size() - 4);
+      if (kind.empty() || kind == "effects" || kind == "captured") continue;
+      out.insert(kind);
+    }
+    return out;
+  }
+
+  bool bakeLaunch(std::unique_ptr<BakeJob> j);
+  bool bakeReadFolder(BakeJob& j, const std::string& slot, std::string& err);
+  void bakeAddFx(BakeJob& j, const std::string& slot);
+
+  // A slot baked from its files and the character's recorded map. nullptr (and why) if it can't be.
+  std::unique_ptr<BakeJob> bakeFromFiles(const std::string& chr, const std::string& color, std::string& err) {
+    auto j = std::make_unique<BakeJob>();
+    j->chr = chr;
+    j->color = color;
+    j->follow = g_follow;
+    j->slot_dir = narrow(materialDir(chr, color));
+    const std::string slot = chr + "/" + color;
+    if (!bakeReadFolder(*j, slot, err)) return nullptr;
+    // the character's map
+    std::map<std::string, std::pair<std::string, std::string>> parts;           // kind -> (material, source folder)
+    std::map<std::string, std::vector<std::array<std::string, 3>>> vec_map;     // kind -> (label, material, parameter)
+    for (const std::string& l : readLines(bakeMapFile(chr))) {
+      std::vector<std::string> f;
+      for (size_t a = 0;;) { const size_t b = l.find('\t', a); f.push_back(l.substr(a, b == std::string::npos ? std::string::npos : b - a)); if (b == std::string::npos) break; a = b + 1; }
+      if (f.size() >= 3 && f[0] == "part") parts[f[1]] = {f[2], f.size() > 3 ? f[3] : std::string()};
+      if (f.size() >= 5 && f[0] == "vec") vec_map[f[1]].push_back({f[2], f[3], f[4]});
+    }
+    const std::map<std::string, std::string> copies = bakedCopies(chr, color);
+    std::map<std::string, std::string> texs_taken;
+    for (const std::string& kind : savedKinds(chr, color)) {
+      auto pm = parts.find(kind);
+      if (pm == parts.end()) { j->notes.push_back(partName(kind) + ": open " + chr + " in the editor once (what it's drawn from isn't known yet)"); continue; }
+      Target o = fromKey(slot + "/" + kind);
+      o.src = pm->second.second;
+      {  // its saved material colors, through the map (these need nothing read from the editor's cache)
+        std::map<std::string, std::array<float, 4>> saved;
+        for (const std::string& l : readLines(editsFile(o))) readVecLine(l, saved);
+        for (const auto& [label, rgba] : saved) {
+          bool mapped = false;
+          for (const auto& v : vec_map[kind]) {
+            if (v[0] != label) continue;
+            mapped = true;
+            BakeVec bv{j->slot_dir + "/" + v[1], v[2], label, {}};
+            std::memcpy(bv.rgba, rgba.data(), sizeof bv.rgba);
+            if (std::none_of(j->vecs.begin(), j->vecs.end(), [&](const BakeVec& x) { return x.mic == bv.mic && x.param == bv.param; })) j->vecs.push_back(bv);
+          }
+          if (!mapped) j->notes.push_back(label + ": not in the slot's own materials (or the map is from before it)");
+        }
+      }
+      BakePart bp;
+      bp.kind = kind;
+      if (!gatherPart(o, bp.gather)) { j->notes.push_back(partName(kind) + ": its textures aren't ready (open it once in the editor)"); continue; }
+      const bool edited = std::any_of(bp.gather.ed.begin(), bp.gather.ed.end(), [](const Edit& e) { return e.has_lit || e.has_shadow; }) ||
+                          (bp.gather.paint && !bp.gather.paint->empty());
+      // its color material: one of the slot's files, or (another folder's) read as it is
+      BakeMic src;
+      const std::string& mname = pm->second.first;
+      if (mname.empty()) { j->notes.push_back(partName(kind) + ": its material isn't known yet (open it once in the editor)"); continue; }
+      if (mname[0] != '/') {
+        auto it = std::find_if(j->mics.begin(), j->mics.end(), [&](const BakeMic& m) { return m.path == j->slot_dir + "/" + mname; });
+        if (it == j->mics.end()) { j->notes.push_back(partName(kind) + ": its material " + mname + " isn't in the slot's folder"); continue; }
+        src = *it;
+      } else if (!pak_mount::readFile(gameFile(mname, ".uasset"), src.uasset) || !pak_mount::readFile(gameFile(mname, ".uexp"), src.uexp)) {
+        j->notes.push_back(partName(kind) + ": its material couldn't be read");
+        continue;
+      }
+      if (edited) {
+        const auto texs = micTexturesOf(src);
+        bool ok = true;
+        for (const char* param : {"BaseMap", "SssMap"}) {
+          BakeTex bt;
+          bt.base = std::strcmp(param, "BaseMap") == 0;
+          auto tp = texs.find(param);
+          if (tp == texs.end()) { if (bt.base) ok = false; break; }
+          bt.path = tp->second;
+          if (bt.path.find("/SL_baked/") != std::string::npos) {
+            auto c = copies.find(bt.path);
+            if (c == copies.end()) { ok = false; break; }
+            bt.path = c->second;
+          }
+          if (auto taken = texs_taken.find(bt.path); taken != texs_taken.end()) {
+            j->notes.push_back(partName(kind) + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
+            continue;
+          }
+          texs_taken[bt.path] = partName(kind);
+          if (bt.path.rfind("/Game/", 0) != 0 || !pak_mount::readFile(gameFile(bt.path, ".uasset"), bt.tex.uasset) ||
+              !pak_mount::readFile(gameFile(bt.path, ".uexp"), bt.tex.uexp)) { ok = false; break; }
+          pak_mount::readFile(gameFile(bt.path, ".ubulk"), bt.tex.ubulk);
+          bp.texs.push_back(std::move(bt));
+        }
+        if (!ok) { j->notes.push_back(partName(kind) + ": its textures couldn't be read"); continue; }
+      }
+      if (edited) j->parts.push_back(std::move(bp));
+    }
+    bakeAddFx(*j, slot);
+    if (j->parts.empty() && j->vecs.empty() && j->fx.empty()) {
+      err = j->notes.empty() ? "nothing saved to bake" : j->notes.front();
+      return nullptr;
+    }
+    return j;
+  }
+
+  // ---- Bake all: every slot with a save, one after another ----
+  std::deque<std::pair<std::string, std::string>> g_bake_queue;
+  std::vector<std::string> g_bake_all_ok, g_bake_all_not;
+  bool g_bake_all = false;
+  void bakeAllStart(const std::set<std::string>& only) {  // (the slots ticked in the list, "SOL/Color01")
+    if (g_bake || g_export || !g_bake_queue.empty()) { g_status = "Busy with an export or bake. Try again in a moment."; return; }
+    if (!pak_mount::found()) { g_status = "Can't bake: the game's pak mount wasn't found (see combo_log.txt)."; return; }
+    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved) { g_status = "Save first: the bake takes the saved recolors."; return; }
+    std::error_code ec;
+    for (const auto& c : std::filesystem::directory_iterator(g_dir / "saved", ec)) {
+      if (!c.is_directory(ec)) continue;
+      const std::string chr = narrow(c.path().filename().wstring());
+      std::set<std::string> colors;
+      for (const auto& f : std::filesystem::directory_iterator(c.path(), ec)) {
+        const std::string n = narrow(f.path().filename().wstring());
+        if (n.size() >= 8 && n.rfind("Color", 0) == 0 && std::isdigit(static_cast<unsigned char>(n[5])) && std::isdigit(static_cast<unsigned char>(n[6])) && n[7] == '_')
+          colors.insert(n.substr(0, 7));
+      }
+      for (const std::string& col : colors)
+        if (only.count(chr + "/" + col) && (!savedKinds(chr, col).empty() || std::filesystem::exists(fxFile(chr, col), ec))) g_bake_queue.push_back({chr, col});
+    }
+    g_bake_all_ok.clear();
+    g_bake_all_not.clear();
+    g_bake_all = !g_bake_queue.empty();
+    g_status = g_bake_all ? "Baking " + std::to_string(g_bake_queue.size()) + (g_bake_queue.size() == 1 ? " slot..." : " slots...") : "Nothing ticked to bake.";
+    COMBO_LOG("bake all: " + std::to_string(g_bake_queue.size()) + " slots");
+  }
+  void bakeAllTick() {  // (from bakeTick: the next slot once the last one's done)
+    if (g_bake || g_bake_queue.empty() || g_encoding != 0) return;
+    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved) {  // (edited meanwhile: the rest would mix in unsaved changes)
+      for (const auto& [c, col] : g_bake_queue) g_bake_all_not.push_back(c + " " + col + ": not baked, there were unsaved changes (save, then bake it)");
+      g_bake_queue.clear();
+      g_status = "Stopped: save your changes first.";
+      return;
+    }
+    const auto [chr, color] = g_bake_queue.front();
+    g_bake_queue.pop_front();
+    std::string err;
+    std::unique_ptr<BakeJob> j;
+    try { j = bakeFromFiles(chr, color, err); } catch (const std::bad_alloc&) { err = "out of memory"; } catch (...) { if (err.empty()) err = "its files couldn't be read"; }
+    if (!j) {
+      g_bake_all_not.push_back(chr + " " + color + ": " + err);
+      COMBO_LOG("bake all: " + chr + " " + color + ": " + err);
+    } else if (!bakeLaunch(std::move(j))) g_bake_all_not.push_back(chr + " " + color + ": no worker thread");
+    g_status = "Baking saved slots, " + std::to_string(g_bake_queue.size()) + " left...";
+    g_view_dirty = true;
+  }
+
+  // ---- unbaking: the game's own files mounted above the bake; at the next start the slot's bakes are deleted ----
+  bool unbakeSlot(const std::string& chr, const std::string& color, std::string& err) {
+    const std::string slot = chr + "/" + color, prefix = chr + "_" + color + "_";
+    {
+      std::lock_guard<std::mutex> lk(g_bake_stale_m);
+      if (g_bake_stale.count(chr + "_" + color)) { err = "its bake isn't on (made before a game update): bake it again, or leave it"; return false; }
+    }
+    std::error_code ec;
+    std::set<std::string> names;  // every file a bake of the slot holds
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+      if (e.path().extension() != ".pak" || e.path().stem().string().rfind(prefix, 0) != 0) continue;
+      std::vector<std::string> n;
+      if (bake::pakNames(e.path().wstring(), n)) names.insert(n.begin(), n.end());
+    }
+    if (names.empty()) { err = "it isn't baked"; return false; }
+    if (!pak_mount::found()) { err = "the game's pak mount wasn't found (see combo_log.txt)"; return false; }
+    std::vector<bake::PakFile> files;
+    for (const std::string& n : names) {  // ("../../../RED/Content/<path><ext>"; our copies just stop being used)
+      if (n.find("/SL_baked/") != std::string::npos) continue;
+      const size_t dot = n.rfind('.');
+      const std::string pkg = "/Game/" + n.substr(21, dot - 21), ext = n.substr(dot);
+      bake::Bytes b;
+      if (!gameOriginal(slot, pkg, ext.c_str(), b)) { err = "the game's own " + pkg.substr(pkg.rfind('/') + 1) + " isn't known"; return false; }
+      files.push_back({n.substr(9), std::move(b)});
+    }
+    if (files.empty()) { err = "none of the game's files to put back (only our copies)"; return false; }
+    for (const bake::PakFile& a : files) {  // (every original put back must read as a package: a damaged one is never mounted)
+      if (a.name.size() < 7 || a.name.compare(a.name.size() - 7, 7, ".uasset") != 0) continue;
+      const std::string uexp = a.name.substr(0, a.name.size() - 7) + ".uexp";
+      auto e = std::find_if(files.begin(), files.end(), [&](const bake::PakFile& f) { return f.name == uexp; });
+      std::string why;
+      if (e == files.end() || !bake::verifyPackage(a.data, e->data, why)) { err = "the game's own " + a.name.substr(a.name.rfind('/') + 1) + " doesn't read right (" + why + ")"; return false; }
+    }
+    const int order = bakeOrder();
+    const std::filesystem::path pak = bakedDir() / (prefix + std::to_string(order) + ".pak");
+    const std::filesystem::path tmp = std::filesystem::path(pak).replace_extension(".tmp");
+    std::string why;
+    if (!bake::writePak(tmp.wstring(), files, why) || !bake::checkPak(tmp.wstring(), files, why)) { std::filesystem::remove(tmp, ec); err = why; return false; }
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::filesystem::copy_file(std::filesystem::path(exe).parent_path().parent_path().parent_path() / "Content" / "Paks" / "pakchunk0-WindowsNoEditor.sig",
+                               std::filesystem::path(pak).replace_extension(".sig"), std::filesystem::copy_options::overwrite_existing, ec);
+    if (!ec) {  // (the manifest first: a pak on disk is always known to be an unbake)
+      std::ofstream m(std::filesystem::path(pak).replace_extension(".txt"), std::ios::trunc);
+      m << "# StriveLabs bake: " << chr << " " << color << "\nunbake\n";
+      if (const std::string b = gameBuild(); !b.empty()) m << "game\t" << b << "\n";
+    }
+    if (!ec) std::filesystem::rename(tmp, pak, ec);
+    if (ec) {
+      std::filesystem::remove(tmp, ec);
+      std::filesystem::remove(std::filesystem::path(pak).replace_extension(".sig"), ec);
+      std::filesystem::remove(std::filesystem::path(pak).replace_extension(".txt"), ec);
+      err = "the pak couldn't be put in place";
+      return false;
+    }
+    std::wstring w = pak.wstring();
+    for (wchar_t& c : w) if (c == L'\\') c = L'/';
+    const bool mounted = pak_mount::mount(w, order);
+    {
+      std::ofstream o(bakedDir() / "order.txt", std::ios::trunc);
+      o << order << "\n";
+    }
+    COMBO_LOG("bake: " + chr + " " + color + ": unbaked (" + std::to_string(files.size()) + " files of the game's put back" + (mounted ? ")" : ", not mounted)"));
+    if (!mounted) err = "later";  // (the game's own come back at the next start)
+    return true;
+  }
+  bool unbaked(const std::filesystem::path& manifest) {
+    for (const std::string& l : readLines(manifest)) if (l == "unbake") return true;
+    return false;
+  }
+
+
+  void bakeSeen() {  // (log, once per part and fight: a part whose color material now wears a baked copy)
+    static std::set<std::string> said;
+    static int every = 0;
+    if (!g_open || ++every % 120) return;
+    for (const Target& o : g_targets) {
+      if (o.mids.empty()) continue;
+      try { recordBakeMap(o); } catch (...) {}
+      std::string n, k;
+      UObject* mic = colorSource(o.mids.front(), n, k);
+      if (!mic) continue;
+      for (const char* param : {"BaseMap", "SssMap"}) {
+        const std::string path = packageOf(micTexture(mic, param));
+        if (path.find("/SL_baked/") != std::string::npos && said.insert(keyOf(o) + param + path).second)
+          COMBO_LOG("bake: " + keyOf(o) + " wears the baked " + path.substr(path.rfind('/') + 1) + " (" + param + ")");
+      }
+    }
+  }
+
+  void bakeTick() {  // Game thread, every update
+    struct Left { ~Left() { g_bake_left = static_cast<int>(g_bake_queue.size()) + (g_bake ? 1 : 0); } } left;  // (the UI's copy, on every way out)
+    bakeSeen();
+    bakeAllTick();
+    if (g_bake_all && !g_bake && g_bake_queue.empty()) {  // Bake all is done: one result for every slot
+      g_bake_all = false;
+      showBakeResult(g_bake_all_not.empty(), "Baked " + std::to_string(g_bake_all_ok.size()) + (g_bake_all_ok.size() == 1 ? " slot" : " slots") +
+                     (g_bake_all_not.empty() ? "." : ", " + std::to_string(g_bake_all_not.size()) + " not.") + " Reload instance to see it.",
+                     g_bake_all_ok, g_bake_all_not);
+      g_status = "Baked the saved slots (see the result).";
+    }
+    if (!g_bake || !g_bake->job.valid() || g_bake->job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    BakeJob& j = *g_bake;
+    bool ok = false;
+    try { ok = j.job.get(); } catch (...) { j.error = "out of memory"; }
+    std::string notes;
+    for (const std::string& n : j.notes) notes += "; " + n;
+    if (!ok) {
+      g_status = "Not baked (see the result).";
+      COMBO_LOG("bake: " + j.chr + " " + j.color + ": failed: " + j.error + notes);
+      std::vector<std::string> why = j.notes;
+      why.insert(why.begin(), j.error);
+      if (g_bake_all) g_bake_all_not.push_back(j.chr + " " + j.color + ": " + j.error);
+      else showBakeResult(false, "Not baked: " + j.chr + " " + j.color, {}, why);
+    } else {
+      const int order = std::atoi(j.pak.stem().string().substr(j.pak.stem().string().rfind('_') + 1).c_str());
+      std::wstring w = j.pak.wstring();
+      for (wchar_t& c : w) if (c == L'\\') c = L'/';
+      const bool mounted = pak_mount::mount(w, order);
+      if (mounted) g_baked_slots.insert(j.chr + "/" + j.color);
+      bool was_stale = false;  // (baked again after a game update: the old bake was never put on, so it goes now)
+      { std::lock_guard<std::mutex> lk(g_bake_stale_m); was_stale = g_bake_stale.erase(j.chr + "_" + j.color) > 0; }
+      if (was_stale) {
+        std::error_code ec;
+        const std::string prefix = j.chr + "_" + j.color + "_";
+        std::vector<std::filesystem::path> old;
+        for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec))
+          if (e.path().extension() == ".pak" && e.path().stem().string().rfind(prefix, 0) == 0 && e.path() != j.pak) old.push_back(e.path());
+        for (const auto& o : old)
+          for (const char* ext : {".pak", ".sig", ".txt"}) std::filesystem::remove(std::filesystem::path(o).replace_extension(ext), ec);
+      }
+      {
+        std::ofstream o(bakedDir() / "order.txt", std::ios::trunc);
+        o << order << "\n";
+        std::ofstream m(std::filesystem::path(j.pak).replace_extension(".txt"), std::ios::trunc);
+        m << "# StriveLabs bake: " << j.chr << " " << j.color << "\n";
+        if (const std::string b = gameBuild(); !b.empty()) m << "game\t" << b << "\n";  // (the game's build it was made on)
+        for (const std::string& d : j.done) m << "baked\t" << d << "\n";
+        for (const auto& [from, to] : j.moved) m << "moved\t" << from << "\t" << to << "\n";
+        for (const std::string& n : j.notes) m << "not baked\t" << n << "\n";
+      }
+      std::string list;
+      for (size_t i = 0; i < j.done.size(); i++) list += (i ? ", " : "") + j.done[i];
+      COMBO_LOG("bake: " + j.chr + " " + j.color + ": " + narrow(j.pak.filename().wstring()) + (mounted ? " mounted" : " NOT mounted") + " at " +
+                std::to_string(order) + ": " + list + notes);
+      if (g_bake_all) {
+        g_bake_all_ok.push_back(j.chr + " " + j.color + (j.notes.empty() ? "" : " (" + std::to_string(j.notes.size()) + " left out: see its .txt in baked/)"));
+        g_bake.reset();
+        g_view_dirty = true;
+        return;
+      }
+      g_status = "Baked " + j.chr + " " + j.color + " (see the result).";
+      showBakeResult(true, mounted ? "Baked " + j.chr + " " + j.color + ". Reload instance to see it."
+                                   : "Baked " + j.chr + " " + j.color + ", but it couldn't be put on now: it loads the next time the game starts.",
+                     j.done, j.notes);
+    }
+    g_bake.reset();
+    g_view_dirty = true;
+  }
+
+  // The bakes on disk go on once the pak mount is found: the latest per slot, older ones deleted first (nothing
+  // has them open yet at this point, since only we mount them)
+  void bakeMountAll() {
+    static bool done = false;
+    if (done || !pak_mount::found()) return;
+    done = true;
+    std::error_code ec;
+    std::map<std::string, std::pair<int, std::filesystem::path>> latest;  // "CHR_ColorNN" -> (order, pak)
+    std::vector<std::filesystem::path> all;
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+      const auto p = e.path();
+      if (p.extension() == ".tmp") { std::filesystem::remove(p, ec); continue; }  // (a bake or unbake that didn't finish)
+      if (p.extension() != ".pak") continue;
+      if (!std::filesystem::exists(std::filesystem::path(p).replace_extension(".sig"), ec)) {  // (unfinished: never a slot's latest)
+        std::filesystem::remove(p, ec);
+        std::filesystem::remove(std::filesystem::path(p).replace_extension(".txt"), ec);
+        COMBO_LOG("bake: " + narrow(p.filename().wstring()) + " was never finished, deleted");
+        continue;
+      }
+      const std::string stem = p.stem().string();
+      const size_t us = stem.rfind('_');
+      if (us == std::string::npos) continue;
+      const int order = std::atoi(stem.c_str() + us + 1);
+      if (order <= 1000) continue;
+      all.push_back(p);
+      auto& l = latest[stem.substr(0, us)];
+      if (order > l.first) l = {order, p};
+    }
+    for (const auto& p : all) {
+      bool keep = false;
+      for (const auto& [slot, l] : latest) keep |= l.second == p;
+      if (keep) continue;
+      for (const char* ext : {".pak", ".sig", ".txt"}) std::filesystem::remove(std::filesystem::path(p).replace_extension(ext), ec);
+      COMBO_LOG("bake: " + narrow(p.filename().wstring()) + " replaced by a later bake, deleted");
+    }
+    for (auto it = latest.begin(); it != latest.end();) {  // Unbaked: its last bake and the unbake go, nothing is mounted
+      if (!unbaked(std::filesystem::path(it->second.second).replace_extension(".txt"))) { ++it; continue; }
+      for (const char* ext : {".pak", ".sig", ".txt"}) std::filesystem::remove(std::filesystem::path(it->second.second).replace_extension(ext), ec);
+      COMBO_LOG("bake: " + it->first + " unbaked, its files deleted");
+      it = latest.erase(it);
+    }
+    // A game update: bakes made on another build of the game aren't put on (they wait to be baked again), and the
+    // kept originals go, so the next bake reads the new game files (none of the old bakes are mounted to hide them)
+    std::set<std::string> stale;  // "CHR_ColorNN"
+    const std::string build = gameBuild();
+    std::string was;
+    for (const std::string& l : readLines(bakedDir() / "game.txt")) { was = l; break; }
+    if (!build.empty()) {
+      if (was != build) {
+        if (!was.empty()) {
+          std::filesystem::remove_all(bakedDir() / "orig", ec);
+          COMBO_LOG("bake: the game was updated (" + was + " -> " + build + "): bakes made before it wait to be baked again");
+        }
+        std::filesystem::create_directories(bakedDir(), ec);
+        std::ofstream(bakedDir() / "game.txt", std::ios::trunc) << build << "\n";
+      }
+      for (const auto& [slot, l] : latest) {
+        std::string made = was;  // (a bake from before builds were recorded: the build seen last)
+        for (const std::string& t : readLines(std::filesystem::path(l.second).replace_extension(".txt")))
+          if (t.rfind("game\t", 0) == 0) made = t.substr(5);
+        if (!made.empty() && made != build) stale.insert(slot);
+      }
+    }
+    { std::lock_guard<std::mutex> lk(g_bake_stale_m); g_bake_stale = stale; }
+    for (const auto& [slot, l] : latest) {
+      if (stale.count(slot)) { COMBO_LOG("bake: " + slot + " (" + narrow(l.second.filename().wstring()) + ") not mounted: bake it again"); continue; }
+      std::wstring w = l.second.wstring();
+      for (wchar_t& c : w) if (c == L'\\') c = L'/';
+      const bool ok = std::filesystem::exists(std::filesystem::path(l.second).replace_extension(".sig"), ec) && pak_mount::mount(w, l.first);
+      COMBO_LOG("bake: " + slot + " (" + narrow(l.second.filename().wstring()) + ") " + (ok ? "mounted" : "NOT mounted"));
+      if (ok) { const size_t us = slot.rfind("_Color"); if (us != std::string::npos) g_baked_slots.insert(slot.substr(0, us) + "/" + slot.substr(us + 1)); }
+    }
   }
 
   // ---- the skeleton: where each region is -----------------------------------------------
@@ -5817,6 +6740,11 @@ namespace {
     float yaw = 0, pitch = 0, dist = 0, pivot[3] = {};      // Current pose (pitch is the camera above the pivot)
     float gyaw = 0, gpitch = 0, gdist = 0, gpivot[3] = {};  // the goal
   } g_cam;
+  // The camera with the editor closed (the Free camera bind): it orbits your own fighter, placed from the fight's own
+  // position (as the hitbox drawing places boxes), so it needs no target from the editor
+  bool g_cam_solo = false;
+  const void* g_solo_fight = nullptr;  // the fight it was turned on in (a new one turns it off)
+  std::atomic<bool> g_cam_solo_pub{false};
   std::atomic<float> g_cam_dx{0}, g_cam_dy{0}, g_cam_wheel{0}, g_pan_dx{0}, g_pan_dy{0};
   void addTo(std::atomic<float>& a, float v) {  // The UI adds while the game thread takes, so nothing is lost
     float was = a.load();
@@ -6377,8 +7305,8 @@ namespace {
   }
 
   // A fighter's parts, as target indices.
-  // ---- Where the model draws. The meshes' UV triangles (cache/<CHR>/uv.bin, made from FModel's mesh exports
-  // by make_uv.py). A region the model never draws is left out of the list. --------------------------------
+  // ---- Where the model draws. The meshes' UV triangles (cache/<CHR>/uv.bin, made offline from the game's
+  // mesh exports). A region the model never draws is left out of the list. --------------------------------
   struct UvSlot { std::string mesh, name; int index = 0; std::vector<float> tri; };  // u,v x3 per triangle
   std::vector<UvSlot> readUv(const std::filesystem::path& file) {  // (worker) Empty if there's none or it can't be read
     std::vector<UvSlot> out;
@@ -6637,7 +7565,7 @@ namespace {
     const bool fresh = std::any_of(seen_keys.begin(), seen_keys.end(), [&](const std::string& s) { return !counted.count(s); });
     std::error_code ec;
     const std::filesystem::path file = g_dir / "cache" / t.chr / "uv.bin";
-    const bool have_file = std::filesystem::exists(file, ec);  // Looked for again after a while, since make_uv.py may make it later
+    const bool have_file = std::filesystem::exists(file, ec);  // Looked for again after a while (it may be added later)
     auto had = g_drawn.find(key);
     const bool have = had != g_drawn.end() && had->second.map == mp->second.get();  // This map's parents, and maybe its counts
     if (have && !(have_file && (fresh || !drawnOf(t)))) return;  // Done. Only redo it for a new mesh wearing it, or once the UV file shows up
@@ -7107,6 +8035,104 @@ void resetEffectColorFor(int i, const std::string& effect, const std::string& sl
 void captureEffects() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kCapture, -1, 0}); }
 void listRecolors() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kLists, -1, 0}); }
 void saveRecolor() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kSave, -1, 0}); }
+void bakeRecolor() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kBake, -1, 0}); }
+void bakeSlots(const std::vector<std::string>& slots) {
+  std::lock_guard<std::mutex> lock(g_m);
+  Req q{kBakeAll, -1, 0};
+  for (const std::string& s : slots) q.text += s + "\n";
+  g_reqs.push_back(q);
+}
+std::vector<BakeCandidate> bakeCandidates() {  // (UI thread, when the list opens: the saved folders and the characters' maps)
+  std::vector<BakeCandidate> out;
+  std::error_code ec;
+  try {  // (a folder changing while it's read: the list as far as it got, never a throw out of the menu)
+  for (const auto& c : std::filesystem::directory_iterator(g_dir / "saved", ec)) {
+    if (!c.is_directory(ec)) continue;
+    const std::string chr = narrow(c.path().filename().wstring());
+    if (chr.empty() || chr[0] == '.') continue;
+    std::set<std::string> colors;
+    for (const auto& f : std::filesystem::directory_iterator(c.path(), ec)) {
+      const std::string n = narrow(f.path().filename().wstring());
+      if (n.size() >= 8 && n.rfind("Color", 0) == 0 && std::isdigit(static_cast<unsigned char>(n[5])) && std::isdigit(static_cast<unsigned char>(n[6])) && n[7] == '_')
+        colors.insert(n.substr(0, 7));
+    }
+    std::set<std::string> mapped;  // the parts whose source the character's map knows
+    for (const std::string& l : readLines(bakeMapFile(chr)))
+      if (l.rfind("part\t", 0) == 0) { const size_t b = l.find('\t', 5); mapped.insert(l.substr(5, b == std::string::npos ? std::string::npos : b - 5)); }
+    for (const std::string& col : colors) {
+      BakeCandidate b;
+      b.chr = chr;
+      b.color = col;
+      for (const std::string& k : savedKinds(chr, col)) {
+        b.parts += (b.parts.empty() ? "" : ", ") + partName(k);
+        if (!mapped.count(k)) b.missing += (b.missing.empty() ? "" : ", ") + partName(k);
+      }
+      const uintmax_t fx = std::filesystem::file_size(fxFile(chr, col), ec);
+      b.effects = !ec && fx > 0;
+      if (b.parts.empty() && !b.effects) continue;
+      out.push_back(std::move(b));
+    }
+  }
+  } catch (...) {}
+  return out;
+}
+void unbake(const std::string& chr, const std::string& color) {
+  std::lock_guard<std::mutex> lock(g_m);
+  Req q{kUnbake, -1, 0};
+  q.text = chr + "/" + color;
+  g_reqs.push_back(q);
+}
+std::vector<BakedSlot> bakedSlots() {  // (UI thread: the folder read at most once a second)
+  static std::vector<BakedSlot> cached;
+  static ULONGLONG at = 0;
+  if (GetTickCount64() - at < 1000) return cached;
+  at = GetTickCount64();
+  std::map<std::string, std::pair<int, std::filesystem::path>> latest;
+  std::error_code ec;
+  try {  // (a folder changing while it's read: the last list kept, never a throw out of the menu)
+  for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+    if (e.path().extension() != ".pak") continue;
+    if (!std::filesystem::exists(std::filesystem::path(e.path()).replace_extension(".sig"), ec)) continue;  // (as at the start: unfinished)
+    const std::string stem = e.path().stem().string();
+    const size_t us = stem.rfind('_');
+    if (us == std::string::npos) continue;
+    const int n = std::atoi(stem.c_str() + us + 1);
+    if (n <= 1000) continue;
+    auto& l = latest[stem.substr(0, us)];
+    if (n > l.first) l = {n, e.path()};
+  }
+  std::vector<BakedSlot> out;
+  for (const auto& [slot, l] : latest) {
+    const size_t c = slot.rfind("_Color");
+    if (c == std::string::npos) continue;
+    BakedSlot b;
+    b.chr = slot.substr(0, c);
+    b.color = slot.substr(c + 1);
+    b.unbaked = unbaked(std::filesystem::path(l.second).replace_extension(".txt"));
+    { std::lock_guard<std::mutex> lk(g_bake_stale_m); b.stale = g_bake_stale.count(slot) > 0; }
+    b.mb = static_cast<double>(std::filesystem::file_size(l.second, ec)) / (1024.0 * 1024.0);
+    const auto ft = std::filesystem::last_write_time(l.second, ec);
+    char d[32] = "";
+    if (!ec) {  // (a file gone meanwhile: no date, never a bad time to format)
+      const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(ft - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+      const std::time_t tt = std::chrono::system_clock::to_time_t(sys);
+      std::tm tm{};
+      if (localtime_s(&tm, &tt) == 0) std::strftime(d, sizeof d, "%Y-%m-%d %H:%M", &tm);
+    }
+    b.when = d;
+    out.push_back(b);
+  }
+  cached = out;
+  } catch (...) {}
+  return cached;
+}
+int bakeQueueLeft() { return g_bake_left.load(); }
+bool bakeResult(BakeResult& out) {
+  std::lock_guard<std::mutex> lk(g_bake_result_m);
+  if (g_bake_result_up) out = g_bake_result;
+  return g_bake_result_up;
+}
+void bakeResultSeen() { std::lock_guard<std::mutex> lk(g_bake_result_m); g_bake_result_up = false; }
 void discardAndClose() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kDiscardClose, -1, 0}); }
 void cancelClose() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kCancelClose, -1, 0}); }
 void restoreRecovery(bool restore) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kRecovery, -1, restore ? 1u : 0u}); }
@@ -7199,7 +8225,17 @@ void setCapturedMatColor(int i, const float rgb[3], uint32_t gen) {
 }
 void resetCapturedMatColor(int i, uint32_t gen) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kMatReset, i, gen}); }
 void resetCapturedColor(int i, uint32_t gen) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kCapReset, i, gen}); }
-void menuUpdate(bool in_fight) { menuUpdateNow(in_fight); }
+// Outside training the saved recolors show through their bakes only: the runtime pass that put them on the menus'
+// and fights' models (a scan of the loaded objects every second) is off. It stays here, behind this switch.
+constexpr bool kRuntimeRecolors = false;
+void menuUpdate(bool in_fight) {
+  try { bakeMountAll(); } catch (...) {}  // (the saved bakes go on at the first menu, whatever screen)
+  if (kRuntimeRecolors) menuUpdateNow(in_fight);
+  else {
+    static bool released = false;  // (anything a runtime pass put on, let go once)
+    if (!released) { released = true; menuRelease_(); }
+  }
+}
 void menuRelease() { menuRelease_(); }
 void battleGone() {
   // The same training fight, only stalled: nothing's over. (The engine's address can be reused by a new fight, so the
@@ -7211,6 +8247,7 @@ void battleGone() {
         return true;
       }))
     return;
+  if (!asw_engine::get()) soloCameraOff();  // (fight gone: the free camera goes too. A pause keeps it; dllmain turns it off outside training)
   {  // Textures ticked for this fight's fighter don't go on the next one's
     std::lock_guard<std::mutex> lk(g_tex_pick_m);
     g_tex_pick.clear();
@@ -8404,7 +9441,7 @@ void face(const float p[3], const Vec& feet) {
   g_cam.gyaw = g_cam.yaw + angleTo(g_cam.yaw, std::atan2(d[1], d[0]) * 57.2958f);
 }
 namespace {
-  // ---- The bone atlas (StriveLabs_colors/atlas/<CHR>.bin, made from the game's own mesh files by make_atlas.py).
+  // ---- The bone atlas (StriveLabs_colors/atlas/<CHR>.bin, made offline from the game's own mesh files).
   // For each mesh and material slot, a grid over the texture whose cells hold where the surface drawn there is: the
   // bone it moves with, the point in that bone's space and the way it faces. A mirrored part (both legs on one
   // texture) has a point per side. Joined with a part's regions, every region the model draws has places. --------
@@ -8972,11 +10009,67 @@ void startMapping(Target& t) {
   g_view_dirty = true;
   COMBO_LOG("color editor: mapping " + m.key + ", " + std::to_string(R) + " regions in " + std::to_string(g_scan_tex.size()) + " frames");
 }
+bool soloCamera() { return g_cam_solo_pub; }
+void soloCameraOff() {
+  if (!g_cam_solo) return;
+  g_cam_solo = false;
+  g_cam_solo_pub = false;
+  if (!g_open) { g_cam.on = false; g_cam_info.clear(); COMBO_LOG("free camera: off"); }
+}
+void toggleCamera() {
+  if (g_open) {  // the editor's own camera, as its toggle does
+    g_cam.on = !g_cam.on;
+    g_cam.ready = false;
+    g_cam_info = g_cam.on ? std::string(kCamHelp) : std::string();
+    g_view_dirty = true;
+    COMBO_LOG(std::string("free camera: ") + (g_cam.on ? "on" : "off"));
+    return;
+  }
+  if (!g_view_hooked) { COMBO_LOG("free camera: the view hook isn't in, so it can't be used without the color editor"); return; }
+  if (g_cam_solo) { soloCameraOff(); return; }
+  g_cam_solo = true;
+  g_cam_solo_pub = true;
+  g_cam.on = true;
+  g_cam.ready = false;
+  g_solo_fight = asw_engine::get();
+  g_fighter_h = 200.0f;  // (no bones to measure without the editor: a fighter's usual height)
+  g_fighter_h_for.clear();
+  g_cam_info = kCamHelp;
+  COMBO_LOG("free camera: on, without the color editor");
+}
+// The camera, put where its pose says (around the pivot, relative to the fighter's feet)
+void placeCamera(const Vec& feet) {
+  const Vec pivot{feet.x + g_cam.pivot[0], feet.y + g_cam.pivot[1], feet.z + g_cam.pivot[2]};
+  const float y = g_cam.yaw / 57.2958f, pt = g_cam.pitch / 57.2958f;
+  const Vec loc{pivot.x + g_cam.dist * std::cos(pt) * std::cos(y), pivot.y + g_cam.dist * std::cos(pt) * std::sin(y), pivot.z + g_cam.dist * std::sin(pt)};
+  const Vec rot{-g_cam.pitch, g_cam.yaw + 180.0f, 0.0f};  // Pitch, yaw, roll, looking at the pivot
+  if (g_view_hooked) {  // the view hook puts it on screen, this frame
+    const float view[7] = {loc.x, loc.y, loc.z, rot.x, rot.y, rot.z, g_cam_fov};
+    std::memcpy(g_view_pose, view, sizeof(view));
+    g_view_ms = nowMs();
+    g_view_on = true;
+  } else {
+    setActor(g_cam_actor, loc, rot);
+  }
+  {  // the pose, for turning screen points into lines of sight and back
+    const float fwd[3] = {-std::cos(pt) * std::cos(y), -std::cos(pt) * std::sin(y), -std::sin(pt)};
+    const float rgt[3] = {-fwd[1], fwd[0], 0.0f};
+    const float rl = std::sqrt(rgt[0] * rgt[0] + rgt[1] * rgt[1]);
+    const float r3[3] = {rl > 1e-4f ? rgt[0] / rl : 1.0f, rl > 1e-4f ? rgt[1] / rl : 0.0f, 0.0f};
+    const float up[3] = {fwd[1] * r3[2] - fwd[2] * r3[1], fwd[2] * r3[0] - fwd[0] * r3[2], fwd[0] * r3[1] - fwd[1] * r3[0]};
+    const float pose[12] = {loc.x, loc.y, loc.z, fwd[0], fwd[1], fwd[2], r3[0], r3[1], r3[2], up[0], up[1], up[2]};
+    std::memcpy(g_cam_pose, pose, sizeof(pose));
+  }
+  if (!g_view_hooked && viewTarget() != g_cam_actor) setViewTarget(g_cam_pc, g_cam_actor);
+}
 void afterBattleUpdate() {
   Timed timed{g_time.after};
   if (g_preview.pawn && asw_engine::get() == g_fight) keepPreview();
   if (!g_targets.empty() && asw_engine::get() == g_fight) { dressSmears(); if (!g_scan_on) effCopiesSync(); }  // A scan's coded frames on the part aren't copied onto effects  // For an effect started in the game's update, before it's drawn
-  g_cam_keys = g_cam.on;
+  if (g_cam_solo && g_open) { g_cam_solo = false; g_cam_solo_pub = false; }  // the editor opened: it's its camera now
+  if (g_cam_solo && !g_open && asw_engine::get() != g_solo_fight) soloCameraOff();  // a new fight
+  const bool solo = g_cam_solo && !g_open;
+  g_cam_keys = g_cam.on && (!solo || Timeline::instance().isPaused());  // (without the editor the keys play the fight unless it's frozen)
   if (!g_cam.on) {
     g_view_on = false;
     if (g_cam_pc) cameraOff();
@@ -8989,8 +10082,8 @@ void afterBattleUpdate() {
     g_tag_x = -1.0f;
     return;
   }
-  Target* t = target();
-  if (!t || !t->pawn || t->mids.empty() || asw_engine::get() != g_fight) {
+  Target* t = solo ? nullptr : target();
+  if (!solo && (!t || !t->pawn || t->mids.empty() || asw_engine::get() != g_fight)) {
     g_view_on = false;
     if (g_cam_pc && asw_engine::get() == g_fight) cameraOff();  // the view handed back while it's ours to hand
     g_cam_pc = g_cam_actor = g_cam_orig = nullptr;
@@ -9007,6 +10100,7 @@ void afterBattleUpdate() {
       g_cam_info = "Couldn't find the battle's camera.";
       g_cam.on = false;
       g_cam_pc = g_cam_actor = nullptr;
+      if (solo) { soloCameraOff(); COMBO_LOG("free camera: the battle's camera wasn't found"); return; }
       stopFocus(t);
       stopMapping(t);
       g_map_tried.insert(mapKey(*t));  // No mapping without it, so don't turn the camera back on for one
@@ -9021,8 +10115,20 @@ void afterBattleUpdate() {
   if (!mgr) return;
   if (g_view_on) g_view_ms = nowMs();  // Refreshed after a long pause, so projections below see our view, not the game's
   readViewport();
-  const Vec feet = actorVec(t->pawn, STR("/Script/Engine.Actor:K2_GetActorLocation"));
-  {  // How tall they are. The body's highest bone plus a bit for the hair, whichever part is shown
+  Vec feet;
+  if (solo) {  // your fighter's feet, from the fight's own position, as the hitbox drawing turns it into the world
+    asw_engine* eng = asw_engine::get();
+    asw_scene* scene = asw_scene::get();
+    const int side = combo_trials::localSide();
+    asw_entity* me = eng && side >= 0 && side < 2 ? eng->players[side].entity : nullptr;
+    if (!me || !scene) { g_view_on = false; g_cam.ready = false; return; }
+    SimpleFVector v{me->get_pos_x() * asw_engine::COORD_SCALE / 1000.0f, 0.0f, me->get_pos_y() * asw_engine::COORD_SCALE / 1000.0f};
+    scene->camera_transform(&v, nullptr);
+    feet = Vec{v.x, v.y, v.z};
+  } else {
+    feet = actorVec(t->pawn, STR("/Script/Engine.Actor:K2_GetActorLocation"));
+  }
+  if (!solo) {  // How tall they are. The body's highest bone plus a bit for the hair, whichever part is shown
     const Target* body = t;
     for (const Target& o : g_targets) if (o.pawn == t->pawn && o.kind == "MAIN") body = &o;
     if (g_fighter_h_for != keyOf(*body)) {
@@ -9063,6 +10169,8 @@ void afterBattleUpdate() {
   const bool still = g_scan_on;                    // held still while a scan's frames are grabbed
   const bool locked = still || g_mapping != nullptr || setupRunning();  // the mapping steers the camera itself (and the setup's between parts)
   if (!locked) {
+    const bool keys = g_cam_keys;  // (the camera of its own: the keys play the fight unless it's frozen)
+    auto keyDown = [&](int vk) { return keys && recolor_test::keyDown(vk); };
     const float fast = keyDown(VK_SHIFT) ? 3.0f : 1.0f, step = 3.0f * fast, turn = 1.2f * fast;
     float dyaw = mdx * 0.3f, dpitch = mdy * 0.3f;
     if (keyDown(VK_LEFT)) dyaw -= turn;
@@ -9091,7 +10199,7 @@ void afterBattleUpdate() {
     const float k = g_cam.dist * 0.0015f;  // right drag slides the pivot across the view, faster when far
     mv[0] -= rx * pdx * k; mv[1] -= ry * pdx * k; mv[2] += pdy * k;
     for (int i = 0; i < 3; i++) { g_cam.pivot[i] += mv[i]; g_cam.gpivot[i] += mv[i]; }
-    if (keyDown('R')) { stopFocus(t); portraitGoal(); g_keep_dist = 0.0f; }  // flights take their distance from here again
+    if (keyDown('R')) { if (t) stopFocus(t); portraitGoal(); g_keep_dist = 0.0f; }  // flights take their distance from here again
   }
   if (!still) {
     const float e = 0.14f;  // easing toward the goal
@@ -9107,6 +10215,7 @@ void afterBattleUpdate() {
            std::fabs(g_cam.gdist - g_cam.dist) < 0.01f * g_cam.gdist + 0.5f &&
            std::fabs(g_cam.gpivot[0] - g_cam.pivot[0]) + std::fabs(g_cam.gpivot[1] - g_cam.pivot[1]) + std::fabs(g_cam.gpivot[2] - g_cam.pivot[2]) < 1.5f;
   };
+  if (solo) { placeCamera(feet); g_tag_x = -1.0f; return; }  // (without the editor: no mapping, picks or labels, only the camera)
   const bool ready = g_worn && g_worn_key == keyOf(*t);
   // ---- The parts of the model, mapped once (three sides, a scan each) ----
   if (!g_mapping && !g_pick_wanted && !g_pick_scanning && g_open && ready &&
@@ -9347,29 +10456,7 @@ void afterBattleUpdate() {
       g_look = 0;
     }
   }
-  // ---- the camera ----
-  const Vec pivot{feet.x + g_cam.pivot[0], feet.y + g_cam.pivot[1], feet.z + g_cam.pivot[2]};
-  const float y = g_cam.yaw / 57.2958f, pt = g_cam.pitch / 57.2958f;
-  const Vec loc{pivot.x + g_cam.dist * std::cos(pt) * std::cos(y), pivot.y + g_cam.dist * std::cos(pt) * std::sin(y), pivot.z + g_cam.dist * std::sin(pt)};
-  const Vec rot{-g_cam.pitch, g_cam.yaw + 180.0f, 0.0f};  // Pitch, yaw, roll, looking at the pivot
-  if (g_view_hooked) {  // the view hook puts it on screen, this frame
-    const float view[7] = {loc.x, loc.y, loc.z, rot.x, rot.y, rot.z, g_cam_fov};
-    std::memcpy(g_view_pose, view, sizeof(view));
-    g_view_ms = nowMs();
-    g_view_on = true;
-  } else {
-    setActor(g_cam_actor, loc, rot);
-  }
-  {  // the pose, for turning screen points into lines of sight and back
-    const float fwd[3] = {-std::cos(pt) * std::cos(y), -std::cos(pt) * std::sin(y), -std::sin(pt)};
-    const float rgt[3] = {-fwd[1], fwd[0], 0.0f};
-    const float rl = std::sqrt(rgt[0] * rgt[0] + rgt[1] * rgt[1]);
-    const float r3[3] = {rl > 1e-4f ? rgt[0] / rl : 1.0f, rl > 1e-4f ? rgt[1] / rl : 0.0f, 0.0f};
-    const float up[3] = {fwd[1] * r3[2] - fwd[2] * r3[1], fwd[2] * r3[0] - fwd[0] * r3[2], fwd[0] * r3[1] - fwd[1] * r3[0]};
-    const float pose[12] = {loc.x, loc.y, loc.z, fwd[0], fwd[1], fwd[2], r3[0], r3[1], r3[2], up[0], up[1], up[2]};
-    std::memcpy(g_cam_pose, pose, sizeof(pose));
-  }
-  if (!g_view_hooked && viewTarget() != g_cam_actor) setViewTarget(g_cam_pc, g_cam_actor);
+  placeCamera(feet);
   // ---- The selection's tag, where its part is on screen (a few parts at most) ----
   float tx = -1.0f, ty = -1.0f;
   if (g_tag_found && std::fabs(angleTo(g_tag_yaw, facing(*t))) > 30.0f)
@@ -10284,6 +11371,31 @@ void update(bool round_started) {
       case kExport:
         if (t) exportStart(*t);  // Every part of the slot. Ones not ready yet are named
         break;
+      case kBake:
+        try {
+          if (t) bakeStart(*t);  // The slot's saved recolor into a pak, mounted
+          else g_status = "No fighter to bake yet.";
+        } catch (...) { g_status = "The bake failed (see combo_log.txt)."; COMBO_LOG("bake: failed with an exception"); }
+        break;
+      case kBakeAll: {
+        std::set<std::string> only;
+        for (size_t a = 0; a < q.text.size();) { size_t b = q.text.find('\n', a); if (b == std::string::npos) b = q.text.size(); if (b > a) only.insert(q.text.substr(a, b - a)); a = b + 1; }
+        try { bakeAllStart(only); } catch (...) { g_bake_queue.clear(); g_status = "The bake failed (see combo_log.txt)."; COMBO_LOG("bake all: failed with an exception"); }
+        break;
+      }
+      case kUnbake: {
+        const size_t sl = q.text.find('/');
+        std::string err;
+        if (sl == std::string::npos) break;
+        if (g_bake || !g_bake_queue.empty()) { g_status = "A bake is running. Try again in a moment."; break; }
+        bool unbake_ok = false;
+        try { unbake_ok = unbakeSlot(q.text.substr(0, sl), q.text.substr(sl + 1), err); } catch (...) { err = "it failed (see combo_log.txt)"; }
+        if (unbake_ok)
+          showBakeResult(true, "Unbaked " + q.text.substr(0, sl) + " " + q.text.substr(sl + 1) +
+                               (err == "later" ? ". The game's own colors come back the next time the game starts." : ". Reload instance to see it."), {}, {});
+        else showBakeResult(false, "Not unbaked: " + q.text.substr(0, sl) + " " + q.text.substr(sl + 1), {}, {err});
+        break;
+      }
       case kCamera:
         g_cam.on = q.rgb != 0;
         g_cam.ready = false;

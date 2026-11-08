@@ -147,8 +147,12 @@ void init(const std::filesystem::path& ue4ss_dir) {
   say(g_on ? "Waiting for a match" : "Off");
 }
 
-bool enabled() { return g_on; }
+// Recolor sharing is off: recolors show through baking, which only shows your own.
+// The code stays, behind this switch.
+bool available() { return false; }
+bool enabled() { return available() && g_on; }
 void setEnabled(bool on) {
+  if (!available()) return;
   g_on = on;
   saveSetting();
   if (g_msgs_iface) say(on ? "Waiting for a match" : "Off");
@@ -164,7 +168,7 @@ uint32_t myAccount() {
   }
   return g_me;
 }
-bool sharing() { return g_on && myAccount() != 0; }
+bool sharing() { return enabled() && myAccount() != 0; }
 
 extern bool g_taken;
 void opponentFound(uint32_t account) {
@@ -194,6 +198,7 @@ bool g_taken = false;  // the opponent's recolor came this match, so another sen
 bool fightRunning() { return g_fighting; }
 void update(bool battle_running) {
   g_fighting = battle_running;
+  if (!available()) return;
   if (!g_msgs || !g_opp) return;
   const auto now = Clock::now();
   if (battle_running) g_last_battle = now;

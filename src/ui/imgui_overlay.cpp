@@ -5,6 +5,7 @@
 #include "keybinds.h"
 #include "combo_trials.h"
 #include "recolor_test.h"
+#include "box_editor.h"
 #include "recolor_share.h"
 #include "update_check.h"
 #include <random>
@@ -81,7 +82,7 @@ namespace {
 
   // Mouse and keyboard go to ImGui only while the F5 menu is open.
   LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen())) ||
+    if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
                       (!modScreenActive() && menu_ui::g_online_picker))) {
       ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp);
       const ImGuiIO& io = ImGui::GetIO();
@@ -430,7 +431,7 @@ namespace {
       ImGui_ImplDX11_NewFrame();
       ImGui_ImplWin32_NewFrame();
       ImGui::NewFrame();
-      ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen())) ||
+      ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
                                        (!modScreenActive() && menu_ui::g_online_picker);
       draw_ui();
       ImGui::Render();

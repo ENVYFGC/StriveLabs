@@ -5,6 +5,7 @@
 #include <valarray>
 
 #include "arcsys.h"
+#include "box_editor.h"
 #include "draw_utils.h"
 
 #if 0
@@ -460,6 +461,31 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
     }
 
     draw_hitbox(tool, entity, hitboxes[i]);
+  }
+
+  if (box_editor::isOpen() && tool.getViewWidth() > 0 && tool.getViewHeight() > 0) {  // (setScreenMap keeps only the entities shown)
+    // Script & boxes: where this fighter's box units land on screen, so its boxes can be dragged there
+    FVector2D o(0.f, 0.f), a(100.f, 0.f), b(0.f, 100.f);
+    transform_hitbox_point(tool, entity, o, false);
+    transform_hitbox_point(tool, entity, a, false);
+    transform_hitbox_point(tool, entity, b, false);
+    const float W = static_cast<float>(tool.getViewWidth()), H = static_cast<float>(tool.getViewHeight());
+    box_editor::setScreenMap(&entity, {o.x / W, o.y / H, (a.x - o.x) / 100.f / W, (a.y - o.y) / 100.f / H, (b.x - o.x) / 100.f / W, (b.y - o.y) / 100.f / H});
+  }
+
+  int hl = -1;  // Script & boxes: the box picked in its table, drawn even when it's not active
+  if (box_editor::highlighted(&entity, hl)) {
+    int total = 0;
+    for (int k = 0; k < 19; k++) total += entity.box_counts[k];
+    if (hl < total) {
+      const auto &b = entity.hitboxes[hl];
+      std::array c = {FVector2D(b.x, b.y), FVector2D(b.x + b.w, b.y), FVector2D(b.x + b.w, b.y + b.h), FVector2D(b.x, b.y + b.h)};
+      for (auto &p : c) transform_hitbox_point(tool, entity, p, false);
+      for (int k = 0; k < 4; k++) {
+        tool.drawLine(c[k], c[(k + 1) % 4], FLinearColor{0.f, 0.f, 0.f, 1.f}, 6.F);
+        tool.drawLine(c[k], c[(k + 1) % 4], FLinearColor{1.f, 1.f, 1.f, 1.f}, 3.F);
+      }
+    }
   }
 }
 

@@ -9,6 +9,7 @@
 
 namespace recolor_share {
   void init(const std::filesystem::path& ue4ss_dir);  // Loads the setting and finds Steam's functions
+  bool available();           // false: sharing is switched off in this build (recolors show by baking)
   bool enabled();             // the setting
   void setEnabled(bool on);   // any thread; saved
   uint32_t myAccount();       // our Steam account id (low 32 bits of the SteamID), 0 = no Steam networking

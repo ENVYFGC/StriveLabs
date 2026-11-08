@@ -17,8 +17,8 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 - Combo Trials. Pick any combo you've saved or downloaded in Combo Maker and try it in training: it starts where the combo starts, and the game lights up each move as it lands. Training can also run on an older battle version.
 - Combo Search. Find Combo Maker combos online for your character, sorted and filtered, and download them straight into Combo Trials.
 - A damage panel window for P1, P2 or both, which can hide the game's own.
-- A color editor. Recolor any character's outfit, weapon and effects live in training, save named palettes, and see your recolors in character select, versus and online.
-- Recolor sharing (off by default). Two StriveLabs players in a Park or room match see each other's recolors.
+- A color editor. Recolor any character's outfit, weapon and effects live in training, save named palettes, and bake your recolors into the game's files to see them in character select, versus and online.
+- Script & boxes. See and edit any fighter's hitboxes and move scripts live in training, load moves from older battle versions or from text files, and save what you changed.
 - StriveLabs Online (Ctrl+O). Pick the battle version for Park and room matches, so two players on StriveLabs can play an older version together.
 - A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size.
 - Character select remembers your last character, color, stage and music after a restart.
@@ -71,13 +71,17 @@ A small status line shows what's going on: replay or training, the rewind point,
 
 In training, press Ctrl+Alt+E with the character and color you want to recolor. The fight pauses and the camera is yours. The buttons at the top are the parts of the outfit (Body, Weapon, DI and so on). Regions lists the part's colors: the left swatch is the lit color, the right one is the shadow. Material colors covers outlines and glows, and Effects covers the fire and the other effects. Save with Ctrl+S.
 
-Your recolor goes on whenever that character and color is picked, in training, character select, versus and online (only you see it, unless recolor sharing is on). Palettes save a recolor with a title, your name as the author, and a note. A palette keeps exactly how it looked, so it looks the same when someone else loads it, even with a skin mod. Parts you didn't recolor are left alone. Effects you recolor with Capture effects, and decal line colors, show in training only for now. Everything else shows everywhere.
+Your recolor shows in training as you make it. To see it everywhere else (character select, versus, replays and online, where only you see it), bake it: see Baking below. Palettes save a recolor with a title, your name as the author, and a note. A palette keeps exactly how it looked, so it looks the same when someone else loads it, even with a skin mod. Parts you didn't recolor are left alone. Effects you recolor with Capture effects, and decal line colors, stay training-only.
 
 Your work is kept in `RED/Binaries/Win64/ue4ss/StriveLabs_colors/` (on Xbox, `Content/RED/Binaries/WinGDK/ue4ss/StriveLabs_colors/`). Saves are in `saved/`, palettes and exports in `recolors/`. A palette you delete or replace, and the recolor a Load or Reset replaces, go to `recolors/palettes/<character>/.trash`.
 
-## Recolor sharing
+## Baking
 
-Open StriveLabs Online (Ctrl+O) and turn Recolor sharing on. In a Park or room match against another StriveLabs player with sharing on, each side's saved recolor for the picked character and color shows on their fighter during round 1, and you can save theirs into one of your slots. Let the round 1 intro play, since the games find each other there. Turning it on lets the opponent's game know your Steam account. It's Steam only, and it never cancels a match.
+The color editor's Bake tab writes a slot's saved recolor into the game's own files, so it shows everywhere, with nothing put on during fights. Bake this slot bakes the slot you're editing; Bake saved slots... lists every saved recolor with what it holds and only bakes the ones you tick. Reload instance (back to the main menu and in again) to see it. Unbake puts the game's colors back. Bakes are compressed paks in `StriveLabs_colors/baked/`; the game's own files are never changed. Bake again after changing a recolor and after a game update (bakes made before an update are left off until then). Recolor sharing is turned off.
+
+## Script & boxes
+
+Press Ctrl+Alt+B in training. It shows each fighter's move, sprite, hitboxes and the move's script as it plays. With Hitboxes on, boxes can be picked, resized and moved on the fighter, or edited by their numbers. Script values can be changed live: startup, active and recovery, each hit's attack level, and any line's numbers (hover a name for what it does). Replace with... turns a line into another instruction of the same size, Version loads the move as it was in an older battle version, and From file... loads it from a `.bbs` text file you can add lines to (Export move writes one to start from). Search finds lines, and Save edits... / Load edits... keep everything you changed. Edits only apply in training: they're put back before any other fight, online included.
 
 ## Update notifier
 
@@ -91,4 +95,4 @@ They use Eddienput notation: `W` wait, `X` tap, `[X]` hold, `]X[` release, `+` s
 
 ## Building
 
-It's a UE4SS C++ mod, built with xmake inside an RE-UE4SS checkout. The DLL goes in `ue4ss/Mods/StriveLabs/dlls/main.dll`. The menu uses [Dear ImGui](https://github.com/ocornut/imgui) (MIT, in `third_party/imgui`) and the Barlow fonts (SIL Open Font License, in `ue4ss/StriveLabs_fonts`).
+It's a UE4SS C++ mod, built with xmake inside an RE-UE4SS checkout. The DLL goes in `ue4ss/Mods/StriveLabs/dlls/main.dll`. The menu uses [Dear ImGui](https://github.com/ocornut/imgui) (MIT, in `third_party/imgui`) and the Barlow fonts (SIL Open Font License, in `ue4ss/StriveLabs_fonts`). Baked paks are compressed with [zlib](https://zlib.net) (zlib license, fetched by xmake). Script & boxes' instruction database: BBScriptDX by Sliyne, bbscript by super-continent.

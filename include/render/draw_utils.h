@@ -143,6 +143,7 @@ class DrawTool {
 
   double screen_width = 0.0;
   double screen_height = 0.0;
+  double view_width = 0.0, view_height = 0.0;  // the viewport as it is (screen_* are made 16:9)
   double units = 0.0;
 
   DrawTool();
@@ -163,6 +164,8 @@ public:
   double getWidth() const { return screen_width; }
   double getHeight() const { return screen_height; }
   double getUnits() const { return units; }
+  double getViewWidth() const { return view_width; }
+  double getViewHeight() const { return view_height; }
 
   void updateRefs();
   
