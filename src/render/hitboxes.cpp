@@ -426,7 +426,7 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
     }
   }
 
-  // Sort so hurtboxes draw first and attacking boxes (hit / grab / followup_hit)
+  // Sort so hurtboxes draw first and attacking boxes (followup_hit / grab / hit)
   // draw on top.  Otherwise the larger green hurtbox overdraws a smaller orange
   // followup_hit box at 0.25 alpha and the attacker's hit region disappears.
   // stable_sort preserves within-type order so the asymmetric clip_fill loop
@@ -434,9 +434,9 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
   auto box_priority = [](hitbox::box_type t) {
     switch (t) {
       case hitbox::box_type::hurt:         return 0;
-      case hitbox::box_type::hit:          return 1;
-      case hitbox::box_type::grab:         return 2;
-      case hitbox::box_type::followup_hit: return 3;
+      case hitbox::box_type::followup_hit: return 1;
+      case hitbox::box_type::hit:          return 2;
+      case hitbox::box_type::grab:         return 3;
       default:                             return 0;
     }
   };
