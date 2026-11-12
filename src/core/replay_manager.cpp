@@ -2,6 +2,7 @@
 
 #include "arcsys.h"
 #include "combo_log.h"
+#include "object_scan.h"
 #include "keybinds.h"
 #include "bind_watcher.h"
 #include "keybindings.h"
@@ -159,6 +160,7 @@ struct ReplayManager::Data
 
     void onBattleFrameProcessed()
     {
+        trialBattleCalls++;
         if (!isWaitingForFrame) return;
         const auto* engine = asw_engine::get();
         if (!engine) return;
@@ -227,6 +229,7 @@ struct ReplayManager::Data
     {
         bool valid = false;
         uint32_t position = 0;  // peer 0 replay frame position
+        int shift = 0;
         ReplayHead heads[6]{};
     };
     RingSave ring[kRingSlots]{};
@@ -254,7 +257,7 @@ struct ReplayManager::Data
         return manager ? manager->m_ReplayBuffer[0].m_ReadHead.m_SolidPosition : 0;
     }
 
-    void clearRing()
+    void clearRingOnly()
     {
         for (auto& r : ring) r.valid = false;
         ringNext = 0;
@@ -262,6 +265,18 @@ struct ReplayManager::Data
         haveRingLast = false;
         assistSlot = -1;
         assistStandby = false;
+    }
+
+    void clearRing()
+    {
+        clearRingOnly();
+        clearSeekSaves();
+    }
+
+    void clearAtStageChange()
+    {
+        if (seekEnabled && stageCanReset) clearRingOnly();
+        else clearRing();
     }
 
     // The ring lives in the game's backup slots 0-15 and F6 uses 18-19, so all 20 must exist.
@@ -274,7 +289,8 @@ struct ReplayManager::Data
     {
         const int want = assistFrames();
         auto rollback = asw_rollback::get();
-        if (want <= 0 || !backupSlotsOk(rollback) || !manager) return;
+        const bool standIn = seekEnabled && seekSlots(rollback) == 0;
+        if ((want <= 0 && !standIn) || !backupSlotsOk(rollback) || !manager) return;
         const uint32_t pos = replayPosition();
         // Moved back with the replay's own controls: the fight follows the recording
         // again from there, and saves ahead of it are no use.
@@ -284,9 +300,9 @@ struct ReplayManager::Data
             diverged = false;
         }
         // Only while the round is being fought: no saves across a round change.
-        if (analyzer || diverged || assistStandby || !gameState->roundActive) return;
+        if (analyzer || diverged || assistStandby || seekCatching || !gameState->roundActive) return;
         // Spacing so the ring always reaches back far enough, with one slot locked by F6.
-        const uint32_t every = (std::max)(6, (want + kRingSlots - 3) / (kRingSlots - 2));
+        const uint32_t every = want > 0 ? (std::max)(6, (want + kRingSlots - 3) / (kRingSlots - 2)) : 60;
         if (haveRingLast && pos < ringLast + every) return;
         if (ringNext == assistSlot) ringNext = (ringNext + 1) % kRingSlots;
         const int slot = ringNext;
@@ -299,6 +315,7 @@ struct ReplayManager::Data
 
         ring[slot].valid = true;
         ring[slot].position = pos;
+        ring[slot].shift = stageAt;
         for (int i = 0; i < 6; i++) ring[slot].heads[i] = manager->m_ReplayBuffer[i].m_ReadHead;
         ringLast = pos;
         haveRingLast = true;
@@ -618,7 +635,11 @@ public:
             if (auto* a = *reinterpret_cast<void**>(e + 0x43C8)) linked.insert(a);
 
         std::vector<Unreal::UObject*> actors;
-        for (const auto& name : g_fx_classes) UObjectGlobals::FindAllOf(name.c_str(), actors);
+        {
+            std::vector<const wchar_t*> names;
+            for (const auto& name : g_fx_classes) names.push_back(name.c_str());
+            object_scan::allOf(names, actors);
+        }
 
         std::set<void*> usable;
         int released = 0, cleared = 0;
@@ -652,13 +673,18 @@ public:
         }
         // Second kind: actors whose fight object no longer links back to them
         int released_b = 0;
+        std::string unreleased;
         if (orig_ActorClassA && orig_ActorClassB && orig_ActorReleaseA && orig_ActorReleaseB && !g_actor_classes.empty())
         {
             std::set<void*> linked_b;
             for (auto* e : objs)
                 if (auto* a = *reinterpret_cast<void**>(e + 0x43A0)) linked_b.insert(a);
             std::vector<Unreal::UObject*> bs;
-            for (const auto& name : g_actor_classes) UObjectGlobals::FindAllOf(name.c_str(), bs);
+            {
+                std::vector<const wchar_t*> names;
+                for (const auto& name : g_actor_classes) names.push_back(name.c_str());
+                object_scan::allOf(names, bs);
+            }
             Unreal::UClass* class_a = orig_ActorClassA();
             Unreal::UClass* class_b = orig_ActorClassB();
             for (auto* obj : bs)
@@ -670,12 +696,19 @@ public:
                 a[0x2A094] = 1;
                 if (class_a && obj->IsA(class_a)) orig_ActorReleaseA(obj);
                 else if (class_b && obj->IsA(class_b)) orig_ActorReleaseB(obj);
+                else if (unreleased.size() < 240)
+                {
+                    if (auto* cls = obj->GetClassPrivate())
+                        for (const auto ch : cls->GetName()) unreleased += ch < 128 ? static_cast<char>(ch) : '?';
+                    unreleased += ' ';
+                }
                 released_b++;
             }
         }
         COMBO_LOG("F9 effects: released " + std::to_string(released) + ", cleared " + std::to_string(cleared)
                   + ", actors released " + std::to_string(released_b)
-                  + ", tracked classes " + std::to_string(g_fx_classes.size()) + "+" + std::to_string(g_actor_classes.size()));
+                  + ", tracked classes " + std::to_string(g_fx_classes.size()) + "+" + std::to_string(g_actor_classes.size())
+                  + (unreleased.empty() ? std::string() : ", unlinked with no release for: " + unreleased));
     }
 
     // ---- F9 DANGER banner sync ---------------------------------------------------
@@ -704,6 +737,767 @@ public:
         }
     }
 
+    bool seekEnabled = false;
+    bool seekVerbose = false;
+    uint64_t* frameCounter = nullptr;
+    bool seekDue = false, seekCatching = false, seekStarted = false;
+    bool haveSeekTop = false;
+    static constexpr int kSeekFirstSlot = 20, kSeekMaxSaves = 400;
+    static constexpr uint32_t kSeekEvery = 60;
+    struct SeekSave
+    {
+        bool valid = false;
+        bool calm = false;
+        uint32_t position = 0;
+        int gameFrame = 0;
+        int shift = 0;
+        ReplayHead heads[6]{};
+    };
+    bool stageCanReset = false;
+    static constexpr uint32_t kSeekCalmEvery = 45, kSeekRunUp = 600, kSeekQuickRunUp = 120;
+    uint32_t seekOrigin = 0;
+    bool haveSeekOrigin = false, seekQuick = false, seekRough = false;
+
+    int seekBusy() const
+    {
+        auto* eng = asw_engine::get();
+        if (!eng) return 1;
+        int busy = 0;
+        const int n = (std::min)(static_cast<int>(eng->entity_count), 107);
+        for (int i = 0; i < n; i++)
+        {
+            auto* e = reinterpret_cast<uint8_t*>(eng->entities[i]);
+            if (!e || e[0x20]) continue;
+            if (*reinterpret_cast<void**>(e + kFxLink) != nullptr || (e[kFxSaved] && *reinterpret_cast<int*>(e + kFxPlayed) > 0)) busy++;
+        }
+        return busy;
+    }
+
+    using StagePath = std::vector<std::vector<asw_stage_call>>;
+    StagePath stageJournal;
+    int stageAt = 0;
+
+    static bool stageStepKnown(const std::vector<asw_stage_call>& step)
+    {
+        for (const asw_stage_call& call : step)
+            if (call.event == kStageBgChange) return true;
+        return false;
+    }
+
+    bool stageCovers(const StagePath& path, int from, int to) const
+    {
+        if (to > static_cast<int>(path.size())) return false;
+        for (int k = from; k < to; k++)
+            if (!stageStepKnown(path[static_cast<size_t>(k)])) return false;
+        return true;
+    }
+
+    bool seekUsable(int breaks, int breaksNow) const
+    {
+        if (breaks == breaksNow) return true;
+        if (!stageCanReset) return false;
+        return breaks > breaksNow ? stageCovers(stageJournal, breaksNow, breaks) : stageCovers(stageJournal, 0, breaks);
+    }
+
+    bool stageSettled() const
+    {
+        return stageAt == 0 || (stageAt <= static_cast<int>(stageJournal.size()) && stageStepKnown(stageJournal[static_cast<size_t>(stageAt - 1)]));
+    }
+
+    void stagePut(int breaks, const StagePath* own, int areaBefore)
+    {
+        const int area = asw_stage_area();
+        const StagePath& path = own ? *own : stageJournal;
+        const bool settled = stageSettled();
+        if (breaks != stageAt || area != areaBefore || !settled)
+        {
+            const bool forward = !own && breaks > stageAt && settled;
+            const int from = forward ? stageAt : 0;
+            const std::string what = "load: stage went from " + std::to_string(stageAt) + " wall break(s), area " + std::to_string(areaBefore) + (settled ? "" : " (still changing)")
+                                     + ", to " + std::to_string(breaks) + ", area " + std::to_string(area) + ": ";
+            if (stageCanReset && stageCovers(path, from, breaks))
+            {
+                const int reset = forward ? -1 : asw_stage_round_reset();
+                int sent = 0;
+                for (int k = from; k < breaks; k++)
+                    for (const asw_stage_call& call : path[static_cast<size_t>(k)])
+                        if (call.event == kStageBgChange || call.event == kStageBoxMoveEnd) sent += asw_stage_fire(call) > 0 ? 1 : 0;
+                COMBO_LOG(what + (reset >= 0 ? "round reset on " + std::to_string(reset) + " listener(s), " : "") + std::to_string(sent) + " change event(s) sent");
+            }
+            else
+                COMBO_LOG(what + "can't be put back, the stage is left as it is");
+            if (area != areaBefore)
+            {
+                asw_stage_record_refresh();
+                stageCanReset = asw_stage_can_reset();
+            }
+        }
+        stageAt = breaks;
+        lastStage = area;
+    }
+
+    bool seekOldest(uint32_t& oldest) const
+    {
+        bool any = false;
+        const int shiftNow = stageAt;
+        for (const auto& r : ring)
+            if (r.valid && seekUsable(r.shift, shiftNow) && (!any || r.position < oldest))
+            {
+                oldest = r.position;
+                any = true;
+            }
+        const int slots = (std::min)(seekSlots(asw_rollback::get()), static_cast<int>(seekSaves.size()));
+        for (int i = 0; i < slots; i++)
+            if (seekSaves[static_cast<size_t>(i)].valid && seekUsable(seekSaves[static_cast<size_t>(i)].shift, shiftNow)
+                && (!any || seekSaves[static_cast<size_t>(i)].position < oldest))
+            {
+                oldest = seekSaves[static_cast<size_t>(i)].position;
+                any = true;
+            }
+        return any;
+    }
+
+    void seekPoints(int& origin, std::vector<int>& calm) const
+    {
+        calm.clear();
+        uint32_t oldest = 0;
+        const bool any = seekOldest(oldest);
+        origin = static_cast<int>(haveSeekOrigin ? seekOrigin : any ? oldest : 0);
+        const int slots = (std::min)(seekSlots(asw_rollback::get()), static_cast<int>(seekSaves.size()));
+        const int shiftNow = stageAt;
+        for (int i = 0; i < slots; i++)
+            if (seekSaves[static_cast<size_t>(i)].valid && seekSaves[static_cast<size_t>(i)].calm && seekUsable(seekSaves[static_cast<size_t>(i)].shift, shiftNow))
+                calm.push_back(static_cast<int>(seekSaves[static_cast<size_t>(i)].position));
+    }
+    std::vector<SeekSave> seekSaves;
+    int seekNext = 0;
+    bool haveSeekWatch = false, seekOwnJump = false;
+    bool haveWorld = false, worldAway = false, worldChanging = false;
+    int worldWall[2]{};
+    int worldX[2]{};
+    uint32_t seekWatch = 0;
+
+    static int seekSlots(asw_rollback* rollback)
+    {
+        if (!rollback) return 0;
+        const int have = (std::min)(static_cast<int>(rollback->MaxBackupFrame), static_cast<int>(rollback->BackupData.Num()));
+        return std::clamp(have - kSeekFirstSlot, 0, kSeekMaxSaves);
+    }
+
+    void clearSeekSaves()
+    {
+        for (auto& s : seekSaves) s.valid = false;
+        seekNext = 0;
+        haveSeekTop = false;
+        haveSeekWatch = false;
+        haveSeekOrigin = false;
+        seekRough = false;
+        if (!gameState || !gameState->roundActive) worldAway = false;
+    }
+
+    void seekSaveTick()
+    {
+        if (!seekEnabled || !manager) return;
+        const uint32_t pos = replayPosition();
+        if (auto* eng = asw_engine::get())
+        {
+            const bool quiet = seekOwnJump || seekCatching || trial != Trial::Off || !haveWorld || !seekVerbose;
+            for (int i = 0; i < 2; i++)
+            {
+                auto* e = eng->players[i].entity;
+                if (!e) continue;
+                const int wall = *reinterpret_cast<const int*>(reinterpret_cast<const uint8_t*>(e) + 0xD860);
+                const int x = e->pos_x;
+                if (!quiet && ((wall < worldWall[i] - 500) || (wall >= 10000) != (worldWall[i] >= 10000)))
+                    COMBO_LOG("watch: P" + std::to_string(i + 1) + " wall damage " + std::to_string(worldWall[i]) + " -> " + std::to_string(wall) + " at " + std::to_string(pos));
+                if (!quiet && std::abs(static_cast<long long>(x) - worldX[i]) > 400000)
+                    COMBO_LOG("watch: P" + std::to_string(i + 1) + " moved from " + std::to_string(worldX[i]) + " to " + std::to_string(x) + " in one frame at " + std::to_string(pos));
+                worldWall[i] = wall;
+                worldX[i] = x;
+            }
+            haveWorld = true;
+            if (const bool changing = asw_stage_changing(); changing != worldChanging)
+            {
+                if (!quiet) COMBO_LOG(std::string("watch: the engine's flag at 0x156 went ") + (changing ? "on" : "off") + " at " + std::to_string(pos));
+                worldChanging = changing;
+            }
+            bool outside = false, settled = true;
+            int wallLeft = 0, wallRight = 0;
+            const bool haveWalls = asw_stage_walls(wallLeft, wallRight);
+            for (int i = 0; i < 2; i++)
+            {
+                const long long x = worldX[i];
+                const long long left = haveWalls ? wallLeft * 1000LL : -1600000LL;
+                const long long right = haveWalls ? wallRight * 1000LL : 1600000LL;
+                if (x < left - 500000 || x > right + 500000) outside = true;
+                if (x < left - 200000 || x > right + 200000 || worldWall[i] >= 10000) settled = false;
+            }
+            if (!worldAway && outside)
+            {
+                worldAway = true;
+                clearAtStageChange();
+                if (!quiet) COMBO_LOG("seek: a wall break started at " + std::to_string(pos) + ", no jumps until it is over");
+            }
+            else if (worldAway && settled)
+            {
+                worldAway = false;
+                clearAtStageChange();
+                if (!quiet) COMBO_LOG("seek: the wall break is over at " + std::to_string(pos) + ", saves start again from here");
+            }
+        }
+        if (haveSeekWatch && pos < seekWatch && !seekOwnJump)
+        {
+            clearRing();
+            diverged = false;
+        }
+        seekOwnJump = false;
+        seekWatch = pos;
+        haveSeekWatch = true;
+        if (analyzer || diverged || assistStandby || seekCatching || trial != Trial::Off || worldAway || !gameState->roundActive) return;
+        if (!haveSeekTop || pos > seekTop)
+        {
+            seekTop = pos;
+            haveSeekTop = true;
+        }
+        auto rollback = asw_rollback::get();
+        const int slots = seekSlots(rollback);
+        if (slots <= 0 || !backupSlotsOk(rollback)) return;
+        if (static_cast<int>(seekSaves.size()) != slots)
+        {
+            seekSaves.assign(static_cast<size_t>(slots), SeekSave{});
+            seekNext = 0;
+        }
+        const bool calm = seekBusy() == 0;
+        bool nearAny = false, nearCalm = false;
+        for (const auto& s : seekSaves)
+        {
+            if (!s.valid || s.position > pos) continue;
+            if (pos - s.position < kSeekEvery) nearAny = true;
+            if (s.calm && pos - s.position < kSeekCalmEvery) nearCalm = true;
+        }
+        if (calm ? nearCalm : nearAny) return;
+        SeekSave& s = seekSaves[static_cast<size_t>(seekNext)];
+        trialSave(rollback, kSeekFirstSlot + seekNext);
+        if (!haveSeekOrigin)
+        {
+            seekOrigin = pos;
+            haveSeekOrigin = true;
+        }
+        s.valid = true;
+        s.calm = calm;
+        s.position = pos;
+        s.gameFrame = asw_engine::get() ? static_cast<int>(asw_engine::get()->GameFrame) : -1;
+        s.shift = stageAt;
+        for (int i = 0; i < 6; i++) s.heads[i] = manager->m_ReplayBuffer[i].m_ReadHead;
+        seekNext = (seekNext + 1) % slots;
+    }
+    uint32_t seekTarget = 0, seekTop = 0, seekLastPos = 0, seekFrom = 0;
+    ULONGLONG seekBegan = 0;
+
+    bool seekRange(int& first, int& last, int& now) const
+    {
+        if (!seekEnabled || !gameState->checkModeReplay() || !manager || !haveSeekTop) return false;
+        if (analyzer || diverged || assistStandby || worldAway) return false;
+        uint32_t oldest = 0;
+        if (!seekOldest(oldest) || seekTop <= oldest + 1) return false;
+        first = static_cast<int>(oldest + 1);
+        last = static_cast<int>(seekTop);
+        now = static_cast<int>(replayPosition());
+        return true;
+    }
+
+    static constexpr int kSeekUndoSlot = 17;
+    uint32_t seekWanted = 0;
+    bool seekWantedQuick = false, seekWantedBeyond = false;
+    bool seekUndo = false, seekUndoDue = false, seekUndoRough = false;
+    int seekUndoBreaks = 0;
+    int seekStill = 0;
+    ReplayHead seekUndoHeads[6]{};
+
+    void seekFinish(const char* why, bool stalled = false)
+    {
+        seekCatching = false;
+        timeline->setForced(false);
+        timeline->setPaused(false);
+        timeline->setPaused(true);
+        const uint32_t pos = manager ? replayPosition() : 0;
+        COMBO_LOG(std::string("seek: ") + (why ? why : "there") + ", at " + std::to_string(pos) + " (asked " + std::to_string(seekTarget) + ", from "
+                  + std::to_string(seekFrom) + "), " + std::to_string(GetTickCount64() - seekBegan) + " ms");
+        if (stalled && seekUndo)
+        {
+            seekUndoDue = true;
+            seekDue = false;
+        }
+        seekUndo = false;
+    }
+
+    void seekPutBack()
+    {
+        seekUndoDue = false;
+        auto rollback = asw_rollback::get();
+        if (!backupSlotsOk(rollback) || !manager) return;
+        int savedIndex = rollback->CurrentBackupDataIndex;
+        const bool ok = restoreRewindPoint(kSeekUndoSlot, seekUndoBreaks);
+        rollback->CurrentBackupDataIndex = savedIndex;
+        if (ok)
+        {
+            for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = seekUndoHeads[i];
+            seekRough = seekUndoRough;
+            ringLast = replayPosition();
+            haveRingLast = true;
+            seekStarted = true;
+        }
+        timeline->setPaused(false);
+        timeline->setPaused(true);
+        COMBO_LOG(std::string("seek: ") + (ok ? "put back where it was, at " + std::to_string(replayPosition()) : "couldn't be put back where it was"));
+    }
+
+    void seekPreTick()
+    {
+        if (seekUndoDue && !seekCatching) seekPutBack();
+        if (!seekDue || seekCatching) return;
+        seekDue = false;
+        seekUndo = false;
+        seekStill = 0;
+        seekQuick = seekWantedQuick;
+        auto rollback = asw_rollback::get();
+        int first = 0, last = 0, now = 0;
+        const char* why = trial != Trial::Off ? "a catch-up test is running"
+            : !backupSlotsOk(rollback) ? "the game's save slots aren't there"
+            : !gameState->roundActive ? "no round running"
+            : g_cap_active ? "a capture is running"
+            : promptSide ? "the takeover question is open"
+            : !seekRange(first, last, now) ? "nothing saved to jump to"
+            : nullptr;
+        if (why)
+        {
+            COMBO_LOG(std::string("seek: not done, ") + why);
+            return;
+        }
+        const int furthest = seekWantedBeyond ? (std::max)(last, static_cast<int>(seekWanted)) : last;
+        const uint32_t target = static_cast<uint32_t>(std::clamp(static_cast<int>(seekWanted), first, furthest));
+        const uint32_t pos = replayPosition();
+        if (target == pos)
+        {
+            timeline->setPaused(false);
+            timeline->setPaused(true);
+            return;
+        }
+        seekFrom = pos;
+        const uint32_t runUp = seekQuick ? kSeekQuickRunUp : kSeekRunUp;
+        int bestSlot = -1;
+        int bestFrame = -1;
+        uint32_t bestPos = 0;
+        bool bestCalm = false;
+        bool bestSame = false;
+        const ReplayHead* bestHeads = nullptr;
+        int calmKept = 0, kept = 0;
+        const int shiftNow = stageAt;
+        int bestShift = stageAt;
+        auto consider = [&](int slot, uint32_t position, const ReplayHead* heads, int gameFrame, bool calm, int shift) {
+            kept++;
+            if (calm) calmKept++;
+            if (position >= target) return;
+            const bool same = shift == shiftNow;
+            if (!seekUsable(shift, shiftNow)) return;
+            const bool clean = calm && target - position <= runUp;
+            const bool better = bestSlot < 0 || (same != bestSame ? same : (clean != bestCalm ? clean : position > bestPos));
+            if (better)
+            {
+                bestSlot = slot;
+                bestPos = position;
+                bestHeads = heads;
+                bestFrame = gameFrame;
+                bestCalm = clean;
+                bestSame = same;
+                bestShift = shift;
+            }
+        };
+        for (int i = 0; i < kRingSlots; i++)
+            if (ring[i].valid) consider(kRingFirstSlot + i, ring[i].position, ring[i].heads, -1, false, ring[i].shift);
+        const int slots = (std::min)(seekSlots(rollback), static_cast<int>(seekSaves.size()));
+        for (int i = 0; i < slots; i++)
+        {
+            const SeekSave& s = seekSaves[static_cast<size_t>(i)];
+            if (s.valid) consider(kSeekFirstSlot + i, s.position, s.heads, s.gameFrame, s.calm, s.shift);
+        }
+        if (target < pos && bestSlot < 0)
+        {
+            COMBO_LOG("seek: not done, no save before that frame");
+            return;
+        }
+        const bool ahead = bestSlot >= 0 && bestPos > pos;
+        if (bestSlot >= 0 && (target < pos || (ahead && (bestCalm || target - pos > runUp)) || (seekRough && bestCalm)))
+        {
+            ReplayHead before[6];
+            for (int i = 0; i < 6; i++) before[i] = manager->m_ReplayBuffer[i].m_ReadHead;
+            int savedIndex = rollback->CurrentBackupDataIndex;
+            trialSave(rollback, kSeekUndoSlot);
+            seekUndo = true;
+            seekUndoBreaks = stageAt;
+            seekUndoRough = seekRough;
+            for (int i = 0; i < 6; i++) seekUndoHeads[i] = before[i];
+            const bool ok = restoreRewindPoint(bestSlot, bestShift);
+            rollback->CurrentBackupDataIndex = savedIndex;
+            if (!ok)
+            {
+                seekUndo = false;
+                if (bestSlot >= kSeekFirstSlot) seekSaves[static_cast<size_t>(bestSlot - kSeekFirstSlot)].valid = false;
+                else ring[bestSlot - kRingFirstSlot].valid = false;
+                COMBO_LOG("seek: not done, the load was refused");
+                return;
+            }
+            const int loadedFrame = asw_engine::get() ? static_cast<int>(asw_engine::get()->GameFrame) : -1;
+            if (bestFrame >= 0 && loadedFrame != bestFrame)
+            {
+                COMBO_LOG("seek: stopped, the load gave frame " + std::to_string(loadedFrame) + " and the save was made at " + std::to_string(bestFrame));
+                for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = before[i];
+                diverged = true;
+                timeline->setPaused(false);
+                timeline->setPaused(true);
+                return;
+            }
+            for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = bestHeads[i];
+            seekRough = !bestCalm;
+            roundCount = asw_state::get()->RoundCount;
+            ringLast = bestPos;
+            haveRingLast = true;
+            seekStarted = true;
+            COMBO_LOG(std::string("seek: loaded the ") + (bestCalm ? "calm" : "rough") + " save at " + std::to_string(bestPos) + " (slot " + std::to_string(bestSlot)
+                      + ") for " + std::to_string(target) + ", " + std::to_string(calmKept) + " of " + std::to_string(kept) + " saves are calm");
+        }
+        seekTarget = target;
+        seekLastPos = replayPosition();
+        seekBegan = GetTickCount64();
+        seekCatching = true;
+        resetRewindDelay();
+        timeline->setForced(true);
+    }
+
+    int seekAfterTick()
+    {
+        if (!seekCatching) return 0;
+        if (!gameState->checkModeReplay() || !manager || !asw_engine::get() || !gameState->roundActive || analyzer)
+        {
+            seekFinish("stopped, the round or the replay changed");
+            return 0;
+        }
+        const uint32_t pos = replayPosition();
+        if (pos >= seekTarget)
+        {
+            seekFinish(nullptr);
+            return 0;
+        }
+        if (pos == seekLastPos)
+        {
+            if (++seekStill >= 12)
+            {
+                seekFinish("stopped, the replay isn't moving (paused in the game or frozen)", true);
+                return 0;
+            }
+        }
+        else seekStill = 0;
+        seekLastPos = pos;
+        return static_cast<int>((std::min)(seekTarget - pos, static_cast<uint32_t>(60)));
+    }
+
+    void seekBatchDone()
+    {
+        if (!seekCatching || !manager) return;
+        const uint32_t pos = replayPosition();
+        if (pos >= seekTarget) seekFinish(nullptr);
+        else if (pos != seekLastPos)
+        {
+            seekLastPos = pos;
+            seekStill = 0;
+        }
+    }
+
+    void seekGuard()
+    {
+        if (!seekCatching) return;
+        keybindings->resetButton(keybindings->TOGGLE_SAVE_BUTTON);
+        keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
+        keybindings->resetButton(keybindings->TAKEOVER_P1_BUTTON);
+        keybindings->resetButton(keybindings->TAKEOVER_P2_BUTTON);
+        loadState = false;
+        rewindRequested = false;
+        if (analyzer || !gameState->roundActive || !gameState->checkModeReplay()) seekFinish("stopped, the round or the replay changed");
+    }
+
+    struct TrialProbe
+    {
+        int gameFrame = 0;
+        ReplayHead heads[2]{};
+        int x[2]{}, y[2]{}, hp[2]{}, action[2]{};
+        char sprite[2][33]{};
+    };
+    enum class Trial { Off, SaveDue, Playing, RestoreDue, CatchingUp };
+    Trial trial = Trial::Off;
+    int trialFrames = 0;
+    int trialTicks = 0;
+    int trialBattleCalls = 0;
+    int trialCallsSeen = 0;
+    int trialLastFrame = 0;
+    uint32_t trialLastPos = 0;
+    bool trialControl = false;
+    bool trialSameCounter = false;
+    uint64_t trialCounterAtSave = 0;
+    ReplayHead trialHeads[6]{};
+    TrialProbe trialStart{}, trialNormal{}, trialRestored{};
+    static constexpr int kTrialSlot = 17, kTrialNormalSlot = 0, kTrialCaughtSlot = 18;
+
+    TrialProbe trialProbe() const
+    {
+        TrialProbe p;
+        auto* eng = asw_engine::get();
+        if (!eng || !manager) return p;
+        p.gameFrame = eng->GameFrame;
+        for (int i = 0; i < 2; i++)
+        {
+            p.heads[i] = manager->m_ReplayBuffer[i].m_ReadHead;
+            auto* e = eng->players[i].entity;
+            if (!e) continue;
+            p.x[i] = e->pos_x;
+            p.y[i] = e->pos_y;
+            p.action[i] = e->action_time;
+            p.hp[i] = *reinterpret_cast<const int*>(reinterpret_cast<const uint8_t*>(e) + 0x1254);
+            const char* s = e->get_sprite_name();
+            if (s) memcpy(p.sprite[i], s, strnlen(s, 32));
+        }
+        return p;
+    }
+
+    static std::string trialDiff(const TrialProbe& a, const TrialProbe& b, bool fightOnly)
+    {
+        std::string d;
+        if (!fightOnly && a.gameFrame != b.gameFrame) d += "frame ";
+        for (int i = 0; i < 2; i++)
+        {
+            const std::string who = i == 0 ? "P1 " : "P2 ";
+            if (!fightOnly && (a.heads[i].m_Cursor != b.heads[i].m_Cursor || a.heads[i].m_Count != b.heads[i].m_Count
+                               || a.heads[i].m_SolidPosition != b.heads[i].m_SolidPosition)) d += who + "read, ";
+            if (a.x[i] != b.x[i]) d += who + "x, ";
+            if (a.y[i] != b.y[i]) d += who + "y, ";
+            if (a.hp[i] != b.hp[i]) d += who + "hp, ";
+            if (strcmp(a.sprite[i], b.sprite[i]) != 0) d += who + "sprite, ";
+            if (a.action[i] != b.action[i]) d += who + "action time, ";
+        }
+        return d;
+    }
+
+    static std::string trialText(const TrialProbe& p)
+    {
+        char b[420];
+        snprintf(b, sizeof(b), "frame %d | P1 read %u/%u/%u at %d,%d hp %d %s +%d | P2 read %u/%u/%u at %d,%d hp %d %s +%d",
+                 p.gameFrame,
+                 p.heads[0].m_Cursor, p.heads[0].m_Count, p.heads[0].m_SolidPosition, p.x[0], p.y[0], p.hp[0], p.sprite[0], p.action[0],
+                 p.heads[1].m_Cursor, p.heads[1].m_Count, p.heads[1].m_SolidPosition, p.x[1], p.y[1], p.hp[1], p.sprite[1], p.action[1]);
+        return b;
+    }
+
+    void trialSave(asw_rollback* rollback, int slot)
+    {
+        int savedIndex = rollback->CurrentBackupDataIndex;
+        const int max = rollback->MaxBackupFrame;
+        rollback->CurrentBackupDataIndex = (slot + max - 1) % max;
+        orig_SaveBackup(rollback);
+        rollback->CurrentBackupDataIndex = savedIndex;
+    }
+
+    static std::string trialBytes(const uint8_t* x, const uint8_t* y, size_t n, const char* name, bool inlinePart)
+    {
+        if (!x || !y || n == 0 || n > (size_t(256) << 20)) return std::string(name) + " not compared";
+        size_t differ = 0;
+        std::string where;
+        int listed = 0;
+        for (size_t i = 0; i < n; i++)
+        {
+            if (inlinePart && ((i >= 0x3EA0 && i < 0x3EB0) || (i >= 0x6E10 && i < 0x6E18))) continue;
+            if (x[i] == y[i]) continue;
+            differ++;
+            if (listed < 8)
+            {
+                char b[24];
+                snprintf(b, sizeof(b), "%s0x%zX", listed ? " " : "", i);
+                where += b;
+                listed++;
+            }
+        }
+        return std::string(name) + " " + std::to_string(differ) + " of " + std::to_string(n) + " bytes differ" + (differ ? " (first at " + where + ")" : std::string());
+    }
+
+    std::string trialStateDiff(asw_rollback* rollback, int a, int b)
+    {
+        const auto* sa = reinterpret_cast<const uint8_t*>(&rollback->BackupData[a]);
+        const auto* sb = reinterpret_cast<const uint8_t*>(&rollback->BackupData[b]);
+        const size_t objSize = static_cast<size_t>(rollback->ObjVectorBufferSize);
+        const size_t charSize = static_cast<size_t>(rollback->CharVectorBufferSize);
+        const auto* oa = *reinterpret_cast<const uint8_t* const*>(sa + 0x3EA0);
+        const auto* ob = *reinterpret_cast<const uint8_t* const*>(sb + 0x3EA0);
+        const auto* ca = *reinterpret_cast<const uint8_t* const*>(sa + 0x3EA8);
+        const auto* cb = *reinterpret_cast<const uint8_t* const*>(sb + 0x3EA8);
+        return trialBytes(sa, sb, 0x8750, "slot", true) + "; " + trialBytes(oa, ob, objSize, "objects", false) + "; "
+               + trialBytes(ca, cb, charSize, "characters", false);
+    }
+
+    void trialKey(int frames, int flags)
+    {
+        if (trial != Trial::Off)
+        {
+            COMBO_LOG("catch-up test: one is already running");
+            return;
+        }
+        const char* why = !gameState->checkModeReplay() ? "not in a replay"
+            : seekDue || seekCatching ? "a jump is going"
+            : !manager ? "no replay data yet"
+            : !backupSlotsOk(asw_rollback::get()) ? "the game's save slots aren't there"
+            : analyzer ? "a side is taken over"
+            : diverged ? "the fight differs from the replay"
+            : assistStandby ? "Replay Assist is counting down"
+            : g_cap_active ? "a capture is running"
+            : !gameState->roundActive ? "no round running"
+            : timeline->isPaused() ? "the timeline is paused"
+            : nullptr;
+        if (why)
+        {
+            COMBO_LOG(std::string("catch-up test: not started, ") + why);
+            return;
+        }
+        trialFrames = std::clamp(frames, 2, 120);
+        trialControl = (flags & 1) != 0;
+        trialSameCounter = (flags & 2) != 0;
+        trial = Trial::SaveDue;
+    }
+
+    void trialPreTick()
+    {
+        if (trial == Trial::Off) return;
+        auto rollback = asw_rollback::get();
+        if (!gameState->checkModeReplay() || !manager || !backupSlotsOk(rollback))
+        {
+            COMBO_LOG("catch-up test: stopped, the replay is gone");
+            trial = Trial::Off;
+            return;
+        }
+        if ((trial == Trial::SaveDue || trial == Trial::Playing) && (!gameState->roundActive || timeline->isPaused() || analyzer))
+        {
+            COMBO_LOG("catch-up test: stopped, the round ended or a pause or takeover came in");
+            trial = Trial::Off;
+            return;
+        }
+        if (trial == Trial::SaveDue)
+        {
+            trialSave(rollback, kTrialSlot);
+            for (int i = 0; i < 6; i++) trialHeads[i] = manager->m_ReplayBuffer[i].m_ReadHead;
+            trialStart = trialProbe();
+            trialCounterAtSave = trialSameCounter && frameCounter ? *frameCounter : 0;
+            trialTicks = 0;
+            trialCallsSeen = trialBattleCalls;
+            trialLastFrame = trialStart.gameFrame;
+            trialLastPos = replayPosition();
+            trial = Trial::Playing;
+            COMBO_LOG("catch-up test: saved, " + std::to_string(trialFrames) + " frames" + (trialControl ? " (control: one frame short on purpose)" : "")
+                      + (trialCounterAtSave ? " (same engine frame numbers as the normal part)" : "")
+                      + ", " + std::to_string(static_cast<int>(rollback->MaxBackupFrame)) + " slots, buffers "
+                      + std::to_string(static_cast<unsigned long long>(rollback->ObjVectorBufferSize)) + " + "
+                      + std::to_string(static_cast<unsigned long long>(rollback->CharVectorBufferSize)) + " bytes");
+            COMBO_LOG("catch-up test: start   " + trialText(trialStart));
+        }
+        else if (trial == Trial::RestoreDue)
+        {
+            int savedIndex = rollback->CurrentBackupDataIndex;
+            const bool ok = restoreRewindPoint(kTrialSlot);
+            rollback->CurrentBackupDataIndex = savedIndex;
+            if (!ok)
+            {
+                COMBO_LOG("catch-up test: INCONCLUSIVE, the load was refused");
+                trial = Trial::Off;
+                return;
+            }
+            for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = trialHeads[i];
+            ringLast = replayPosition();
+            haveRingLast = true;
+            trialRestored = trialProbe();
+            trialCallsSeen = trialBattleCalls;
+            trial = Trial::CatchingUp;
+            COMBO_LOG(std::string("catch-up test: loaded  ") + trialText(trialRestored) + (ok ? "" : " (the load was refused)"));
+        }
+    }
+
+    int trialAfterTick()
+    {
+        if (trial != Trial::Playing) return 0;
+        auto* eng = asw_engine::get();
+        auto rollback = asw_rollback::get();
+        if (!gameState->checkModeReplay() || !eng || !manager || !backupSlotsOk(rollback))
+        {
+            COMBO_LOG("catch-up test: stopped, the replay is gone");
+            trial = Trial::Off;
+            return 0;
+        }
+        const int calls = trialBattleCalls - trialCallsSeen;
+        trialCallsSeen = trialBattleCalls;
+        const int frame = eng->GameFrame;
+        const uint32_t pos = replayPosition();
+        const bool stood = frame == trialLastFrame && pos == trialLastPos;
+        trialLastFrame = frame;
+        trialLastPos = pos;
+        if (calls != 1 || stood)
+        {
+            COMBO_LOG("catch-up test: INCONCLUSIVE, a tick passed without the fight moving (a pause or a slowed replay): try again, " + std::to_string(calls)
+                      + " fight updates in that tick");
+            trial = Trial::Off;
+            return 0;
+        }
+        if (++trialTicks < trialFrames) return 0;
+        trialNormal = trialProbe();
+        trialSave(rollback, kTrialNormalSlot);
+        trialSave(rollback, kTrialCaughtSlot);
+        COMBO_LOG("catch-up test: normal  " + trialText(trialNormal));
+        COMBO_LOG("catch-up test: whole state, the same instant saved twice: " + trialStateDiff(rollback, kTrialNormalSlot, kTrialCaughtSlot));
+        trial = Trial::RestoreDue;
+        return trialControl ? trialFrames - 1 : trialFrames;
+    }
+
+    void trialCatchUpDone(double ms)
+    {
+        if (trial != Trial::CatchingUp)
+        {
+            COMBO_LOG("catch-up test: INCONCLUSIVE, the load never ran during the catch-up");
+            trial = Trial::Off;
+            return;
+        }
+        trial = Trial::Off;
+        const int wanted = trialControl ? trialFrames - 1 : trialFrames;
+        const int calls = trialBattleCalls - trialCallsSeen;
+        const TrialProbe fast = trialProbe();
+        COMBO_LOG("catch-up test: caught  " + trialText(fast));
+        auto rollback = asw_rollback::get();
+        if (!trialControl && backupSlotsOk(rollback))
+        {
+            trialSave(rollback, kTrialCaughtSlot);
+            COMBO_LOG("catch-up test: whole state, normal against caught: " + trialStateDiff(rollback, kTrialNormalSlot, kTrialCaughtSlot));
+        }
+        const std::string loadDiff = trialDiff(trialRestored, trialStart, false);
+        const std::string diff = trialDiff(fast, trialNormal, false);
+        const std::string fightDiff = trialDiff(fast, trialNormal, true);
+        const bool still = trialDiff(trialNormal, trialStart, true).empty();
+        std::string verdict;
+        if (!loadDiff.empty()) verdict = "INCONCLUSIVE, the load didn't put the start back (" + loadDiff + ")";
+        else if (calls != wanted) verdict = "INCONCLUSIVE, the fight updated " + std::to_string(calls) + " times in " + std::to_string(wanted) + " catch-up ticks";
+        else if (trialNormal.gameFrame == trialStart.gameFrame) verdict = "INCONCLUSIVE, the fight's frame didn't move during the normal part";
+        else if (trialControl) verdict = fightDiff.empty() ? "CONTROL WEAK, one frame short looks the same in the fighters here: try again while they move"
+                                                           : "control ok, one frame short is told apart by " + fightDiff;
+        else if (diff.empty()) verdict = std::string("MATCH") + (still ? " (weak: the fighters didn't move during the test)" : "");
+        else verdict = "MISMATCH in " + diff;
+        if (!trialControl && !diff.empty() && loadDiff.empty()) diverged = true;
+        char b[200];
+        snprintf(b, sizeof(b), "; %d frames caught up in %.1f ms; frame went %d normally, %d caught up", wanted, ms,
+                 trialNormal.gameFrame - trialStart.gameFrame, fast.gameFrame - trialRestored.gameFrame);
+        COMBO_LOG("catch-up test: " + verdict + b);
+    }
+
     void placeRewindPoint()
     {
         auto rollback = asw_rollback::get();
@@ -712,6 +1506,16 @@ public:
         orig_SaveBackup(rollback);
         rewindPointSet = true;
         rewindCharacters = currentCharacters();
+        rewindStage = asw_stage_area();
+        rewindShift = stageAt;
+        rewindPath.assign(stageJournal.begin(), stageJournal.begin() + (std::min)(static_cast<size_t>((std::max)(stageAt, 0)), stageJournal.size()));
+        rewindPathOpen = !stageSettled();
+        rewindIdentity = asw_stage_identity();
+        rewindRound = asw_state::get() ? static_cast<int>(asw_state::get()->RoundCount) : -1;
+        stageCanReset = asw_stage_can_reset();
+        rewindStale = false;
+        COMBO_LOG("rewind point: set in stage area " + std::to_string(rewindStage) + " after " + std::to_string(rewindShift) + " wall break(s), the stage "
+                  + (rewindCanPutBack() ? "can be put back" : "can't be put back from another area"));
         if (gameState->checkModeReplay())
         {
             pickAssistSave();
@@ -720,17 +1524,27 @@ public:
         ModMenu::instance().notifyRewindPointCreated();
     }
 
-    bool restoreRewindPoint(int slot = 19)
+    bool restoreRewindPoint(int slot = 19, int breaks = -1, const StagePath* own = nullptr)
     {
         auto rollback = asw_rollback::get();
         if (!backupSlotsOk(rollback)) return false;
         const int max = rollback->MaxBackupFrame;
-        rollback->CurrentBackupDataIndex = (slot + 1) % max;
+        if (slot < 0 || slot >= max || !rollback->BackupData[slot].bSet)
+        {
+            COMBO_LOG("load: nothing saved in slot " + std::to_string(slot));
+            return false;
+        }
+        seekOwnJump = true;
+        const int areaBefore = asw_stage_area();
+        int after = (slot + 1) % max;
+        bool afterSet = rollback->BackupData[after].bSet;
+        rollback->CurrentBackupDataIndex = after;
         rollback->RollbackFrame = 1;
         rollback->TotalRollbackFrames = 0;
         auto backupData = rollback->BackupData[slot];
         rememberLinksBeforeLoad();
         orig_Rollback(rollback);
+        rollback->BackupData[after].bSet = afterSet;
         if (orig_EffectCleanupA && orig_EffectCleanupB)
         {
             orig_EffectCleanupA(rollback);
@@ -743,6 +1557,16 @@ public:
         rollback->RollbackFrame = 0;
         rollback->TotalRollbackFrames = 0;
         restoreReplayHead();
+        if (breaks >= 0) stagePut(breaks, own, areaBefore);
+        else if (const int area = asw_stage_area(); area != areaBefore && asw_stage_untouched())
+        {
+            const int called = asw_stage_round_reset();
+            COMBO_LOG("load: went from stage area " + std::to_string(areaBefore) + " to " + std::to_string(area)
+                      + ", the stage's round reset ran on " + std::to_string(called) + " listener(s)");
+            stageAt = 0;
+            lastStage = area;
+        }
+        else lastStage = asw_stage_area();
         return true;
     }
 
@@ -751,7 +1575,7 @@ public:
         if (!gameState->checkModeReplay() || assistFrames() <= 0 || !assistSide
             || assistSlot < 0 || !ring[assistSlot].valid) return false;
         const RingSave& save = ring[assistSlot];
-        if (!restoreRewindPoint(kRingFirstSlot + assistSlot)) return false;
+        if (!restoreRewindPoint(kRingFirstSlot + assistSlot, save.shift)) return false;
         for (int i = 0; i < 6; i++) manager->m_ReplayBuffer[i].m_ReadHead = save.heads[i];
         analyzer = nullptr;
         diverged = false;
@@ -774,6 +1598,56 @@ public:
         }
         if (promptSide && !gameState->checkModeReplay()) closePrompt("left the replay");
         if (promptSide) BindWatcherI::setEscapeCapture(true);  // keep Esc for the prompt a little longer
+        seekGuard();
+        const int stage = asw_stage_area();
+        asw_stage_record_start();
+        if (stage != lastStage)
+        {
+            stageCanReset = stage != kNoStageArea && asw_stage_can_reset();
+            asw_stage_record_refresh();
+            if (lastStage != kNoStageArea && stage != kNoStageArea)
+            {
+                const bool reset = asw_stage_untouched();
+                rewindPathOpen = false;
+                if (!reset)
+                {
+                    stageAt++;
+                    if (static_cast<int>(stageJournal.size()) < stageAt) stageJournal.resize(static_cast<size_t>(stageAt));
+                    stageJournal[static_cast<size_t>(stageAt - 1)].clear();
+                }
+                clearAtStageChange();
+                COMBO_LOG("stage: area changed from " + std::to_string(lastStage) + " to " + std::to_string(stage)
+                          + (reset ? " (a reset)" : ", wall break " + std::to_string(stageAt))
+                          + (seekEnabled && stageCanReset ? ", Timeline saves are kept" : ", saves from before it are dropped"));
+            }
+            lastStage = stage;
+        }
+        if (stage != kNoStageArea && asw_stage_untouched()) stageAt = 0;
+        for (const asw_stage_call& call : asw_stage_recorded())
+        {
+            if (call.event != kStageRoundReset && stageAt >= 1 && static_cast<int>(stageJournal.size()) >= stageAt)
+            {
+                auto& step = stageJournal[static_cast<size_t>(stageAt - 1)];
+                const bool have = std::any_of(step.begin(), step.end(), [&](const asw_stage_call& c) {
+                    return c.event == call.event && c.size == call.size && memcmp(c.params, call.params, sizeof(c.params)) == 0;
+                });
+                if (!have) step.push_back(call);
+                if (rewindPathOpen && rewindShift == stageAt && static_cast<int>(rewindPath.size()) == stageAt) rewindPath[static_cast<size_t>(stageAt - 1)] = step;
+            }
+            if (seekVerbose)
+            {
+                std::string bytes;
+                char hex[4];
+                for (int b = 0; b < call.size; b++)
+                {
+                    snprintf(hex, sizeof(hex), " %02X", call.params[b]);
+                    bytes += hex;
+                }
+                COMBO_LOG(std::string("stage event: ") + asw_stage_event_name(call.event) + " with" + bytes + " (area " + std::to_string(stage) + ", wall break "
+                          + std::to_string(stageAt) + ")");
+            }
+        }
+        rewindStale = rewindPointSet && stage != kNoStageArea && (rewindStage != stage || rewindShift != stageAt) && !rewindCanPutBack();
 
         if (!isWaitingForFrame && rewindFramesRemaining > 0)
         {
@@ -801,6 +1675,11 @@ public:
             && keybindings->getButtonState(keybindings->TOGGLE_LOAD_BUTTON)))
         {
             keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
+            if (trial != Trial::Off)
+            {
+                COMBO_LOG("catch-up test: stopped, a rewind came in");
+                trial = Trial::Off;
+            }
             const bool explicitRewind = rewindRequested || !gameState->checkModeReplay();
             // Assist only for F9 with a side picked. Turning takeover off goes back to
             // the F6 point itself, like before.
@@ -809,6 +1688,7 @@ public:
             rewindRequested = false;
             COMBO_LOG(std::string("load: ") + (assist ? "F9" : "takeover off") + ", side "
                       + (assistSide ? "set" : "none") + ", analyzer " + (analyzer ? "set" : "none"));
+            const bool otherStage = rewindPointSet && (rewindStage != asw_stage_area() || rewindShift != stageAt);
             if (!rewindPointSet || rewindCharacters != currentCharacters())
             {
                 // A new opponent or character starts a fresh fight, and the old save can't
@@ -817,8 +1697,15 @@ public:
                                          : "load: no rewind point yet");
                 rewindPointSet = false;
             }
-            else if ((!assist || !restoreAssist()) && restoreRewindPoint())
+            else if (otherStage && explicitRewind && !rewindCanPutBack())
             {
+                COMBO_LOG("load: the rewind point is from stage area " + std::to_string(rewindStage) + ", this is area "
+                          + std::to_string(asw_stage_area()) + ", nothing loaded");
+            }
+            else if ((!assist || !restoreAssist()) && restoreRewindPoint(19, rewindShift, &rewindPath))
+            {
+                if (otherStage && !rewindCanPutBack())
+                    COMBO_LOG("load: the stage changed since the rewind point (a wall break), it can look wrong until the round ends");
                 diverged = pointDiverged;
                 // Our own jump back: keep the ring, only restart its spacing from here.
                 ringLast = replayPosition();
@@ -827,10 +1714,14 @@ public:
             }
         }
 
+        seekPreTick();
+        trialPreTick();
+
         if (gameState->checkModeReplay())
         {
             updateAssist();
             ringSave();
+            seekSaveTick();
         }
 
         // A tick can consume Step without reaching UpdateBattle. Keep requesting
@@ -845,6 +1736,9 @@ public:
             roundCount = asw_state::get()->RoundCount;
             asw_engine::get()->GameFrame = 0;
         }
+
+        seekGuard();
+        if (seekCatching) return;
 
         if (keybindings->getButtonState(keybindings->TOGGLE_SAVE_BUTTON))
         {
@@ -868,7 +1762,7 @@ public:
         // d-pad counts (not the stick or the arrow keys, which may be moving a
         // character), and only once the prompt has been up for a moment.
         const WORD dpad = promptSide ? dpadPresses() : 0;
-        if (promptSide && !ModMenu::instance().isShowing() && GetTickCount64() - promptOpenedAt > 250)
+        if (promptSide && !ModMenu::instance().takesInput() && GetTickCount64() - promptOpenedAt > 250)
         {
             if (dpad & XINPUT_GAMEPAD_DPAD_RIGHT) takeoverKey(promptSide);
             else if (dpad & XINPUT_GAMEPAD_DPAD_LEFT) closePrompt("no");
@@ -893,6 +1787,19 @@ public:
     // Esc says no. Starting and stopping both ask, so the jump back to the rewind
     // point that stopping does is never a surprise.
     std::string rewindCharacters;  // who was fighting when F6 was pressed
+    int rewindStage = kNoStageArea;
+    int rewindShift = 0;
+    StagePath rewindPath;
+    bool rewindPathOpen = false;
+    const void* rewindIdentity = nullptr;
+    int rewindRound = -1;
+    bool rewindCanPutBack() const
+    {
+        return stageCanReset && stageCovers(rewindPath, 0, rewindShift) && rewindIdentity && rewindIdentity == asw_stage_identity()
+               && asw_state::get() && static_cast<int>(asw_state::get()->RoundCount) == rewindRound;
+    }
+    int lastStage = kNoStageArea;
+    std::atomic<bool> rewindStale{false};
 
     static std::string currentCharacters()
     {
@@ -1378,6 +2285,8 @@ void ReplayManager::initialize(GameState& gameState, Keybinds& keybindings, Time
 
 void ReplayManager::onMatchStart()
 {
+    data->seekEnabled = data->frameCounter != nullptr && ModMenu::instance().replayTimeline();
+    ModMenu::instance().replayStarted();
     data->resetRewindDelay();
     data->cancelCapture();  // a new match or replay: the old capture start means nothing
     // New match (or a freshly loaded replay) -- let the next round call
@@ -1392,6 +2301,8 @@ void ReplayManager::onMatchStart()
 
 void ReplayManager::onRoundStart()
 {
+    data->stageCanReset = asw_stage_can_reset();
+    data->lastStage = kNoStageArea;
     if (data->isAnalyzerSame(nullptr)) data->diverged = false;  // not taking over: the round starts as recorded
     data->clearRing();
     data->onRoundStart();
@@ -1405,6 +2316,118 @@ void ReplayManager::update()
 void ReplayManager::onPreTick()
 {
     data->onPreTick();
+}
+
+void ReplayManager::trialKey(int frames, int flags)
+{
+    data->trialKey(frames, flags);
+}
+
+uint64_t ReplayManager::trialCounterStart() const
+{
+    return data->trialCounterAtSave;
+}
+
+void ReplayManager::enableSeek(uint64_t* frameCounter)
+{
+    data->frameCounter = frameCounter;
+    data->seekEnabled = frameCounter != nullptr && ModMenu::instance().replayTimeline();
+}
+
+void ReplayManager::setFrameCounter(uint64_t* frameCounter)
+{
+    data->frameCounter = frameCounter;
+}
+
+void ReplayManager::enableSeekLogs()
+{
+    data->seekVerbose = true;
+}
+
+bool ReplayManager::seekAvailable() const
+{
+    return data->seekEnabled;
+}
+
+bool ReplayManager::seekRange(int& first, int& last, int& now) const
+{
+    return data->seekRange(first, last, now);
+}
+
+void ReplayManager::seekTo(int position, bool quick)
+{
+    if (!data->seekEnabled || position < 0) return;
+    data->seekWanted = static_cast<uint32_t>(position);
+    data->seekWantedQuick = quick;
+    data->seekWantedBeyond = false;
+    data->seekDue = true;
+}
+
+void ReplayManager::stepBack()
+{
+    int first = 0, last = 0, now = 0;
+    if (!data->seekRange(first, last, now)) return;
+    const int from = data->seekDue ? static_cast<int>(data->seekWanted) : data->seekCatching ? static_cast<int>(data->seekTarget) : now;
+    if (from > first) seekTo(from - 1, true);
+}
+
+void ReplayManager::stepTick(int direction)
+{
+    int first = 0, last = 0, now = 0;
+    if (!data->seekRange(first, last, now)) return;
+    uint32_t oldest = 0;
+    const bool any = data->seekOldest(oldest);
+    const int origin = static_cast<int>(data->haveSeekOrigin ? data->seekOrigin : any ? oldest : 0);
+    const int from = data->seekDue ? static_cast<int>(data->seekWanted) : data->seekCatching ? static_cast<int>(data->seekTarget) : now;
+    const int rel = from - origin;
+    int to = -1;
+    if (direction < 0)
+    {
+        if (rel > 0) to = (std::max)(origin + ((rel - 1) / 60) * 60, first);
+        else if (from > first) to = first;
+        if (to >= from) to = -1;
+    }
+    else to = origin + ((std::max)(rel, 0) / 60 + 1) * 60;
+    if (to < 0) return;
+    seekTo(to, false);
+    data->seekWantedBeyond = direction > 0;
+}
+
+void ReplayManager::seekPoints(int& origin, std::vector<int>& calm) const
+{
+    data->seekPoints(origin, calm);
+}
+
+bool ReplayManager::takeSeekStarted()
+{
+    const bool started = data->seekStarted;
+    data->seekStarted = false;
+    return started;
+}
+
+int ReplayManager::seekAfterTick()
+{
+    return data->seekAfterTick();
+}
+
+void ReplayManager::seekBatchDone()
+{
+    data->seekBatchDone();
+}
+
+bool ReplayManager::seekGoing() const
+{
+    return data->seekCatching;
+}
+
+int ReplayManager::trialAfterTick()
+{
+    return data->trialAfterTick();
+}
+
+void ReplayManager::trialCatchUpDone(double ms)
+{
+    data->trialCatchUpDone(ms);
 }
 
 bool ReplayManager::isTakeoverInput(const asw_inputs* input) const
@@ -1506,6 +2529,7 @@ ReplayManager::Status ReplayManager::status() const
     s.replay = data->gameState->checkModeReplay();
     s.training = data->gameState->checkModeTraining();
     s.rewindPoint = data->rewindPointSet;
+    s.rewindStale = data->rewindStale.load();
     const int rewindFrames = data->rewindFramesRemaining.load();
     // Round up so the banner never shows 0.0 before playback actually resumes.
     constexpr int framesPerTenth = Data::kRewindFramesPerSecond / 10;

@@ -27,6 +27,23 @@ public:
     void onBattleFrameProcessed();
     void update();
     void logStatus() const;
+    void trialKey(int frames, int flags);
+    int trialAfterTick();
+    uint64_t trialCounterStart() const;
+    void trialCatchUpDone(double ms);
+    void enableSeek(uint64_t* frameCounter);
+    void setFrameCounter(uint64_t* frameCounter);
+    void enableSeekLogs();
+    bool seekAvailable() const;
+    bool seekRange(int& first, int& last, int& now) const;
+    void seekTo(int position, bool quick);
+    void stepBack();
+    void stepTick(int direction);
+    void seekPoints(int& origin, std::vector<int>& calm) const;
+    bool takeSeekStarted();
+    int seekAfterTick();
+    void seekBatchDone();
+    bool seekGoing() const;
 
     bool isRewindDelayActive() const;
     // Replay Assist: 0 = off, 1 = standby (remaining = 1..0 of the lead-in), 2 = just went active.
@@ -38,6 +55,7 @@ public:
         bool replay = false;
         bool training = false;
         bool rewindPoint = false;
+        bool rewindStale = false;
         int takeover = 0;             // 1 or 2 while taking over that side
         double assistSeconds = 0.0;   // the setting, 0 = off
         int assist = 0;               // 1 standby, 2 just went active

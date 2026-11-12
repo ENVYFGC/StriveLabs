@@ -1,5 +1,6 @@
 #include "damage_panel.h"
 #include "combo_log.h"
+#include "object_scan.h"
 #include "imgui_overlay.h"
 #include "menu.h"
 #include "combo_trials.h"
@@ -96,9 +97,9 @@ namespace {
     release();
     std::vector<UObject*> found;
     g_blocks.clear();
-    UObjectGlobals::FindAllOf(STR("TextBlock"), g_blocks);
-    UObjectGlobals::FindAllOf(STR("Battle_TrainingDamage_C"), found);
-    UObjectGlobals::FindAllOf(STR("Battle_TrainingDamage02_C"), found);
+    std::vector<UObject*> second;
+    object_scan::allOf({{STR("TextBlock"), &g_blocks}, {STR("Battle_TrainingDamage_C"), &found}, {STR("Battle_TrainingDamage02_C"), &second}});
+    found.insert(found.end(), second.begin(), second.end());
     for (UObject* w : found) {
       // Only the panel in the running game: the blueprints keep template copies too,
       // filled with placeholder numbers, which live under the asset's own path.

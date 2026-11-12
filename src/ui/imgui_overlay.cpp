@@ -42,6 +42,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 bool modScreenActive();  // dllmain.cpp
 bool onlineVersionScreen();  // dllmain.cpp
 
+#include "perf_log.h"
 #include "imgui_menu.inc"
 
 namespace {
@@ -60,6 +61,7 @@ namespace {
   std::atomic<int> g_other_presents{0};  // Presents that wanted drawing before any UnrealWindow one. Game Pass may use another class.
   std::atomic<bool> g_running{false};
   std::mutex g_frame_mutex;  // one ImGui frame at a time
+  std::recursive_mutex g_input_mutex;
 
   // Swap one entry of a COM vtable. Steam and Discord overlays detour the code
   // behind these entries; replacing the entry keeps their hooks in the chain.
@@ -84,13 +86,17 @@ namespace {
   LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
                       (!modScreenActive() && menu_ui::g_online_picker))) {
-      ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp);
+      {
+        std::lock_guard<std::recursive_mutex> in(g_input_mutex);
+        ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp);
+      }
       const ImGuiIO& io = ImGui::GetIO();
       const bool mouse = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST;
       if (mouse && io.WantCaptureMouse) return 0;
       const bool key = msg >= WM_KEYFIRST && msg <= WM_KEYLAST;
-      if (key && io.WantTextInput) return 0;
-      if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && recolor_test::freeCameraKeys()) {
+      const bool passes = msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_SYSKEYDOWN;
+      if (key && !passes && io.WantTextInput) return 0;
+      if (msg == WM_KEYDOWN && recolor_test::freeCameraKeys() && !menu_ui::g_game_menu_open) {
         switch (wp) {
           case 'W': case 'A': case 'S': case 'D': case 'Q': case 'E': case 'R':
           case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: return 0;
@@ -199,7 +205,13 @@ namespace {
     return true;
   }
 
-  void draw_ui() { menu_ui::draw(); }
+  void draw_ui() {
+    if (!perf::on) { menu_ui::draw(); return; }
+    const auto t0 = std::chrono::steady_clock::now();
+    menu_ui::g_copy_ms = 0;
+    menu_ui::draw();
+    perf::overlayFrame(menu_ui::g_copy_ms, perf::since(t0));
+  }
 
   // Every swap chain in the process goes through this hook, not only the game's:
   // loading screens and overlays present too, sometimes from another thread. Draw
@@ -425,12 +437,16 @@ namespace {
       if (is_game_window(swap)) {  // Before our overlay draws
         DXGI_SWAP_CHAIN_DESC desc{};
         swap->GetDesc(&desc);
+        if (ImGui::GetIO().WantTextInput) menu_ui::g_typing_ms = GetTickCount64();
         recolor_test::overlayFrame(ImGui::GetIO().WantTextInput, static_cast<int>(desc.BufferDesc.Width), static_cast<int>(desc.BufferDesc.Height));
         scan_capture(swap);
       }
-      ImGui_ImplDX11_NewFrame();
-      ImGui_ImplWin32_NewFrame();
-      ImGui::NewFrame();
+      {
+        std::lock_guard<std::recursive_mutex> in(g_input_mutex);
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+      }
       ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
                                        (!modScreenActive() && menu_ui::g_online_picker);
       draw_ui();
@@ -474,6 +490,8 @@ namespace imgui_overlay {
   void setGameMenuOpen(bool open) { menu_ui::g_game_menu_open = open; }
   void setOnlinePicker(bool open) { menu_ui::g_online_picker = open; }
   bool onlinePickerOpen() { return menu_ui::g_online_picker; }
+  bool typing() { return GetTickCount64() - menu_ui::g_typing_ms.load() < 250; }
+  void noteOnlineKey() { menu_ui::g_online_note_ms = GetTickCount64(); }
   int takeOnlinePickStep() { return menu_ui::g_online_pick_step.exchange(0); }
 
   void setBattleVersion(const std::string& name) {

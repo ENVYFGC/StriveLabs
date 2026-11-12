@@ -42,6 +42,8 @@ namespace combo_trials {
   // Game thread: your character's input for this frame while watching, mirrored when you
   // face the other way than its maker did. False when not watching.
   bool watchNext(bool facing_left, uint16_t& flags);
+  bool streamSetup(bool dummy_on_left);
+  void streamRestore(bool reset);
   // Game thread, every battle update: puts settings back when training is left, or
   // after a crash or quit during a trial (from the file).
   void update(bool in_training);
@@ -73,6 +75,7 @@ namespace combo_trials {
   uintptr_t trainingManager();  // training's manager (recipe, frame info), 0 if not found
   int playerChara();          // the character being played (training), -1 if none
   bool inTraining();          // the game's mode is training (the Park's too)
+  int gameModeNow();
   int localSide();            // our side in the fight, 0 = P1
   bool onlineFight();         // the game's mode is the online one (Park, rooms; ranked to be confirmed)
   int opponentChara();        // the other side's character, -1 if none

@@ -7,6 +7,7 @@
 // Reset all put the game's values back.
 #pragma once
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -125,6 +126,7 @@ namespace box_editor {
   void setLevel(int side, const std::string& state, int offset, int level);
   void setArg(int side, const std::string& state, int offset, int field, int value);  // a number of a line (an ArgView's field)
   void resetMove(int side, const std::string& state);
+  void resetLine(int side, const std::string& state, int offset);
   // A line replaced by another instruction of the same size (its numbers start at 0; set them with setArg). Replacing
   // it with the instruction it was puts it back. replacements: the instructions that can take the place of op's line
   // (op: the line's own, or the one it was if replaced), {op, name}, by name.
@@ -141,6 +143,8 @@ namespace box_editor {
   // load it): moveFiles lists {file name, the move its first line names}
   void loadMoveFile(int side, const std::string& state, const std::string& file);
   std::vector<std::pair<std::string, std::string>> moveFiles(const std::string& chr);
+  bool setMoveLabel(const std::string& chr, const std::string& state, const std::string& label);
+  std::map<std::string, std::string> moveLabels(const std::string& chr);
   void resetAll();
   void undo();
   void setKeep(bool keep);

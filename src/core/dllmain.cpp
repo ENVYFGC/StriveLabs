@@ -11,7 +11,7 @@
 namespace crash_log { void install(const std::filesystem::path& dir); }
 namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
 namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); bool setupRunning();
-                         void toggleCamera(); bool soloCamera(); void soloCameraOff(); }
+                         void toggleCamera(); bool soloCamera(); void soloCameraOff(); void toggle(); void outsideTraining(); }
 #include "box_editor.h"
 #include "menu.h"
 #include "recordings.h"
@@ -28,8 +28,13 @@ namespace recolor_test { void init(const std::filesystem::path& dir); void updat
 #include "handshake.h"
 #include "recolor_share.h"
 #include "combo_online.h"
+#include "perf_log.h"
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <thread>
 #include <vector>
 using namespace std::chrono_literals;
@@ -192,6 +197,11 @@ public:
             {
                 keybindings.checkBinds(false);
                 pollGamepad();
+                // Under Proton, key presses are only read in when the window's thread checks its
+                // queue, and this loop holds that thread. This lets them in without handling any.
+                // (Wine only: on Windows input arrives anyway, so nothing changes there.)
+                static const bool wine = GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version") != nullptr;
+                if (wine) MsgWaitForMultipleObjectsEx(0, nullptr, 0, QS_ALLINPUT, 0);
                 Sleep(1);
                 updateBinds();
             }
@@ -216,6 +226,12 @@ class UeTracker
     {
         if (renderingHooked) return;
         renderingHooked = true;
+        try { hookFuncsBody(); }
+        catch (...) { COMBO_LOG("hud and camera hooks: the game's code wasn't found, so they aren't in"); }
+    }
+
+    void hookFuncsBody()
+    {
 
         /* HUD Rendering vtable hook*/
         const auto** AHUD_vtable = (const void**)get_rip_relative(
@@ -254,7 +270,93 @@ public:
 
 /* Hooks */
 
+namespace perf {
+std::atomic<bool> on{false};
+namespace {
+    double g_sum[BUCKETS]{}, g_tick[BUCKETS]{}, g_mod = 0, g_worst = 0;
+    int g_ticks = 0, g_huds = 0, g_slow = 0;
+    const char* const g_names[] = {"replay", "menu", "pause menu", "trials", "damage panel", "colors", "frame bar"};
+    const char* g_worst_part = "rest";
+    double g_worst_part_ms = 0;
+    std::mutex g_overlay_m;
+    double g_copy = 0, g_draw = 0;
+    int g_frames = 0;
+}
+
+void add(int bucket, double ms)
+{
+    if (bucket == HUD) g_sum[HUD] += ms;
+    else g_tick[bucket] += ms;
+}
+
+void hudDone() { g_huds++; }
+
+void overlayFrame(double copy_ms, double draw_ms)
+{
+    std::lock_guard<std::mutex> lock(g_overlay_m);
+    g_copy += copy_ms;
+    g_draw += draw_ms;
+    g_frames++;
+}
+
+void tickDone(double whole_ms, bool counted)
+{
+    const double mod = (std::max)(whole_ms - g_tick[GAME] - g_tick[HELD], 0.0);
+    if (counted)
+    {
+        for (int b = 0; b < BUCKETS; b++)
+            if (b != HUD) g_sum[b] += g_tick[b];
+        g_mod += mod;
+        if (mod > 4.0) g_slow++;
+        if (mod > g_worst)
+        {
+            g_worst = mod;
+            g_worst_part = "rest";
+            g_worst_part_ms = 0;
+            double known = 0;
+            for (int b = REPLAY; b <= BAR; b++)
+            {
+                known += g_tick[b];
+                if (g_tick[b] > g_worst_part_ms) { g_worst_part_ms = g_tick[b]; g_worst_part = g_names[b]; }
+            }
+            if (mod - known > g_worst_part_ms) { g_worst_part_ms = mod - known; g_worst_part = "rest"; }
+        }
+        g_ticks++;
+    }
+    for (double& t : g_tick) t = 0;
+    if (g_ticks < 600) return;
+    const double n = g_ticks;
+    double named = 0;
+    for (int b = REPLAY; b <= BAR; b++) named += g_sum[b];
+    int frames = 0;
+    double copy = 0, draw = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_overlay_m);
+        frames = g_frames;
+        copy = g_copy;
+        draw = g_draw;
+        g_frames = 0;
+        g_copy = g_draw = 0;
+    }
+    char line[540];
+    snprintf(line, sizeof(line),
+             "perf: mod %.3f ms per tick (replay %.3f, menu %.3f, pause menu %.3f, trials %.3f, damage panel %.3f, colors %.3f, frame bar %.3f, rest %.3f), "
+             "worst tick %.2f ms (%s %.2f), %d ticks over 4 ms, hud draw %.3f ms per frame, overlay windows %.3f ms per frame (menu data copy %.4f), %d ticks without catch-up, %d frames",
+             g_mod / n, g_sum[REPLAY] / n, g_sum[MENU] / n, g_sum[PAUSE_MENU] / n, g_sum[TRIALS] / n, g_sum[DAMAGE] / n, g_sum[COLORS] / n, g_sum[BAR] / n,
+             (std::max)(g_mod - named, 0.0) / n, g_worst, g_worst_part, g_worst_part_ms, g_slow, g_huds ? g_sum[HUD] / g_huds : 0.0, frames ? draw / frames : 0.0, frames ? copy / frames : 0.0,
+             g_ticks, frames);
+    COMBO_LOG(line);
+    for (double& t : g_sum) t = 0;
+    g_mod = g_worst = g_worst_part_ms = 0;
+    g_worst_part = "rest";
+    g_ticks = g_huds = g_slow = 0;
+}
+}
+
 FrameBar the_bar;
+bool g_catching_up = false;
+extern bool g_timeline_hooks_tried;
+void installTimelineHooks(bool at_startup);
 TensionOverlay tension_overlay;
 
 // Overlays (frame bar, hitboxes, tension) stay hidden from a new match load until its
@@ -308,6 +410,8 @@ void hook_AHUDPostRender(void* hud)
         orig_AHUDPostRender(hud);
 
     // Draw our overlays AFTER the game's HUD so we render on top
+    perf::Scope hud_time(perf::HUD);
+    if (perf::on) perf::hudDone();
     if (DrawTool::instance().update(hud))
     {
         if (g_overlays_visible && GetTickCount64() - g_last_battle_update < 300)
@@ -356,15 +460,23 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     g_training_press = 0;
     g_battle_ran = true;
     g_any_battle_update = GetTickCount64();
+    struct WholeTick
+    {
+        const bool timed = perf::on;
+        const std::chrono::steady_clock::time_point t0 = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        ~WholeTick() { if (timed) perf::tickDone(perf::since(t0), !g_catching_up); }
+    } whole_tick;
+    if (!g_timeline_hooks_tried && ModMenu::instance().replayTimeline()) installTimelineHooks(false);
     handshake::update(GameState);
     if (const int bv = combo_trials::battleVersion(); bv > 0)  // paused and online too
       imgui_overlay::setBattleVersion(battleVersionName(bv) + (combo_trials::onlineVersionInUse() ? " (online)" : ""));
     const bool mode_handled = game_state.checkMode();  // (also brings the mode up to date for the line below)
-    if (!game_state.checkModeTraining()) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); }  // (never Script & boxes' edits, or the free camera, outside training)
+    if (!game_state.checkModeTraining()) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); recolor_test::outsideTraining(); recordings::streamStop(); combo_trials::streamRestore(false); }  // (never Script & boxes' edits, or the free camera, outside training)
     if (!mode_handled)
     {
         g_training_pending = 0;
         combo_trials::update(false);  // a trial's settings never go into other modes
+        perf::Scope game(perf::GAME);
         orig_UpdateBattle(GameState, DeltaTime);
         return;
     }
@@ -374,11 +486,21 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     struct Restamp { ~Restamp() { g_any_battle_update = g_last_battle_update = GetTickCount64(); } } restamp;
     if (!game_state.mode_battle_logged) { game_state.mode_battle_logged = true; COMBO_LOG("battle code running in this mode"); }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(ModMenu::instance().delayAmount()));
+    {
+        perf::Scope held(perf::HELD);
+        const int delay = g_catching_up ? 0 : ModMenu::instance().delayAmount();
+        if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    }
 
     pollGamepad();  // before anything reads button states this frame
-    ReplayManager::instance().onBattleUpdate();
-    pause_manager.checkPause();
+    {
+        perf::Scope timed(perf::REPLAY);
+        ReplayManager::instance().onBattleUpdate();
+    }
+    {
+        perf::Scope held(perf::HELD);
+        pause_manager.checkPause();
+    }
     g_last_battle_update = GetTickCount64();  // the pause can hold this call for a long time
 
     // After the pause, which reads binds while it holds: a press made then counts too.
@@ -388,25 +510,45 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (keybindings.takeAction(binds::TRAINING_PLAYBACK)) pressed |= kFakePlayback;
     if (keybindings.takeAction(binds::TRAINING_RESET)) pressed |= kFakeReset;
     // Freeze: the timeline's pause, which holds the fight and keeps the game drawing (F3's holds it all), in training
-    if (keybindings.takeAction(binds::BOX_PAUSE) && game_state.checkModeTraining()) ModMenu::instance().click(MenuClick{MenuClick::Type::TlPlay});
-    if (keybindings.takeAction(binds::BOX_STEP) && game_state.checkModeTraining()) ModMenu::instance().click(MenuClick{MenuClick::Type::TlStep});
+    const bool held_modes = game_state.checkModeTraining() || game_state.checkModeReplay();
+    if (keybindings.takeAction(binds::BOX_PAUSE) && held_modes) ModMenu::instance().click(MenuClick{MenuClick::Type::TlPlay});
+    if (keybindings.takeAction(binds::BOX_STEP) && held_modes) ModMenu::instance().click(MenuClick{MenuClick::Type::TlStep});
+    if (keybindings.takeAction(binds::STEP_BACK) && game_state.checkModeReplay()) ReplayManager::instance().stepBack();
+    if (keybindings.takeAction(binds::TICK_BACK) && game_state.checkModeReplay()) ReplayManager::instance().stepTick(-1);
+    if (keybindings.takeAction(binds::TICK_FORWARD) && game_state.checkModeReplay()) ReplayManager::instance().stepTick(1);
     if (keybindings.takeAction(binds::FREE_CAMERA) && game_state.checkModeTraining()) recolor_test::toggleCamera();  // (with or without the color editor)
-    combo_trials::update(game_state.checkModeTraining());
-    game_menu::update();
+    if (keybindings.takeAction(binds::COLOR_EDITOR) && game_state.checkModeTraining()) recolor_test::toggle();
+    if (keybindings.takeAction(binds::BOX_EDITOR) && game_state.checkModeTraining()) box_editor::toggle();
+    if (keybindings.takeAction(binds::ONLINE_VERSION)) imgui_overlay::noteOnlineKey();
+    {
+        perf::Scope timed(perf::TRIALS);
+        combo_trials::update(game_state.checkModeTraining());
+    }
+    {
+        perf::Scope timed(perf::PAUSE_MENU);
+        game_menu::update();
+    }
     if (game_state.checkModeTraining() && orig_KeyJustPressed) g_training_pending |= pressed;
     else g_training_pending = 0;
 
-    if (game_state.checkModeReplay()) ReplayManager::instance().update();
+    if (game_state.checkModeReplay())
+    {
+        perf::Scope timed(perf::REPLAY);
+        ReplayManager::instance().update();
+    }
 
     const int style = pauseStyle();
     const bool scan_hold = game_state.checkModeTraining() && recolor_test::holdsFight();  // the editor's scan: the fighter mustn't move
     if ((style == 0 && pause_manager.advancing()) ||
         (style == 1 && pause_manager.cinematicShouldAdvance()) || scan_hold)
     {
+        perf::Scope timed(perf::COLORS);
         if (game_state.checkModeTraining()) { recolor_test::update(false); recolor_test::afterBattleUpdate(); box_editor::tick(); }  // paused here too
         return;
     }
 
+    {
+    perf::Scope timed(perf::MENU);
     ModMenu::instance().update(PressedKeys{
         keybindings.getButtonState(keybindings.TOGGLE_FRAMEBAR_BUTTON),
         keybindings.getButtonState(keybindings.TOGGLE_HITBOX_BUTTON),
@@ -416,6 +558,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         keybindings.getButtonState(keybindings.MENU_RIGHT_BUTTON),
         keybindings.getButtonState(keybindings.MENU_LEFT_BUTTON)
     });
+    }
     keybindings.resetButtons();
 
     game_state.checkRound();
@@ -438,9 +581,22 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         tension_overlay.reset();
     }
 
-    if (game_state.checkModeTraining()) damage_panel::update(round_started);
-    if (game_state.checkModeTraining()) recolor_test::update(round_started);
-    if (game_state.checkModeTraining() && !Timeline::instance().canAdvanceFrame()) { recolor_test::afterBattleUpdate(); box_editor::tick(); }  // the free camera, paused
+    if (game_state.checkModeTraining())
+    {
+        perf::Scope timed(perf::DAMAGE);
+        damage_panel::update(round_started);
+    }
+    if (game_state.checkModeTraining())
+    {
+        perf::Scope timed(perf::COLORS);
+        recolor_test::update(round_started);
+    }
+    if (game_state.checkModeTraining() && !Timeline::instance().canAdvanceFrame())
+    {
+        perf::Scope timed(perf::COLORS);
+        recolor_test::afterBattleUpdate();
+        box_editor::tick();
+    }  // the free camera, paused
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
     if (g_training_pending)
     {
@@ -449,9 +605,20 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         COMBO_LOG(std::string("training: ") + (g_training_press & kFakeRecord ? "record " : "") + (g_training_press & kFakePlayback ? "playback " : "")
                   + (g_training_press & kFakeReset ? "reset " : "") + "bind");
     }
-    orig_UpdateBattle(GameState, DeltaTime);
-    if (game_state.checkModeTraining()) { recolor_test::afterBattleUpdate(); box_editor::tick(); }
-    ReplayManager::instance().onBattleFrameProcessed();
+    {
+        perf::Scope game(perf::GAME);
+        orig_UpdateBattle(GameState, DeltaTime);
+    }
+    if (game_state.checkModeTraining())
+    {
+        perf::Scope timed(perf::COLORS);
+        recolor_test::afterBattleUpdate();
+        box_editor::tick();
+    }
+    {
+        perf::Scope timed(perf::REPLAY);
+        ReplayManager::instance().onBattleFrameProcessed();
+    }
 
     if (game_state.matchStarted)
     {
@@ -461,6 +628,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
     if (!tracker.isUePaused() && game_state.roundActive)
     {
+        perf::Scope timed(perf::BAR);
         the_bar.addFrame();
     }
 
@@ -474,7 +642,7 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
     // In a replay only the side being taken over is the player's; every other side
     // is fed from the replay itself, and zeroing it froze both characters and
     // desynced the replay.
-    if (ModMenu::instance().isShowing() && game_state.checkMode() &&
+    if (ModMenu::instance().takesInput() && game_state.checkMode() &&
         (!game_state.checkModeReplay() || (!ReplayManager::instance().playbackEnabled()
             && ReplayManager::instance().isTakeoverInput(Analyzer))))
         recFlag = static_cast<RECFLG_ENUM>(0);
@@ -503,7 +671,7 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
     // dummy. One word per engine frame keeps this frame-exact -- the reason
     // this exists rather than a virtual controller, which pushes on a wall
     // clock and drifts whenever the game hitches.
-    if (recordings::streamActive())
+    if (recordings::streamActive() && game_state.checkModeTraining())
     {
         if (auto* engine = asw_engine::get())
         {
@@ -522,7 +690,7 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
         return;
     }
 
-    orig_UpdateBattleInput(Analyzer, ReplayManager::instance().takeoverInput(recFlag, ModMenu::instance().isShowing()));
+    orig_UpdateBattleInput(Analyzer, ReplayManager::instance().takeoverInput(recFlag, ModMenu::instance().takesInput()));
 }
 
 // Keys are only read during fights; drop the ones pressed outside one (character
@@ -598,7 +766,7 @@ void hook_UpdateSystem(uintptr_t System)
       was_fight = g_any_fight;
     }
     if (!g_any_fight) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
-    if (const int mode = game_state.currentMode(); mode >= 0 && mode != 8) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); }  // (the menus too: never a Script & boxes edit while the next fight loads; 8 is training)
+    if (const int mode = game_state.currentMode(); mode >= 0 && mode != 8) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); recolor_test::outsideTraining(); recordings::streamStop(); combo_trials::streamRestore(false); }  // (the menus too: never a Script & boxes edit while the next fight loads; 8 is training)
     // Saved recolors on the menus' models (character select), only with no fight at all.
     if (!g_any_fight) recolor_test::menuUpdate(false);
     else if (!game_state.checkModeTraining()) recolor_test::menuUpdate(true);  // (any other fight: the saved recolors show by their bakes)
@@ -625,6 +793,156 @@ void hook_UpdateReplay(BattleReplayManager* Manager)
         orig_UpdateReplay(Manager);
         ReplayManager::instance().onReplayFrame();
     }
+}
+
+using funcWorldTick_t = void (*)(void*, int, float);
+funcWorldTick_t orig_WorldTick = nullptr;
+uint64_t* g_frame_counter = nullptr;
+PLH::x64Detour* g_world_tick_detour = nullptr;
+std::filesystem::path g_experiments_file;
+bool g_experiments_on = false;
+
+void hook_WorldTick(void* world, int type, float dt)
+{
+    orig_WorldTick(world, type, dt);
+    static bool was_down = false;
+    const bool down = g_experiments_on && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000) && (GetAsyncKeyState('K') & 0x8000);
+    if (down && !was_down)
+    {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+        if (pid == GetCurrentProcessId())
+        {
+            int frames = 60;
+            int flags = 0;
+            try
+            {
+                std::ifstream f(g_experiments_file);
+                const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                if (text.find("control") != std::string::npos) flags |= 1;
+                if (text.find("samecounter") != std::string::npos) flags |= 2;
+                const size_t at = text.find_first_of("0123456789");
+                if (at != std::string::npos) frames = std::atoi(text.c_str() + at);
+            }
+            catch (...) {}
+            ReplayManager::instance().trialKey(frames, flags);
+        }
+    }
+    was_down = down;
+    if (!g_frame_counter) return;
+    ReplayManager& replay = ReplayManager::instance();
+    if (replay.takeSeekStarted())
+    {
+        the_bar.reset();
+        tension_overlay.reset();
+    }
+    if (const int jump = replay.seekAfterTick(); jump > 0)
+    {
+        g_catching_up = true;
+        for (int i = 0; i < jump && replay.seekGoing(); i++)
+        {
+            ++*g_frame_counter;
+            orig_WorldTick(world, type, 1.0f / 60.0f);
+        }
+        g_catching_up = false;
+        replay.seekBatchDone();
+        return;
+    }
+    const int n = replay.trialAfterTick();
+    if (n <= 0) return;
+    const uint64_t same = replay.trialCounterStart();
+    const auto t0 = std::chrono::steady_clock::now();
+    g_catching_up = true;
+    for (int i = 0; i < n; i++)
+    {
+        if (same) *g_frame_counter = same + static_cast<uint64_t>(i);
+        else ++*g_frame_counter;
+        orig_WorldTick(world, type, 1.0f / 60.0f);
+    }
+    g_catching_up = false;
+    replay.trialCatchUpDone(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+
+using funcRollbackCtor_t = void* (*)(void*, int);
+funcRollbackCtor_t orig_RollbackCtor = nullptr;
+PLH::x64Detour* g_rollback_ctor_detour = nullptr;
+
+void* hook_RollbackCtor(void* self, int slots)
+{
+    const int mode = combo_trials::gameModeNow();
+    const int want = mode == 23 && slots == 20 && ModMenu::instance().replayTimeline() ? 180 : slots;
+    COMBO_LOG("timeline: the game made its save slots, " + std::to_string(slots)
+              + (want != slots ? " raised to " + std::to_string(want) : std::string(" kept")) + " (mode " + std::to_string(mode)
+              + ", the fight hooks say " + std::to_string(game_state.currentMode()) + ")");
+    return orig_RollbackCtor(self, want);
+}
+
+bool g_timeline_hooks_tried = false;
+
+void installTimelineHooks(bool at_startup)
+{
+    if (g_timeline_hooks_tried) return;
+    g_timeline_hooks_tried = true;
+    try
+    {
+        const uintptr_t counter = sigscan::get().scan(
+            "\x48\x8B\x05\x00\x00\x00\x00\x48\xFF\xC0\x48\x89\x05\x00\x00\x00\x00\x48\x83\xF8\x06",
+            "xxx????xxxxxx????xxxx");
+        g_frame_counter = static_cast<uint64_t*>(get_rip_relative(counter + 3));
+        if (get_rip_relative(counter + 13) != static_cast<void*>(g_frame_counter))
+        {
+            g_frame_counter = nullptr;
+            COMBO_LOG("timeline: the frame counter doesn't look right, jumps are off");
+            return;
+        }
+        const uint64_t tick = sigscan::get().scan(
+            "\x48\x8B\xC4\x55\x53\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8D\xA8\x38\xFE\xFF\xFF\x48\x81\xEC\x88\x02\x00\x00\x0F\x29\x70\xA8\x48\x8B\xF9",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+        g_world_tick_detour = new PLH::x64Detour(tick, reinterpret_cast<uint64_t>(&hook_WorldTick), reinterpret_cast<uint64_t*>(&orig_WorldTick));
+        if (!g_world_tick_detour->hook())
+        {
+            orig_WorldTick = nullptr;
+            COMBO_LOG("timeline: the world tick hook didn't go in, jumps are off");
+            return;
+        }
+        if (at_startup) ReplayManager::instance().enableSeek(g_frame_counter);
+        else ReplayManager::instance().setFrameCounter(g_frame_counter);
+        if (g_experiments_on)
+        {
+            game_state.logEvents = true;
+            ReplayManager::instance().enableSeekLogs();
+        }
+        try
+        {
+            const uint64_t ctor = sigscan::get().scan(
+                "\x48\x89\x5C\x24\x08\x48\x89\x6C\x24\x10\x48\x89\x74\x24\x18\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x83\xEC\x20\x45\x33\xF6\x48\x63\xEA\x4C\x8B\xF9\x4C\x8D\x61\x48",
+                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+            g_rollback_ctor_detour = new PLH::x64Detour(ctor, reinterpret_cast<uint64_t>(&hook_RollbackCtor), reinterpret_cast<uint64_t*>(&orig_RollbackCtor));
+            if (!g_rollback_ctor_detour->hook())
+            {
+                orig_RollbackCtor = nullptr;
+                COMBO_LOG("timeline: more save slots: the hook didn't go in, the Timeline reaches back 16 s");
+            }
+        }
+        catch (...)
+        {
+            COMBO_LOG("timeline: more save slots: the game's code wasn't found, the Timeline reaches back 16 s");
+        }
+        COMBO_LOG(std::string("timeline: jumps ready for replays") + (g_experiments_on ? ", experiments on (Ctrl+Alt+K runs the catch-up test, extra log lines)" : ""));
+    }
+    catch (...)
+    {
+        COMBO_LOG("timeline: the game's code wasn't found, jumps are off");
+    }
+}
+
+void installExperiments(const std::filesystem::path& dir)
+{
+    g_experiments_file = dir / "StriveLabs_experiments.txt";
+    std::error_code ec;
+    g_experiments_on = std::filesystem::exists(g_experiments_file, ec);
+    perf::on = g_experiments_on;
+    if (ModMenu::instance().replayTimeline()) installTimelineHooks(true);
 }
 
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
@@ -762,6 +1080,7 @@ public:
         recolor_test::init(working_dir);
         box_editor::init(working_dir);
         recolor_share::init(working_dir);
+        installExperiments(working_dir);
         pak_mount::probe(working_dir);  // (finds and checks the engine's pak mount and logs it; mounts nothing)
         ReplayManager::instance().logStatus();
     }

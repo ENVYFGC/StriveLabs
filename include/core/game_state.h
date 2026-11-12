@@ -23,6 +23,7 @@ public:
     bool resetting = false;
     bool matchStarted = true;
     bool roundActive = false;
+    bool logEvents = false;
     // Set on BATTLE_START; consumed once by the caller to log the replay anchor.
     bool roundJustStarted = false;
 

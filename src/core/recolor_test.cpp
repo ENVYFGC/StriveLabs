@@ -29,6 +29,8 @@
 #include "bake_core.h"
 #include "bake_pkg.h"
 #include "pak_mount.h"
+#include "perf_log.h"
+#include "object_scan.h"
 
 #include <Unreal/FString.hpp>
 #include <Unreal/Hooks.hpp>
@@ -172,6 +174,7 @@ namespace {
     name.clear();
     return nullptr;
   }
+  using object_scan::allOf;
   std::vector<UObject*> fighters() {
     // Found once per fight (a scan of every loaded object), then kept while every one of them is still alive: a
     // position reset keeps the same fighters, a new fight's are found again
@@ -194,7 +197,7 @@ namespace {
       return out;
     }
     std::vector<UObject*> pawns;
-    UObjectGlobals::FindAllOf(STR("REDPawnPlayer"), pawns);
+    allOf(STR("REDPawnPlayer"), pawns);
     pawns.erase(std::remove_if(pawns.begin(), pawns.end(), [](UObject* p) {
       return p->GetFullName().find(STR("PersistentLevel")) == StringType::npos;
     }), pawns.end());
@@ -1936,10 +1939,17 @@ namespace {
     const std::string chr = slot.substr(0, slash), color = slot.substr(slash + 1);
     std::error_code ec;
     std::filesystem::create_directories(fxFile(chr, color).parent_path(), ec);
-    std::ofstream f(fxFile(chr, color), std::ios::trunc);
+    const std::filesystem::path to = fxFile(chr, color);
+    std::filesystem::path tmp = to;
+    tmp += ".new";
+    std::ofstream f(tmp, std::ios::trunc);
     for (const auto& [label, c] : g_fx_saved[slot]) f << label << '\t' << c[0] << ' ' << c[1] << ' ' << c[2] << "\n";
     f.flush();
-    return f.good();
+    bool ok = f.good();
+    f.close();
+    if (ok) { std::filesystem::rename(tmp, to, ec); ok = !ec; }
+    if (!ok) std::filesystem::remove(tmp, ec);
+    return ok;
   }
   void fxSave() { fxSaveSlot(g_fx_for); }
   void fxBuild(const Target& t) {
@@ -1996,7 +2006,7 @@ namespace {
     {  // Each fighter's own copy of the palette (REDPawnPlayer...PTCColorAndMaterial, made when it loads). Effects taking a
        // color by name read it as they spawn (Ky's DI aura). Its colors are the slot's, as the game copied them.
       std::vector<UObject*> pals;
-      UObjectGlobals::FindAllOf(STR("REDPTCColorAndMaterialAsset"), pals);
+      allOf(STR("REDPTCColorAndMaterialAsset"), pals);
       auto slotOfPawn = [](UObject* pawn) {  // The slot its body's color material is from, or another part's if it has no body
         std::string any;
         for (UObject* c : fighterParts()) {
@@ -2061,7 +2071,7 @@ namespace {
       std::string found;
       for (const auto& [cls, prop] : kFxClasses) {
         std::vector<UObject*> all;
-        UObjectGlobals::FindAllOf(cls, all);
+        allOf(cls, all);
         for (UObject* m : all) {
           uint8_t* d = fxDist(m, prop);
           if (!d) continue;
@@ -2129,12 +2139,12 @@ namespace {
     void mark(const char* step) {
       const auto now = Clock::now();
       const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
-      if (ms >= 20) steps += std::string(" ") + step + " " + std::to_string(ms) + " ms";
+      if (ms >= (perf::on ? 1 : 20)) steps += std::string(" ") + step + " " + std::to_string(ms) + " ms";
       last = now;
     }
     ~Laps() {
       const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
-      if (ms >= 300) { mark("rest"); COMBO_LOG("color editor: slow update, " + std::to_string(ms) + " ms:" + steps); }
+      if (ms >= (perf::on ? 5 : 300)) { mark("rest"); COMBO_LOG("color editor: slow update, " + std::to_string(ms) + " ms:" + steps); }
     }
   };
   void timingTick() {
@@ -2151,6 +2161,11 @@ namespace {
   std::mutex g_smear_new_m;
   std::vector<Kept> g_smear_new;
   std::atomic<UClass*> g_psc_class{nullptr};
+  std::mutex g_mid_new_m;
+  std::vector<Kept> g_mid_new;
+  std::atomic<UClass*> g_mid_class{nullptr};
+  std::atomic<bool> g_mid_hooked{false};
+  std::atomic<bool> g_mid_stale{true};
   bool g_smear_stale = true;                  // Targets or edits changed, so look the names up again
   const std::vector<std::pair<int, std::string>>& namedMaterials(UObject* tpl) {
     auto it = g_named.find(tpl);
@@ -2410,7 +2425,7 @@ namespace {
     if (!g_smear_scanned) {  // the pool, once per fight (new ones come from the creation hook)
       g_smear_scanned = true;
       std::vector<UObject*> all;
-      UObjectGlobals::FindAllOf(STR("ParticleSystemComponent"), all);
+      allOf(STR("ParticleSystemComponent"), all);
       if (!g_pool_last_fight.empty()) {
         const size_t alive = static_cast<size_t>(std::count_if(g_pool_last_fight.begin(), g_pool_last_fight.end(), [](const Kept& k) { return k.alive(); }));
         COMBO_LOG("smear: " + std::to_string(alive) + " of the last fight's " + std::to_string(g_pool_last_fight.size()) + " pooled effect components are still alive");
@@ -2577,10 +2592,17 @@ namespace {
     std::error_code ec;
     if (g_cap_saved.empty()) { std::filesystem::remove(capFile(g_cap_slot), ec); return true; }  // Nothing saved means no file, so the slot has no recolor from it
     std::filesystem::create_directories(capFile(g_cap_slot).parent_path(), ec);
-    std::ofstream f(capFile(g_cap_slot), std::ios::trunc);
+    const std::filesystem::path to = capFile(g_cap_slot);
+    std::filesystem::path tmp = to;
+    tmp += ".new";
+    std::ofstream f(tmp, std::ios::trunc);
     for (const auto& [k, c] : g_cap_saved) f << k << '\t' << c[0] << ' ' << c[1] << ' ' << c[2] << "\n";
     f.flush();
-    return f.good();
+    bool ok = f.good();
+    f.close();
+    if (ok) { std::filesystem::rename(tmp, to, ec); ok = !ec; }
+    if (!ok) std::filesystem::remove(tmp, ec);
+    return ok;
   }
   std::map<std::string, std::filesystem::path>& capRestorePaths();
   bool& capUnsavedFlag();
@@ -2703,7 +2725,7 @@ namespace {
   }
   void takeAllByName(const std::string& pattern) {  // every loaded effect taking this color (or any, "")
     std::vector<UObject*> named;
-    UObjectGlobals::FindAllOf(STR("REDParticleModuleColorByName"), named);
+    allOf(STR("REDParticleModuleColorByName"), named);
     std::set<UObject*> systems;
     for (UObject* m : named)
       if (keep(m).alive() && (pattern.empty() || fxPattern(m) == pattern))
@@ -2764,6 +2786,7 @@ namespace {
     return out;
   }
   // Our copy of a material, with every edit of it on (made when the first edit comes; null if it can't be).
+  bool g_mat_owed = false;
   UObject* matCopy(UObject* mic) {
     auto it = g_mat_mid.find(mic);
     if (it != g_mat_mid.end()) return it->second;
@@ -2782,25 +2805,109 @@ namespace {
     return g_mat_mid[mic] = mid;
   }
   // The live materials the game made from an instance (a fighter's mesh wears a dynamic copy of its slot's materials).
-  // ponytail: looks through every dynamic material in the game, at most once a second per instance
+  bool matIsOurs(UObject* m) {
+    return std::any_of(g_mat_mid.begin(), g_mat_mid.end(), [&](const auto& kv) { return kv.second == m; }) ||
+           std::find(g_mat_retired.begin(), g_mat_retired.end(), m) != g_mat_retired.end();
+  }
+  bool madeLive(const Kept& k) {
+    UClass* const cls = g_mid_class;
+    return k.alive() && (!cls || (k.obj->GetClassPrivate() && k.obj->GetClassPrivate()->IsChildOf(cls)));
+  }
+  UObject* madeParent(UObject* m) {
+    static std::ptrdiff_t off = -1;
+    if (off >= 0) return *reinterpret_cast<UObject**>(reinterpret_cast<uint8_t*>(m) + off);
+    auto* at = m->GetValuePtrByPropertyNameInChain<UObject*>(STR("Parent"));
+    if (!at) return nullptr;
+    if (g_mid_class.load()) off = reinterpret_cast<uint8_t*>(at) - reinterpret_cast<uint8_t*>(m);
+    return *at;
+  }
+  std::map<UObject*, std::vector<Kept>> madeNow(std::vector<Kept>* no_parent) {
+    std::map<UObject*, std::vector<Kept>> out;
+    std::vector<UObject*> all;
+    allOf(STR("MaterialInstanceDynamic"), all);
+    for (UObject* m : all) {
+      if (!m || !keep(m).alive() || matIsOurs(m)) continue;
+      if (UObject* p = parentOf(m)) out[p].push_back(keep(m));
+      else if (no_parent) no_parent->push_back(keep(m));
+    }
+    return out;
+  }
   const std::vector<Kept>& madeFrom(UObject* mic) {
-    static Clock::time_point when;
-    static std::map<UObject*, std::vector<Kept>> by_parent;  // One look through them all, at most every 5 s, since it walks every object
-    if (Clock::now() - when > std::chrono::seconds(5)) {
-      when = Clock::now();
-      by_parent.clear();
-      std::vector<UObject*> all;
-      UObjectGlobals::FindAllOf(STR("MaterialInstanceDynamic"), all);
-      for (UObject* m : all) {
-        if (!m || !keep(m).alive()) continue;
-        if (std::any_of(g_mat_mid.begin(), g_mat_mid.end(), [&](const auto& kv) { return kv.second == m; })) continue;  // (ours)
-        if (std::find(g_mat_retired.begin(), g_mat_retired.end(), m) != g_mat_retired.end()) continue;  // (ours, let go)
-        if (UObject* p = parentOf(m)) by_parent[p].push_back(keep(m));
+    using Made = std::map<UObject*, std::vector<Kept>>;
+    static Clock::time_point when, tidied;
+    static Made by_parent;
+    static std::vector<Kept> waiting;
+    static const void* scanned_for = nullptr;
+    const auto now = Clock::now();
+    const void* const fight = asw_engine::get();
+    const bool hooked = g_mid_hooked;
+    auto ms = [](Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
+    auto count = [](const Made& m) {
+      size_t n = 0;
+      for (const auto& [p, v] : m) n += static_cast<size_t>(std::count_if(v.begin(), v.end(), [](const Kept& k) { return k.alive(); }));
+      return n;
+    };
+    std::vector<Kept> fresh;
+    { std::lock_guard<std::mutex> lk(g_mid_new_m); fresh.swap(g_mid_new); }
+    if (now - when > std::chrono::seconds(5) && (!hooked || fight != scanned_for || g_mid_stale)) {
+      waiting.clear();
+      by_parent = madeNow(&waiting);
+      when = tidied = now;
+      scanned_for = fight;
+      if (hooked) g_mid_stale = false;
+      if (perf::on) {
+        char b[160];
+        snprintf(b, sizeof(b), "perf: looking through every dynamic material took %.2f ms (%zu with a parent, %zu without one)", ms(now), count(by_parent), waiting.size());
+        COMBO_LOG(b);
+      }
+    } else if (hooked) {
+      const bool tidy = now - tidied > std::chrono::seconds(4);
+      if (tidy || !fresh.empty()) {
+        waiting.insert(waiting.end(), fresh.begin(), fresh.end());
+        size_t gone = 0, moved = 0, filed = 0;
+        if (tidy) {
+          tidied = now;
+          for (auto it = by_parent.begin(); it != by_parent.end();) {
+            std::vector<Kept>& v = it->second;
+            v.erase(std::remove_if(v.begin(), v.end(), [&](const Kept& k) {
+              if (!madeLive(k)) { gone++; return true; }
+              if (madeParent(k.obj) == it->first) return false;
+              waiting.push_back(k);
+              moved++;
+              return true;
+            }), v.end());
+            it = v.empty() ? by_parent.erase(it) : std::next(it);
+          }
+        }
+        waiting.erase(std::remove_if(waiting.begin(), waiting.end(), [&](const Kept& k) {
+          if (!madeLive(k) || k.obj->HasAnyFlags(static_cast<EObjectFlags>(RF_ClassDefaultObject | RF_ArchetypeObject)) || matIsOurs(k.obj)) return true;
+          UObject* parent = madeParent(k.obj);
+          if (!parent) return false;
+          std::vector<Kept>& v = by_parent[parent];
+          v.erase(std::remove_if(v.begin(), v.end(), [&](const Kept& o) { return !o.alive() || o.obj == k.obj; }), v.end());
+          v.push_back(k);
+          filed++;
+          return true;
+        }), waiting.end());
+        if (perf::on && (!fresh.empty() || gone || moved)) {
+          char b[220];
+          snprintf(b, sizeof(b), "perf: dynamic materials: %zu new from the creation hook, %zu filed, %zu gone, %zu with another parent than before, %zu without a parent, %.3f ms", fresh.size(), filed,
+                   gone, moved, waiting.size(), ms(now));
+          COMBO_LOG(b);
+        }
       }
     }
     static const std::vector<Kept> none;
     auto it = by_parent.find(mic);
-    return it == by_parent.end() ? none : it->second;
+    if (it == by_parent.end()) return none;
+    std::vector<Kept>& made = it->second;
+    made.erase(std::remove_if(made.begin(), made.end(), [&](const Kept& k) {
+      if (!madeLive(k)) return true;
+      if (madeParent(k.obj) == mic) return false;
+      waiting.push_back(k);
+      return true;
+    }), made.end());
+    return made;
   }
   void matSet(UObject* mic, const std::string& param, const float orig[4], const float* rgb) {  // Null rgb means the game's value
     UObject* mid = matCopy(mic);
@@ -2971,7 +3078,10 @@ namespace {
         takeByName(*tp);
       }
     }
-    if (!g_cap_saved.empty() && every % 300 == 0) matPending();  // About every 5 s, so materials made later get the saved colors
+    if (!g_cap_saved.empty() && (every % 300 == 0 || g_mat_owed)) {  // About every 5 s, so materials made later get the saved colors
+      g_mat_owed = false;
+      matPending();
+    }
     if (g_cap_until == Clock::time_point{} && !g_cap_saved.empty() && every % 20 == 0) {
       for (const Kept& k : g_smear_pool) {
         if (!k.alive()) continue;
@@ -3386,7 +3496,9 @@ namespace {
     std::lock_guard<std::mutex> lk(g_files_m);
     std::error_code ec;
     std::filesystem::create_directories(to.parent_path(), ec);
-    std::ofstream f(to, std::ios::trunc);
+    std::filesystem::path tmp = to;
+    tmp += ".new";
+    std::ofstream f(tmp, std::ios::trunc);
     f << mapStamp(t) << "\n";
     for (size_t r = 0; r < ed.size(); r++) {
       const Edit& e = ed[r];
@@ -3397,7 +3509,11 @@ namespace {
     if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end())
       f << colorsLine(*mp->second) << "\n" << minorsLine(*mp->second) << "\n" << blobsLine(*mp->second) << "\n";  // The colors it's for
     f.flush();
-    return f.good();
+    bool ok = f.good();
+    f.close();
+    if (ok) { std::filesystem::rename(tmp, to, ec); ok = !ec; }
+    if (!ok) std::filesystem::remove(tmp, ec);
+    return ok;
   }
   bool saveEdits(const Target& t, const std::vector<Edit>& ed) { return saveEditsTo(t, ed, editsFile(t)); }
   // ---- Painting (the Texture window's brush, eraser and fill). Layers over a part's region colors, one per part
@@ -3680,11 +3796,19 @@ namespace {
     std::lock_guard<std::mutex> lk(g_files_m);
     std::error_code ec;
     std::filesystem::create_directories(namesFile(t).parent_path(), ec);
-    std::ofstream f(namesFile(t), std::ios::trunc);
+    const std::filesystem::path to = namesFile(t);
+    std::filesystem::path tmp = to;
+    tmp += ".new";
+    std::ofstream f(tmp, std::ios::trunc);
     f << mapStamp(t) << "\n";
     for (size_t r = 0; r < names.size(); r++) if (!names[r].empty()) f << r << '\t' << names[r] << "\n";
     if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end())
       f << colorsLine(*mp->second) << "\n" << minorsLine(*mp->second) << "\n" << blobsLine(*mp->second) << "\n";
+    f.flush();
+    const bool ok = f.good();
+    f.close();
+    if (ok) std::filesystem::rename(tmp, to, ec);
+    if (!ok || ec) std::filesystem::remove(tmp, ec);
   }
 
   // ---- Recolors. What's saved for a slot is files in saved/<CHR>: <ColorNN>_<part>.txt (region and material
@@ -4054,7 +4178,8 @@ namespace {
     {  // The slot's recolor it replaces is kept, as a load does
       Target to = t;
       to.color = slot;
-      (void)writeRecolor(to, trashFile(t.chr, slot + "_before_copy.stpl"), paletteMeta(slot + " before a copy from " + t.color, "", ""), true);
+      const std::string kept = writeRecolor(to, trashFile(t.chr, slot + "_before_copy.stpl"), paletteMeta(slot + " before a copy from " + t.color, "", ""), true);
+      if (!kept.empty() && !slotFiles(t.chr, slot).empty()) return "Couldn't keep " + slot + "'s old recolor in .trash: not copied.";
     }
     std::error_code ec;
     std::unique_lock<std::mutex> lk(g_files_m);
@@ -4066,10 +4191,14 @@ namespace {
       }
     }
     for (const auto& [suffix, p] : slotFiles(t.chr, slot)) std::filesystem::remove(p, ec);  // Replaces the slot's old recolor
-    for (const auto& [suffix, p] : files)
+    bool landed = true;
+    for (const auto& [suffix, p] : files) {
       std::filesystem::rename(savedDir(t.chr) / (slot + "_" + suffix + ".new"), savedDir(t.chr) / (slot + "_" + suffix), ec);
+      if (ec) landed = false;
+    }
     lk.unlock();
-    reloadSlot(t.chr, slot);  // On stage or not, what's in memory for it is the old recolor
+    reloadSlot(t.chr, slot);
+    if (!landed) return "Couldn't finish the copy to " + slot + ". Its old recolor is in recolors/palettes/" + t.chr + "/.trash.";  // On stage or not, what's in memory for it is the old recolor
     COMBO_LOG("color editor: " + t.chr + " " + t.color + "'s recolor copied to " + slot);
     return t.color + "'s recolor is on " + slot + " now (it goes on whenever " + t.chr + " is in " + slot + ").";
   }
@@ -4662,7 +4791,7 @@ namespace {
     for (const Target& t : g_targets) fight.insert(t.mids.begin(), t.mids.end());
     std::map<std::string, Target> found;
     std::vector<UObject*> comps;
-    UObjectGlobals::FindAllOf(STR("SkeletalMeshComponent"), comps);
+    allOf(STR("SkeletalMeshComponent"), comps);
     std::vector<Seen> seen;
     for (UObject* comp : comps) {
       if (!whole(comp) || !isVisible(comp)) continue;  // Hidden ones, like the Dragon Install outfit, aren't worth the work
@@ -4714,7 +4843,7 @@ namespace {
           if (c.first != t.mids) {
             if (pool.empty()) {
               const Clock::time_point p0 = Clock::now();
-              UObjectGlobals::FindAllOf(STR("REDMaterialInstanceDynamic"), pool);
+              allOf(STR("REDMaterialInstanceDynamic"), pool);
               g_match_scans.pool_n++;
               g_match_scans.pool_ms += std::chrono::duration<double, std::milli>(Clock::now() - p0).count();
             }
@@ -6612,7 +6741,7 @@ namespace {
     // them), take the edits too.
     {
       std::vector<UObject*> pool;
-      UObjectGlobals::FindAllOf(STR("REDMaterialInstanceDynamic"), pool);
+      allOf(STR("REDMaterialInstanceDynamic"), pool);
       int added = 0;
       for (Target& t : found) t.own_mids = t.mids.size();  // (what follows are the pool's copies)
       for (Target& t : found) {
@@ -6750,7 +6879,7 @@ namespace {
     float was = a.load();
     while (!a.compare_exchange_weak(was, was + v)) {}
   }
-  std::atomic<bool> g_cam_keys{false}, g_typing{false};
+  std::atomic<bool> g_cam_keys{false}, g_typing{false}, g_outside{false};
   std::atomic<float> g_aspect{16.0f / 9.0f};          // the game's frame, width / height
   std::atomic<float> g_tag_x{-1.0f}, g_tag_y{-1.0f};  // the selection on screen (0..1), -1 none
   float g_cam_pose[12] = {};  // location, forward, right, up of the camera as last set
@@ -6808,7 +6937,7 @@ namespace {
   }
   UObject* levelActor(const TCHAR* cls, const TCHAR* name_part) {
     std::vector<UObject*> all;
-    UObjectGlobals::FindAllOf(cls, all);
+    allOf(cls, all);
     for (UObject* o : all) {
       const auto n = o->GetFullName();
       if (n.find(STR("PersistentLevel")) != StringType::npos && n.find(name_part) != StringType::npos) return o;
@@ -6861,7 +6990,7 @@ namespace {
     for (UObject* c : fighterParts())
       if (c && c->GetOuterPrivate() != t.pawn && keep(c).alive() && isVisible(c)) { g_scan_hidden.push_back(keep(c)); setVisible(c, false); }
     std::vector<UObject*> fx;
-    UObjectGlobals::FindAllOf(STR("ParticleSystemComponent"), fx);
+    allOf(STR("ParticleSystemComponent"), fx);
     for (UObject* c : fx)  // (never a template: every effect made from it would start hidden)
       if (c && keep(c).alive() && c->GetFullName().find(STR("Default__")) == StringType::npos && isVisible(c)) {
         g_scan_hidden.push_back(keep(c));
@@ -7039,7 +7168,7 @@ namespace {
     int n = 0;
     for (const TCHAR* cls : {STR("SkeletalMeshComponent"), STR("StaticMeshComponent"), STR("ParticleSystemComponent")}) {
       std::vector<UObject*> all;
-      UObjectGlobals::FindAllOf(cls, all);
+      allOf(cls, all);
       for (UObject* c : all) {
         if (!drawnLately(c)) continue;
         UObject* owner = c->GetOuterPrivate();
@@ -7935,7 +8064,8 @@ namespace {
 }
 
 View view() { std::lock_guard<std::mutex> lock(g_m); return g_view; }
-bool isOpen() { std::lock_guard<std::mutex> lock(g_m); return g_view.open; }
+bool isOpen() { std::lock_guard<std::mutex> lock(g_m); return g_view.open && !g_outside; }
+void outsideTraining() { g_outside = true; }
 // Game thread. While the editor scans the fighter (mapping, a pick, a selection's own scan) or runs the first-time
 // setup, the fight is held (as the pause holds it with the editor open): a scan compares frames, and a fighter
 // moving through its idle animation reads as a picture that kept changing (without it, most selection scans were
@@ -8350,7 +8480,7 @@ void shareNoteSides(int local_side) {
   // The fighters on show, meaning pawns with a visible mesh wearing a character's color (the Park keeps hidden
   // ones around).
   std::vector<UObject*> pawns = fighters(), comps;
-  UObjectGlobals::FindAllOf(STR("SkeletalMeshComponent"), comps);
+  allOf(STR("SkeletalMeshComponent"), comps);
   std::map<UObject*, std::map<std::string, int>> slots;  // pawn -> "chr/color" -> materials. The color with the most is its own
   for (UObject* c : comps) {
     if (!c || !whole(c) || !isVisible(c)) continue;
@@ -10011,6 +10141,7 @@ void startMapping(Target& t) {
 }
 bool soloCamera() { return g_cam_solo_pub; }
 void soloCameraOff() {
+  g_cam_keys = false;
   if (!g_cam_solo) return;
   g_cam_solo = false;
   g_cam_solo_pub = false;
@@ -10062,7 +10193,12 @@ void placeCamera(const Vec& feet) {
   }
   if (!g_view_hooked && viewTarget() != g_cam_actor) setViewTarget(g_cam_pc, g_cam_actor);
 }
+static void afterBattleUpdateBody();
 void afterBattleUpdate() {
+  try { afterBattleUpdateBody(); }
+  catch (...) { static int said = 0; if (said++ < 3) COMBO_LOG("color editor: an error after the battle update was caught"); }
+}
+static void afterBattleUpdateBody() {
   Timed timed{g_time.after};
   if (g_preview.pawn && asw_engine::get() == g_fight) keepPreview();
   if (!g_targets.empty() && asw_engine::get() == g_fight) { dressSmears(); if (!g_scan_on) effCopiesSync(); }  // A scan's coded frames on the part aren't copied onto effects  // For an effect started in the game's update, before it's drawn
@@ -10558,6 +10694,7 @@ void hookEffects() {
   if (done) return;
   done = true;
   if (!g_psc_class) g_psc_class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.ParticleSystemComponent"));
+  g_mid_class = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.MaterialInstanceDynamic"));
   try {  // New effect components as they're made. Any thread, so they're only noted here
     Hook::RegisterStaticConstructObjectPostCallback([](const FStaticConstructObjectParameters& params, UObject* obj) -> UObject* {
       // Only ones in the game's effect pool (they last the fight). Checked now, while the outer surely exists.
@@ -10569,22 +10706,46 @@ void hookEffects() {
         std::lock_guard<std::mutex> lk(g_smear_new_m);
         if (g_smear_new.size() < 4096) g_smear_new.push_back(k);
       }
+      UClass* mid_class = g_mid_class;
+      if (obj && mid_class && obj->GetClassPrivate() && obj->GetClassPrivate()->IsChildOf(mid_class)) {
+        const Kept k = keep(obj);
+        std::lock_guard<std::mutex> lk(g_mid_new_m);
+        if (g_mid_new.size() < 8192) g_mid_new.push_back(k);
+        else g_mid_stale = true;
+      }
       return obj;
     });
+    g_mid_hooked = g_mid_class.load() != nullptr;
+    if (!g_mid_hooked) COMBO_LOG("color editor: dynamic material class not found, so the game's materials are looked through every 5 s");
     COMBO_LOG("color editor: effect creation hook in");
   } catch (...) {}
 }
 
+static bool anySavedRecolor() {
+  std::error_code ec;
+  for (std::filesystem::directory_iterator chr(g_dir / "saved", std::filesystem::directory_options::skip_permission_denied, ec), end; !ec && chr != end; chr.increment(ec)) {
+    std::error_code e2;
+    const std::wstring folder = chr->path().filename().wstring();
+    if (folder.empty() || folder[0] == L'.' || !chr->is_directory(e2)) continue;
+    for (std::filesystem::directory_iterator f(chr->path(), std::filesystem::directory_options::skip_permission_denied, e2), fend; !e2 && f != fend; f.increment(e2)) {
+      const std::wstring n = f->path().filename().wstring();
+      if (n.size() >= 8 && n.compare(0, 5, L"Color") == 0 && iswdigit(n[5]) && iswdigit(n[6]) && n[7] == L'_') return true;
+    }
+  }
+  return false;
+}
+static void updateBody(bool round_started);
 void update(bool round_started) {
+  try { updateBody(round_started); }
+  catch (...) { static int said = 0; if (said++ < 3) COMBO_LOG("color editor: an error in the update was caught"); }
+}
+static void updateBody(bool round_started) {
+  if (g_outside.exchange(false) && g_open) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kToggle, -1, 0}); }
   hookEffects();  // Once, in the first fight. Each fight's own pool scan finds what was made before it
   Timed timed{g_time.update};
   Laps laps;
   struct ExportLast { Laps& l; ~ExportLast() { l.mark("before export"); try { exportTick(); } catch (...) { COMBO_LOG("color editor: export step failed"); } l.mark("export"); } } export_last{laps};  // An export carries on, editor open or not. Last, so the editor's own encodes take the free slot first
   timingTick();
-  static bool key_was_down = false;
-  const bool key = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000) && (GetAsyncKeyState('E') & 0x8000);
-  if (key && !key_was_down) toggle();
-  key_was_down = key;
 
   // Another fight (or none). The materials found belong to the old one and may be gone, so they're dropped
   // without being touched. Ours are let go, and edits go on the new ones. A new fight can sit where the old
@@ -11086,7 +11247,8 @@ void update(bool round_started) {
         break;
       case kImportRecolor:
         if (t) {  // The slot's recolor is kept first, as a palette load does
-          (void)writeRecolor(*t, trashFile(t->chr, t->color + "_before_import.stpl"), paletteMeta(t->color + " before importing " + q.text, "", ""), true);
+          const std::string kept = writeRecolor(*t, trashFile(t->chr, t->color + "_before_import.stpl"), paletteMeta(t->color + " before importing " + q.text, "", ""), true);
+          if (!kept.empty() && !slotFiles(t->chr, t->color).empty()) { g_status = "Couldn't keep the old recolor in .trash: not imported."; break; }
           g_look_note.clear();
           g_status = importRecolorFile(*t, q.text) + g_look_note;
           g_look_note.clear();
@@ -11098,7 +11260,8 @@ void update(bool round_started) {
       case kResetColor:  // Every part, paint and effect color of the slot back to the game's, kept first as a load does
         if (t) {
           dropLookWait(t->chr + "/" + t->color);
-          (void)writeRecolor(*t, trashFile(t->chr, t->color + "_before_reset.stpl"), paletteMeta(t->color + " before Reset whole color", "", ""), true);
+          const std::string kept = writeRecolor(*t, trashFile(t->chr, t->color + "_before_reset.stpl"), paletteMeta(t->color + " before Reset whole color", "", ""), true);
+          if (!kept.empty() && !slotFiles(t->chr, t->color).empty()) { g_status = "Couldn't keep the old recolor in .trash: not reset."; break; }
           std::error_code ec;
           {
             std::lock_guard<std::mutex> lk(g_files_m);
@@ -11152,13 +11315,13 @@ void update(bool round_started) {
       case kListEffects:
         if (t) {  // every effect of this character the game has loaded (its own folder), as a capture lists them
           std::vector<UObject*> all;
-          UObjectGlobals::FindAllOf(STR("ParticleSystem"), all);
+          allOf(STR("ParticleSystem"), all);
           const std::string own = "/Chara/" + codeOf(t->chr) + "/";
           takeAllByName("");
           {  // Every material instance of the character, and the shared ones its effects use, by folder
             std::set<UObject*> mics;
             std::vector<UObject*> found;
-            UObjectGlobals::FindAllOf(STR("MaterialInstanceConstant"), found);
+            allOf(STR("MaterialInstanceConstant"), found);
             for (UObject* m : found)
               if (m && keep(m).alive() && narrow(m->GetPathName()).find(own) != std::string::npos) mics.insert(m);
             for (UObject* ps : all)
@@ -11460,7 +11623,10 @@ void update(bool round_started) {
   const bool targets_there = all_alive && (Clock::now() - last_find < std::chrono::seconds(5) || !recolor_on);
   const bool find_on_open = g_find_due && Clock::now() - last_find >= std::chrono::seconds(5);  // (the editor just opened)
   g_find_due = false;
-  if ((round_started && !g_targets.empty() && !(targets_there && asw_engine::get() == g_fight)) || (find_on_open && !g_targets.empty())) {
+  const bool find_again = (round_started && !g_targets.empty() && !(targets_there && asw_engine::get() == g_fight)) || (find_on_open && !g_targets.empty());
+  std::optional<object_scan::Batch> find_scan;
+  if (find_again) find_scan.emplace(std::initializer_list<const wchar_t*>{STR("REDPawnPlayer"), STR("REDMaterialInstanceDynamic"), STR("ParticleSystemComponent")});
+  if (find_again) {
     last_find = Clock::now();
     stopPreview(asw_engine::get() == g_fight);  // Started again below if still wanted
     if (asw_engine::get() == g_fight) undressSmears();  // Only the live ones. They're dressed again next update
@@ -11498,6 +11664,7 @@ void update(bool round_started) {
   } else {
     takeNewEffects();  // Not kept, since they'd be stale by the time they're used
   }
+  find_scan.reset();
   if (g_log_until != Clock::time_point{}) {
     if (Clock::now() < g_log_until) logDrawnNow();
     else {
@@ -11513,6 +11680,18 @@ void update(bool round_started) {
     if (g_preview.pawn && (!want || g_preview.pawn != cur->pawn)) { stopPreview(true); g_view_dirty = true; }
     if (want && !g_preview.pawn) { startPreview(*cur); g_view_dirty = true; }
     keepPreview();
+  }
+  static const void* skipped_fight = nullptr;
+  if (skipped_fight && !g_open && g_auto_done && g_targets.empty() && asw_engine::get() && asw_engine::get() != skipped_fight) {
+    skipped_fight = nullptr;
+    g_auto_done = false;
+  }
+  if (!g_targets.empty() || g_open) skipped_fight = nullptr;
+  if (!g_open && !g_auto_done && asw_engine::get() && g_targets.empty() && !anySavedRecolor()) {
+    g_auto_done = true;
+    skipped_fight = asw_engine::get();
+    static bool said = false;
+    if (!said) { said = true; COMBO_LOG("color editor: no saved recolors, so the fighters aren't looked up until the editor opens"); }
   }
   if (!g_open && !g_auto_done && asw_engine::get()) {
     g_auto_done = true;
@@ -11823,8 +12002,10 @@ void update(bool round_started) {
     }
     g_view_dirty = true;
   }
+  laps.mark("worn color");
   const bool ready = g_worn && g_worn_key == keyOf(*t);
   if (ready && g_vecs_for != keyOf(*t)) { buildVecs(*t); g_view_dirty = true; }
+  laps.mark("material colors");
   {  // the texture view, while the UI draws it
     const long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
     if (t && g_worn && g_worn_key == keyOf(*t)) drawnTick(*t);  // Which regions the model draws, once per map
@@ -11843,13 +12024,22 @@ void update(bool round_started) {
   }
   // This character's saved shared-effect colors. They're read first, so an emitter with your own saved color
   // stays yours when the palette takes its copies, and put on their effects after the slot's colors are set up.
+  laps.mark("texture view");
   bool cap_loaded = false;
   if (ready && g_cap_slot != t->chr + "/" + t->color) {
     capStage();  // The slot shown before keeps its unsaved captured colors for Save
     capLoad(t->chr + "/" + t->color);
     cap_loaded = true;
+    g_mat_owed = true;
   }
-  if (ready && g_fx_for != t->chr + "/" + t->color) { fxBuild(*t); g_view_dirty = true; }
+  laps.mark("saved effect colors read");
+  if (ready && g_fx_for != t->chr + "/" + t->color) {
+    object_scan::Batch scan({STR("REDPTCColorAndMaterialAsset"), STR("ParticleModuleColorOverLife"), STR("ParticleModuleColor"), STR("ParticleModuleColorScaleOverLife"),
+                             STR("REDParticleModuleColorByName")});
+    fxBuild(*t);
+    g_view_dirty = true;
+  }
+  laps.mark("effect colors");
   if (cap_loaded) {
     std::set<std::string> paths;
     for (const auto& [k, c] : g_cap_saved)
@@ -11860,6 +12050,7 @@ void update(bool round_started) {
     }
     g_view_dirty = true;
   }
+  laps.mark("saved effect colors on");
   if (false) {  // Saving is by hand now, with Save
   }
   {  // Picked textures go in one by one, each on the part its name says (shown first, so it's ready to take it)
@@ -11934,7 +12125,7 @@ void update(bool round_started) {
       g_view_dirty = true;
     }
   }
-  laps.mark("worn and effects");
+  laps.mark("picked textures");
   // The parts of the model aren't mapped yet, so the free camera does it (once per character).
   if (g_open && ready && !g_cam.on && !g_mapping && (g_map_force == mkey || (!g_map_tried.count(mkey) && !partsFor(*t) && !placesFor(*t)))) {
     g_cam.on = true;
@@ -12016,6 +12207,7 @@ void update(bool round_started) {
       if (!tex_job.valid()) g_dirty = true;  // No thread, so try again next update
     }
   }
+  laps.mark("textures started");
   if (tex_job.valid() && tex_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
     Pngs png = tex_job.get();
     Shown fresh;
@@ -12033,6 +12225,7 @@ void update(bool round_started) {
     }
     if (!g_dirty) partDone();
   }
+  laps.mark("textures on");
   // The selection flashes on the fighter a few times (its highlight, then the normal look or black),
   // then the normal look stays. Held while the camera finds the part or maps the model.
   const bool blinking = ready && world && g_open && !g_selected.empty() && g_blinks_left > 0 && !g_scan_on && !g_mapping &&
@@ -12060,6 +12253,8 @@ void update(bool round_started) {
     show(*t, g_blink_on && g_hl.base ? g_hl : off);
     g_blink_at = Clock::now();
   }
+  laps.mark("highlight");
   if (g_view_dirty) { publish(); g_view_dirty = false; }
+  laps.mark("editor view");
 }
 }  // namespace recolor_test

@@ -101,6 +101,51 @@ namespace {
   uintptr_t dummyBlock(int chara) { return *g_save_root + kDummyBlocks + static_cast<size_t>(chara) * kDummySize; }
   bool dummyValid(int chara) { return chara >= 0 && chara < kMaxChara; }
 
+  constexpr int kStreamIds[2] = {0x20, 0x21};
+  struct StreamBackup {
+    uint32_t magic = 0x31535453;
+    int32_t own[2] = {};
+    int32_t set[2] = {};
+  };
+  StreamBackup g_stream_bk;
+  int32_t g_stream_prev[2] = {};
+  bool g_stream_setup = false, g_stream_pending = false;
+  std::filesystem::path g_stream_file;
+  bool streamId(int id) { return id == kStreamIds[0] || id == kStreamIds[1]; }
+
+  void saveStreamFile() {
+    std::ofstream f(g_stream_file, std::ios::binary | std::ios::trunc);
+    f.write(reinterpret_cast<const char*>(&g_stream_bk), sizeof(g_stream_bk));
+  }
+  int putBackStream(const StreamBackup& b) {
+    const uintptr_t settings = *g_save_root + kSettings;
+    int n = 0;
+    for (int k = 0; k < 2; k++) {
+      int32_t& now = at<int32_t>(settings + kStreamIds[k] * 4);
+      if (b.own[k] == b.set[k] || now != b.set[k]) continue;
+      now = b.own[k];
+      n++;
+    }
+    return n;
+  }
+  void watchStreamFile() {
+    if (!g_stream_pending || g_stream_setup || !g_save_root || !*g_save_root) return;
+    const uintptr_t settings = *g_save_root + kSettings;
+    bool changed = false, left = false;
+    for (int k = 0; k < 2; k++) {
+      if (g_stream_bk.own[k] == g_stream_bk.set[k]) continue;
+      if (at<int32_t>(settings + kStreamIds[k] * 4) == g_stream_bk.set[k]) { g_stream_bk.own[k] = g_stream_bk.set[k]; changed = true; }
+      else left = true;
+    }
+    if (!left) {
+      g_stream_pending = false;
+      std::error_code ec;
+      std::filesystem::remove(g_stream_file, ec);
+    } else if (changed) {
+      saveStreamFile();
+    }
+  }
+
   // Puts back the player's value for each setting the trial changed, if it still holds
   // the trial's value (one changed since is the player's own choice and stays), and the
   // same for the dummy's block. Returns how many were put back.
@@ -109,6 +154,7 @@ namespace {
     int n = 0;
     for (int id = 0; id < 128; id++) {
       if (kept(id) || b.applied_settings[id] == b.settings[id]) continue;
+      if (g_stream_setup && streamId(id)) continue;
       if (at<int32_t>(settings + id * 4) != b.applied_settings[id]) continue;
       at<int32_t>(settings + id * 4) = b.settings[id];
       n++;
@@ -225,6 +271,7 @@ namespace {
 
 void init(const std::filesystem::path& dir) {
   g_backup_file = dir / "StriveLabs_trial_settings.bin";
+  g_stream_file = dir / "StriveLabs_stream_settings.bin";
   try {
     const uintptr_t m = sigscan::get().scan(
         "\x0F\x85\x00\x00\x00\x00\x0F\x10\x03\x48\x8D\x54\x24\x30\x0F\x10\x4B\x10\x48\x8D\x0D\x00\x00\x00\x00\x0F\x29\x44\x24\x30",
@@ -302,6 +349,7 @@ uintptr_t saveRoot() { return g_save_root && *g_save_root ? *g_save_root : 0; }
 uintptr_t trainingManager() { return g_recipe; }
 int playerChara() { return charaPlayed(); }
 bool inTraining() { return gameMode() == 8; }
+int gameModeNow() { return g_common && *g_common ? gameMode() : -1; }
 bool onlineFight() { return gameMode() == 22; }
 int opponentChara() { return charaAt(true); }
 int localSide() { return g_chara_owner && *g_chara_owner ? at<uint8_t>(*g_chara_owner + 0x2F4) & 1 : 0; }
@@ -423,8 +471,57 @@ void update(bool in_training) {
       if (putBack(*b)) COMBO_LOG("combo trials: training settings from the last session put back");
       else { f.close(); std::error_code ec; std::filesystem::remove(g_backup_file, ec); }
     }
+    std::ifstream sf(g_stream_file, std::ios::binary);
+    StreamBackup sb;
+    if (sf && sf.read(reinterpret_cast<char*>(&sb), sizeof(sb)) && sb.magic == StreamBackup{}.magic) {
+      if (putBackStream(sb)) {
+        g_stream_bk = sb;
+        g_stream_pending = true;
+        COMBO_LOG("stream to dummy: Round Call and Player Side from the last session put back");
+      }
+      else { sf.close(); std::error_code ec; std::filesystem::remove(g_stream_file, ec); }
+    }
   }
+  watchStreamFile();
   if (!in_training) idle();
+}
+
+bool streamSetup(bool dummy_on_left) {
+  if (!available() || !*g_save_root || !inTraining()) return false;
+  streamRestore(false);
+  const uintptr_t settings = *g_save_root + kSettings;
+  const int32_t want[2] = {dummy_on_left ? 1 : 0, 1};
+  for (int k = 0; k < 2; k++) {
+    const int id = kStreamIds[k];
+    int32_t& now = at<int32_t>(settings + id * 4);
+    g_stream_prev[k] = now;
+    g_stream_bk.own[k] = g_applied && now == g_bk.applied_settings[id] ? g_bk.settings[id] : now;
+    g_stream_bk.set[k] = want[k];
+    now = want[k];
+  }
+  g_stream_setup = true;
+  g_stream_pending = false;
+  saveStreamFile();
+  placeAsSet();
+  COMBO_LOG(std::string("stream to dummy: Round Call on (was ") + std::to_string(g_stream_prev[1]) + "), Player Side " +
+            std::to_string(want[0]) + " (was " + std::to_string(g_stream_prev[0]) + "), position reset asked");
+  return true;
+}
+
+void streamRestore(bool reset) {
+  if (!g_stream_setup) return;
+  g_stream_setup = false;
+  if (!g_save_root || !*g_save_root) return;
+  const uintptr_t settings = *g_save_root + kSettings;
+  for (int k = 0; k < 2; k++) {
+    const int id = kStreamIds[k];
+    int32_t& now = at<int32_t>(settings + id * 4);
+    if (now != g_stream_bk.set[k]) continue;
+    now = g_applied ? g_stream_prev[k] : g_stream_bk.own[k];
+  }
+  g_stream_pending = true;
+  if (reset && available() && inTraining()) placeAsSet();
+  COMBO_LOG("stream to dummy: Round Call and Player Side put back");
 }
 
 // Out of training (main menu, character select, another mode): the trial ends, its
@@ -515,6 +612,7 @@ std::wstring loadBlock(uintptr_t b) {
   g_refresh(reinterpret_cast<void*>(r));
 
   // Start settings: the player's are kept aside once, then the combo's go in.
+  streamRestore(false);
   const uintptr_t settings = *g_save_root + kSettings;
   if (!g_applied) {
     std::memcpy(g_bk.settings, reinterpret_cast<void*>(settings), sizeof(g_bk.settings));

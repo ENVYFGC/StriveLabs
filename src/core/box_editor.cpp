@@ -783,7 +783,7 @@ namespace {
     return ed.sig.empty() || (readable(line + 4, ed.sig.size()) && std::memcmp(line + 4, ed.sig.data(), ed.sig.size()) == 0);
   }
   std::map<SKey, SEdit> g_sedits;
-  struct SReq { enum T { Frames, Level, Reset, Arg, Version, Replace } t = Frames; int side = -1; std::string state; int offset = 0, value = 0, field = 0; std::string folder; };
+  struct SReq { enum T { Frames, Level, Reset, Arg, Version, Replace, ResetLine } t = Frames; int side = -1; std::string state; int offset = 0, value = 0, field = 0; std::string folder; };
   std::mutex g_sreq_m;
   std::vector<SReq> g_sreqs;
   void sask(SReq r) { std::lock_guard<std::mutex> lk(g_sreq_m); g_sreqs.push_back(std::move(r)); }
@@ -1401,6 +1401,19 @@ namespace {
       COMBO_LOG("script & boxes: " + chr + " " + r.state + ": script edits reset");
       return;
     }
+    if (r.t == SReq::ResetLine) {
+      bool any = false;
+      for (auto it = g_sedits.lower_bound(SKey{chr, r.state, r.offset, 0});
+           it != g_sedits.end() && it->first.chr == chr && it->first.state == r.state && it->first.offset == r.offset;) {
+        putBackSEdit(it->second);
+        it = g_sedits.erase(it);
+        any = true;
+      }
+      if (!any) return;
+      g_sel_cache[r.side] = Sel{};
+      COMBO_LOG("script & boxes: " + chr + " " + r.state + " +" + std::to_string(r.offset) + ": line reset");
+      return;
+    }
     const uint8_t* start = stateStart(g_states[r.side], r.state);
     if (!start) return;
     const uint8_t* line = start + r.offset;
@@ -1763,8 +1776,81 @@ const char* kindName(int kind) {
 }
 bool editable(int kind) { return kind >= 0 && kind < 19; }  // every kind the box file has, not only hurt and hit
 
+namespace {
+  std::mutex g_label_m;
+  std::map<std::string, std::map<std::string, std::string>> g_move_labels;
+  std::filesystem::path moveLabelsFile() { return g_dir / "move_labels.txt"; }
+  void readMoveLabels() {
+    std::map<std::string, std::map<std::string, std::string>> out;
+    try {
+      std::ifstream f(moveLabelsFile(), std::ios::binary);
+      std::string line;
+      while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t a = line.find('\t');
+        const size_t b = a == std::string::npos ? a : line.find('\t', a + 1);
+        if (b == std::string::npos) continue;
+        const std::string chr = line.substr(0, a), state = line.substr(a + 1, b - a - 1), label = line.substr(b + 1);
+        if (chr.empty() || state.empty() || label.empty()) continue;
+        out[chr][state] = label;
+      }
+    } catch (...) {}
+    std::lock_guard<std::mutex> lk(g_label_m);
+    g_move_labels.swap(out);
+  }
+  bool writeMoveLabels() {
+    try {
+      std::error_code ec;
+      std::filesystem::create_directories(g_dir, ec);
+      const std::filesystem::path f = moveLabelsFile();
+      std::filesystem::path tmp = f;
+      tmp += ".new";
+      {
+        std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+        for (const auto& [chr, m] : g_move_labels)
+          for (const auto& [state, label] : m) o << chr << '\t' << state << '\t' << label << '\n';
+        o.flush();
+        if (!o.good()) return false;
+      }
+      std::filesystem::rename(tmp, f, ec);
+      return !ec;
+    } catch (...) {
+      return false;
+    }
+  }
+}
+
+bool setMoveLabel(const std::string& chr, const std::string& state, const std::string& label) {
+  if (chr.empty() || state.empty()) return true;
+  std::string clean;
+  for (char ch : label) clean += ch == '\t' || ch == '\n' || ch == '\r' ? ' ' : ch;
+  const size_t first = clean.find_first_not_of(' ');
+  clean = first == std::string::npos ? std::string() : clean.substr(first, clean.find_last_not_of(' ') - first + 1);
+  std::lock_guard<std::mutex> lk(g_label_m);
+  const auto of_chr = g_move_labels.find(chr);
+  if (clean.empty()) {
+    if (of_chr == g_move_labels.end() || !of_chr->second.erase(state)) return true;
+    if (of_chr->second.empty()) g_move_labels.erase(of_chr);
+  } else {
+    if (of_chr != g_move_labels.end()) {
+      const auto it = of_chr->second.find(state);
+      if (it != of_chr->second.end() && it->second == clean) return true;
+    }
+    g_move_labels[chr][state] = clean;
+  }
+  const bool ok = writeMoveLabels();
+  if (!ok) COMBO_LOG("script & boxes: couldn't write StriveLabs_scripts/move_labels.txt");
+  return ok;
+}
+std::map<std::string, std::string> moveLabels(const std::string& chr) {
+  std::lock_guard<std::mutex> lk(g_label_m);
+  const auto it = g_move_labels.find(chr);
+  return it == g_move_labels.end() ? std::map<std::string, std::string>() : it->second;
+}
+
 void init(const std::filesystem::path& ue4ss_dir) {
   g_dir = ue4ss_dir / "StriveLabs_scripts";
+  readMoveLabels();
   const auto db = g_dir / "db";
   g_db = Db{};
   g_db.ok = readRon(db / "GGSTRonRemake.ron");
@@ -1847,6 +1933,7 @@ std::vector<std::pair<int, std::string>> replacements(int op) {
   return out;
 }
 void resetMove(int side, const std::string& state) { SReq r; r.t = SReq::Reset; r.side = side; r.state = state; sask(std::move(r)); }
+void resetLine(int side, const std::string& state, int offset) { SReq r; r.t = SReq::ResetLine; r.side = side; r.state = state; r.offset = offset; sask(std::move(r)); }
 void undo() { Req r; r.t = Req::Undo; ask(std::move(r)); }
 void setKeep(bool keep) { g_keep = keep; }
 void setHighlight(int side, int index) { g_hl_side = side; g_hl_index = index; }
@@ -1912,12 +1999,6 @@ namespace {
 }
 
 void tick() {
-  {  // Ctrl+Alt+B opens and closes it
-    static bool was = false;
-    const bool down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000) && (GetAsyncKeyState('B') & 0x8000);
-    if (down && !was) toggle();
-    was = down;
-  }
   g_ticked = GetTickCount64();
   asw_engine* engine = asw_engine::get();
   asw_entity* ents[2] = {};

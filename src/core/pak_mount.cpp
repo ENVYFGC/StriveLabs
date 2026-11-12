@@ -187,8 +187,8 @@ namespace pak_mount {
   }
 
   namespace {
-    // (a check: exists and size on a known file and a made-up one; then the reader on three known files, their
-    // SHA1s logged for comparing with the pak read offline)
+    // (a check: exists and size on a known file and a made-up one, then reading the known file whole: its size, and
+    // a package's tag at its start)
     void readProbe(PakManager* m) {
       if (!anchorsHold(m)) { COMBO_LOG("pak read: the file functions aren't where they were: not used"); return; }
       const wchar_t* known = L"../../../RED/Content/Chara/SOL/Costume01/Material/Color02/SOL_base.uasset";
@@ -197,12 +197,21 @@ namespace pak_mount {
       using Size = int64_t (*)(PakManager*, const wchar_t*);
       const bool e1 = slot<Exists>(m, kExists)(m, known), e0 = slot<Exists>(m, kExists)(m, none);
       const int64_t s1 = slot<Size>(m, kSize)(m, known), s0 = slot<Size>(m, kSize)(m, none);
-      if (!(e1 && !e0 && s1 == 848 && s0 == -1)) {
+      // (any size: a skin mod can replace this file, as Unverum's packs do; 848 is the game's own)
+      if (!(e1 && !e0 && s1 > 0 && s0 == -1)) {
         COMBO_LOG("pak read: exists " + std::to_string(e1) + "/" + std::to_string(e0) + ", size " + std::to_string(s1) + "/" +
-                  std::to_string(s0) + " (expected 1/0 and 848/-1): not used");
+                  std::to_string(s0) + " (expected 1/0 and a size/-1): not used");
         return;
       }
       g_reader = true;
+      std::vector<uint8_t> probe;  // and the reader itself: the whole file, starting with a package's tag
+      if (!readFile(known, probe) || static_cast<int64_t>(probe.size()) != s1 || probe.size() < 4 ||
+          !(probe[0] == 0xC1 && probe[1] == 0x83 && probe[2] == 0x2A && probe[3] == 0x9E)) {
+        COMBO_LOG("pak read: reading " + std::to_string(s1) + " bytes gave " + std::to_string(probe.size()) + " without a package tag: not used");
+        g_reader = false;
+        return;
+      }
+      if (s1 != 848) COMBO_LOG("pak read: the check file is " + std::to_string(s1) + " bytes (a mod's; the game's is 848): reads fine");
     }
   }
 

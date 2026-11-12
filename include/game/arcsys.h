@@ -42,6 +42,27 @@ public:
   FIELD(0xC58, class asw_events*, Events);
 };
 
+constexpr int kNoStageArea = -0x7FFFFFFF;
+constexpr int kStageRoundReset = 0, kStageBoxMoveEnd = 6, kStageBgChange = 7;
+struct asw_stage_call
+{
+  int event = 0;
+  int size = 0;
+  uint8_t params[24] = {};
+};
+int asw_stage_area();
+bool asw_stage_untouched();
+bool asw_stage_changing();
+bool asw_stage_walls(int& left, int& right);
+const char* asw_stage_event_name(int event);
+bool asw_stage_can_reset();
+const void* asw_stage_identity();
+int asw_stage_fire(const asw_stage_call& call);
+int asw_stage_round_reset();
+void asw_stage_record_start();
+void asw_stage_record_refresh();
+std::vector<asw_stage_call> asw_stage_recorded();
+
 class asw_rollback
 {
 public:

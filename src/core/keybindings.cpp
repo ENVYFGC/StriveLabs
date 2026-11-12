@@ -1,6 +1,9 @@
 #include "keybindings.h"
 
 #include "bind_watcher.h"
+#include "imgui_overlay.h"
+
+#include <Windows.h>
 
 int Keybinds::getButtonIndex(int input)
 {
@@ -61,13 +64,16 @@ void Keybinds::loadButtons()
 void Keybinds::checkBinds(bool await)
 {
     auto inputs = BindWatcherI::getInputs(await);
+    const bool typing = imgui_overlay::typing();
     for (const auto& input : inputs)
     {
         const bool repeat = (input & BindWatcherI::REPEAT) != 0;
         const int key = input & ~BindWatcherI::REPEAT;
+        const int vk = key & 0xFF;
         if (binds::capturing >= 0) { if (!repeat) binds::offerKey(key); }
+        else if (typing && (vk < VK_F1 || vk > VK_F24)) continue;
         // Held keys repeat only for frame step and the menu arrows (hold to keep stepping or scrolling).
-        else if (!repeat || key == ADVANCE_BUTTON || key == binds::key[binds::BOX_STEP] || key == MENU_UP_BUTTON || key == MENU_DOWN_BUTTON
+        else if (!repeat || key == ADVANCE_BUTTON || key == binds::key[binds::BOX_STEP] || key == binds::key[binds::STEP_BACK] || key == binds::key[binds::TICK_BACK] || key == binds::key[binds::TICK_FORWARD] || key == MENU_UP_BUTTON || key == MENU_DOWN_BUTTON
                  || key == MENU_LEFT_BUTTON || key == MENU_RIGHT_BUTTON)
             setButtonState(key, true);
     }

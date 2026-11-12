@@ -27,6 +27,7 @@ namespace menu_ui {
   const ImU32 TEXT      = RGBA(232, 234, 240);
   const ImU32 LABEL     = RGBA(205, 208, 216);
   const ImU32 MUTED     = RGBA(140, 146, 160);
+  const ImU32 CAUTION   = RGBA(255, 214, 77);
   const ImU32 DIM       = RGBA(92, 98, 112);
 
   ImFont* f_body = nullptr;
@@ -191,6 +192,47 @@ namespace menu_ui {
     return ImGui::InvisibleButton(id, ImVec2(std::max(b.x - a.x, 1.0f), std::max(b.y - a.y, 1.0f)));
   }
 
+  bool over_window() {
+    return ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows | ImGuiHoveredFlags_NoPopupHierarchy | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+  }
+
+  constexpr float kSpinW = 14.0f;
+  int spin_buttons(const char* id) {
+    const float w = kSpinW * S, h = ImGui::GetFrameHeight(), half = std::floor(h * 0.5f);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    int step = 0;
+    bool hovered = false;
+    static ImGuiID quiet = 0;
+    static int quiet_frame = 0;
+    if (quiet && ImGui::GetFrameCount() > quiet_frame + 1) quiet = 0;
+    ImGui::PushID(id);
+    const ImGuiID self = ImGui::GetID("spin");
+    ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
+    ImGui::BeginGroup();
+    for (int k = 0; k < 2; k++) {
+      const ImVec2 a(p.x, p.y + (k ? half : 0.0f)), b(p.x + w, k ? p.y + h : p.y + half);
+      ImGui::SetCursorScreenPos(a);
+      if (ImGui::InvisibleButton(k ? "down" : "up", ImVec2(w, b.y - a.y))) step = k ? -1 : 1;
+      const bool hov = ImGui::IsItemHovered();
+      hovered |= hov;
+      dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_FrameBgActive : hov ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg));
+      const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+      const float r = 3.0f * S, d = k ? r * 0.6f : -r * 0.6f;
+      dl->AddTriangleFilled(ImVec2(c.x, c.y + d), ImVec2(c.x - r, c.y - d), ImVec2(c.x + r, c.y - d), ImGui::GetColorU32(ImGuiCol_Text));
+    }
+    ImGui::EndGroup();
+    ImGui::PopItemFlag();
+    ImGui::PopID();
+    if (hovered && step) quiet = self;
+    if (hovered && quiet == self) quiet_frame = ImGui::GetFrameCount();
+    if (hovered && quiet != self) {
+      ImGui::SetNextWindowPos(ImVec2(p.x + w, p.y + h + 4.0f * S), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+      ImGui::SetTooltip("Click: 1 up or down. With Ctrl: 10. Hold to repeat.");
+    }
+    return step * (ImGui::GetIO().KeyCtrl ? 10 : 1);
+  }
+
   // size 0 = the font's own size
   void text(ImDrawList* dl, ImFont* f, ImVec2 p, ImU32 col, const std::string& s, float size = 0.0f) {
     dl->AddText(f, size > 0.0f ? size : f->FontSize, p, col, s.c_str());
@@ -251,24 +293,28 @@ namespace menu_ui {
   // Returns where the rows end on screen.
   float draw_rows(ImDrawList* dl, const std::vector<MenuRowView>& rows, int cursor, const std::string& key,
                  float px, float x1, float top, float bottom, ScrollState& st,
-                 const std::function<void(MenuClick)>& sendf) {
+                 const std::function<void(MenuClick)>& sendf, const char** tip_out = nullptr) {
     ImGuiIO& io = ImGui::GetIO();
     const float row_h = ROW_H * S, pad = PAD * S, ch = CHIP_H * S * 0.5f;
     const float section_h = 28 * S;
+    const float caution_w = std::max(x1 - px - pad * 2 - 6 * S, 60 * S);
+    auto height = [&](const MenuRowView& r) {
+      return r.caution ? f_small->CalcTextSizeA(f_small->FontSize, FLT_MAX, caution_w, r.label.c_str()).y + 14 * S : row_h;
+    };
     std::vector<float> offsets;
     offsets.reserve(rows.size());
     float rows_h = 0;
     for (const auto& r : rows) {
       offsets.push_back(rows_h);
-      rows_h += row_h + (r.section.empty() ? 0 : section_h);
+      rows_h += height(r) + (r.section.empty() ? 0 : section_h);
     }
     const float view_h = std::max(bottom - top, 0.0f);
     if (key != st.key) { st.scroll = 0; st.last_cursor = -1; st.key = key; }
     float& scroll = st.scroll;
-    if (ImGui::IsMouseHoveringRect(ImVec2(px, top), ImVec2(x1, bottom), false)) scroll -= io.MouseWheel * row_h;
+    if (ImGui::IsMouseHoveringRect(ImVec2(px, top), ImVec2(x1, bottom), false) && over_window()) scroll -= io.MouseWheel * row_h;
     if (cursor != st.last_cursor && cursor >= 0 && cursor < static_cast<int>(rows.size())) {  // keep the selected control and heading in view
       const float rt = offsets[cursor];
-      const float rb = rt + row_h + (rows[cursor].section.empty() ? 0 : section_h);
+      const float rb = rt + height(rows[cursor]) + (rows[cursor].section.empty() ? 0 : section_h);
       if (rt < scroll) scroll = rt;
       if (rb > scroll + view_h) scroll = rb - view_h;
     }
@@ -289,10 +335,11 @@ namespace menu_ui {
         dl->PopClipRect();
         y += section_h;
       }
-      const ImVec2 a(px, y), b(x1, y + row_h);
-      if (b.y <= top || a.y >= bottom) { y += row_h; continue; }  // off screen: no drawing, no clicks
+      const float this_h = height(r);
+      const ImVec2 a(px, y), b(x1, y + this_h);
+      if (b.y <= top || a.y >= bottom) { y += this_h; continue; }  // off screen: no drawing, no clicks
       const bool sel = i == cursor;
-      const float cy = y + row_h * 0.5f;
+      const float cy = y + this_h * 0.5f;
       ImGui::PushID(i);
       if (sel) {
         dl->AddRectFilled(a, b, CURSOR);
@@ -302,7 +349,9 @@ namespace menu_ui {
       dl->AddLine(ImVec2(a.x + pad, b.y - 1), ImVec2(b.x - pad, b.y - 1), DIVIDER);
       float ctrl_left = rx;  // leftmost x of this row's controls; the label is cut there
 
-      if (r.kind == MenuRowView::Kind::Choice && is_toggle(r)) {
+      if (r.caution) {
+        dl->AddText(f_small, f_small->FontSize, ImVec2(lx, a.y + 7 * S), CAUTION, r.label.c_str(), nullptr, caution_w);
+      } else if (r.kind == MenuRowView::Kind::Choice && is_toggle(r)) {
         const float tw = 36 * S, th = 18 * S;
         const ImVec2 ta(rx - tw, cy - th * 0.5f), tb(rx, cy + th * 0.5f);
         ctrl_left = ta.x;
@@ -374,12 +423,22 @@ namespace menu_ui {
           if (clicked_rect("bind", ImVec2(cx, a.y), b)) sendf(MenuClick{MenuClick::Type::Row, i, 1});
         }
       }
-      dl->PushClipRect(ImVec2(lx, a.y), ImVec2(std::max(lx, ctrl_left - 8 * S), b.y), true);
-      text(dl, sel ? f_bold : f_body, ImVec2(lx, cy - f_body->FontSize * 0.5f), sel ? TEXT : LABEL, r.label);
-      dl->PopClipRect();
-      if (!r.tip.empty() && ImGui::IsMouseHoveringRect(a, b)) ImGui::SetTooltip("%s", r.tip.c_str());
+      if (!r.caution) {
+        dl->PushClipRect(ImVec2(lx, a.y), ImVec2(std::max(lx, ctrl_left - 8 * S), b.y), true);
+        text(dl, sel ? f_bold : f_body, ImVec2(lx, cy - f_body->FontSize * 0.5f), sel ? TEXT : LABEL, r.label);
+        dl->PopClipRect();
+      }
+      if (r.tip[0] && ImGui::IsMouseHoveringRect(a, b) && ImGui::IsWindowHovered()) {
+        if (tip_out) *tip_out = r.tip;
+        else if (ImGui::BeginTooltip()) {
+          ImGui::PushTextWrapPos(360 * S);
+          ImGui::TextUnformatted(r.tip);
+          ImGui::PopTextWrapPos();
+          ImGui::EndTooltip();
+        }
+      }
       ImGui::PopID();
-      y += row_h;
+      y += this_h;
     }
     ImGui::PopClipRect();
 
@@ -474,14 +533,18 @@ namespace menu_ui {
     // While the menu is closed: title 0 shown, 1 only its accent line, 2 hidden;
     // panel shown or not. -1 = follow "Hide decorations" like the other windows.
     // With the menu open everything is shown, so windows can still be moved.
-    const int title_state = interactive ? 0 : title_mode >= 0 ? title_mode : (hide_decorations ? 2 : 0);
-    const bool panel = interactive || (panel_mode >= 0 ? panel_mode == 0 : !hide_decorations);
+    const ImGuiWindow* existing = ImGui::FindWindowByName(id.c_str());
+    const ImGuiContext* ctx = ImGui::GetCurrentContext();
+    const bool touched = !existing || ctx->MovingWindow == existing || ctx->ActiveIdWindow == existing ||
+                         (ctx->HoveredWindow && ctx->HoveredWindow->RootWindow == existing);
+    const bool chrome = interactive && (touched || ws.collapsed);
+    const int title_state = chrome ? 0 : title_mode >= 0 ? title_mode : (!interactive && hide_decorations ? 2 : 0);
+    const bool panel = chrome || (panel_mode >= 0 ? panel_mode == 0 : (interactive || !hide_decorations));
     Frame f;
     f.head = HEAD * S;
     const int gen = g_layout_gen;
     const bool reset = ws.gen != gen;
     if (reset) { ws.gen = gen; ws.collapsed = false; ws.open_h = 0; }
-    const ImGuiWindow* existing = ImGui::FindWindowByName(id.c_str());
     if (ws.collapsed) {
       const float w = existing ? existing->Size.x : def_size.x;
       ImGui::SetNextWindowSize(ImVec2(w, f.head), ImGuiCond_Always);
@@ -596,6 +659,7 @@ namespace menu_ui {
   std::atomic<bool> g_game_menu_open{false};
   // The online version window, opened by its own key outside fights.
   std::atomic<bool> g_online_picker{false};
+  std::atomic<unsigned long long> g_typing_ms{0}, g_online_note_ms{0};
   std::atomic<int> g_online_pick_step{0};
   // The battle version's name, from the game thread.
   std::mutex bv_mutex;
@@ -607,8 +671,11 @@ namespace menu_ui {
     const std::string id = pv.title + "##sl_panel" + std::to_string(pv.page);
     const float status_h = pv.status.empty() ? 0.0f : 26 * S;
     float def_h = HEAD * S + status_h + 6 * S;
-    for (size_t i = 0; i < std::min(pv.rows.size(), size_t{8}); i++)
-      def_h += (ROW_H + (pv.rows[i].section.empty() ? 0 : 28)) * S;
+    for (size_t i = 0; i < std::min(pv.rows.size(), size_t{8}); i++) {
+      const MenuRowView& r = pv.rows[i];
+      const float row = r.caution ? f_small->CalcTextSizeA(f_small->FontSize, FLT_MAX, (470 - PAD * 2 - 6) * S, r.label.c_str()).y + 14 * S : ROW_H * S;
+      def_h += row + (r.section.empty() ? 0 : 28 * S);
+    }
     Frame f = begin_window(id, pv.title, ImVec2(60 * S + 36 * S * pv.page, 100 * S + 36 * S * pv.page),
                            ImVec2(470 * S, def_h), ImVec2(300 * S, HEAD * S + ROW_H * S * 2), true);
     if (f.closed) toggle_popped(pv.page);
@@ -900,7 +967,7 @@ namespace menu_ui {
             continue;
           }
           const float seg_w = cur_w = segw(i), left = xs[i] + sp, cx = left + seg_w * 0.5f;
-          if (interactive && ImGui::IsMouseHoveringRect(ImVec2(left, top), ImVec2(left + seg_w, top + in_h), false)) hovered = i;
+          if (interactive && ImGui::IsMouseHoveringRect(ImVec2(left, top), ImVec2(left + seg_w, top + in_h), false) && over_window()) hovered = i;
           // Direction
           const float ay = top + u * 0.5f;
           if (c.dir != 5 && c.dir == prev_dir) {
@@ -993,7 +1060,7 @@ namespace menu_ui {
   // under: sit right below that window (pinned). fill: take exactly that spot and size.
   void draw_meters_window(const char* id, const char* title, const std::vector<std::string>& lines, ImVec2 def_pos,
                           bool interactive, bool right_side, bool snap, bool hide_decorations, int panel_mode,
-                          const ImVec4* under = nullptr, const ImVec4* fill = nullptr, int title_mode = -1) {
+                          const ImVec4* under = nullptr, const ImVec4* fill = nullptr, int title_mode = -1, int closes = 0) {
     ImGuiIO& io = ImGui::GetIO();
     // Line pitch 1.4x the font size, like the game's own training text (Damage, Combo Damage)
     const float lh = std::max(f_meters->FontSize, f_meters_bold->FontSize) * 1.4f, pad = 12 * S;
@@ -1034,14 +1101,14 @@ namespace menu_ui {
     st.last_side = side;
     Frame f = begin_window(id, title, def_pos, ImVec2(300 * S, def_h), ImVec2(200 * S, HEAD * S + lh * 2), interactive,
                            OVERLAY_BG, hide_decorations, f_meters_title, title_mode, panel_mode);
-    if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, 0, 0});
+    if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TensionWindow, closes, 0});
     g_placed[id] = PlacedRect{ImVec4(f.o.x, f.o.y, f.w, f.h), ImGui::GetFrameCount()};
     if (!f.collapsed) {
       const float top = f.o.y + f.head + 4 * S, bottom = f.o.y + f.h - 4 * S;
       const float content = lh * static_cast<float>(lines.size());
       const float view_h = std::max(bottom - top, 0.0f);
       const float max_scroll = std::max(0.0f, content - view_h);
-      if (interactive && ImGui::IsMouseHoveringRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), false)) st.scroll -= io.MouseWheel * lh;
+      if (interactive && ImGui::IsMouseHoveringRect(ImVec2(f.o.x, top), ImVec2(f.o.x + f.w, bottom), false) && over_window()) st.scroll -= io.MouseWheel * lh;
       st.scroll = std::clamp(st.scroll, 0.0f, max_scroll);
       // Reserve the same space even when the menu is closed, so text stays put.
       const float rx = f.o.x + f.w - pad - (max_scroll > 0 ? 6 * S : 0);
@@ -1263,12 +1330,13 @@ namespace menu_ui {
       std::vector<std::string> lines;
       for (const auto& r : rows[side]) lines.push_back(r.label.empty() ? std::string() : r.label + ": " + r.value);
       draw_meters_window(ids[side], titles[side], lines, def_pos,
-                         interactive, side == 1, false, hide_decorations, panel_mode, nullptr, nullptr, title_mode);
+                         interactive, side == 1, false, hide_decorations, panel_mode, nullptr, nullptr, title_mode, side + 1);
     }
   }
 
   // ---- Timeline window: rewind, set point, play / pause, step, record ---------
   std::atomic<bool> g_timeline_visible{false};  // mouse goes to ImGui while it's up
+  double g_copy_ms = 0;
 
   bool icon_button(ImDrawList* dl, const char* id, ImVec2 a, ImVec2 b, bool active, bool enabled,
                    const char* tip, const std::function<void(ImVec2, ImU32)>& icon) {
@@ -1287,7 +1355,7 @@ namespace menu_ui {
     ImGuiIO& io = ImGui::GetIO();
     Frame f = begin_window("Timeline##sl_timeline", "Timeline",
                            ImVec2(io.DisplaySize.x * 0.5f - 270 * S, io.DisplaySize.y - 460 * S),
-                           ImVec2(540 * S, 420 * S), ImVec2(380 * S, (HEAD + 92) * S), true);
+                           ImVec2(540 * S, 420 * S), ImVec2((v.seek_shown ? 470 : 380) * S, (HEAD + (v.seek_shown ? 124 : 92)) * S), true);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::TlShow, 0, 0});
     if (!f.collapsed) {
       ImDrawList* dl = f.dl;
@@ -1329,6 +1397,34 @@ namespace menu_ui {
             arrow(dl, ImVec2(c.x - 2 * S, c.y), r * 0.9f, true, col);
             dl->AddRectFilled(ImVec2(c.x + r * 0.6f, c.y - r), ImVec2(c.x + r * 0.6f + 2 * S, c.y + r), col); }))
         ModMenu::instance().click(MenuClick{MenuClick::Type::TlStep});
+      if (v.seek_shown) {
+        auto [ba, bb] = next(bw);
+        const bool can = v.seek_on && v.paused && v.seek_pos > v.seek_min;
+        if (icon_button(dl, "sb", ba, bb, false, can, can ? "Back one frame" : !v.paused ? "Pause first to step back" : "No earlier save to step back to", [&](ImVec2 c, ImU32 col) {
+              dl->AddRectFilled(ImVec2(c.x - r * 0.6f - 2 * S, c.y - r), ImVec2(c.x - r * 0.6f, c.y + r), col);
+              arrow(dl, ImVec2(c.x + 2 * S, c.y), r * 0.9f, false, col); }))
+          ModMenu::instance().click(MenuClick{MenuClick::Type::TlSeek, v.seek_pos - 1, 1});
+        int prev_point = -1, next_point = -1;
+        if (v.seek_on) {
+          const int rel = v.seek_pos - v.seek_origin;
+          if (rel > 0) {
+            const int p = v.seek_origin + ((rel - 1) / 60) * 60;
+            if (p >= v.seek_min && p < v.seek_pos) prev_point = p;
+          }
+          const int n = (std::min)(v.seek_origin + ((std::max)(rel, 0) / 60 + 1) * 60, v.seek_max);
+          if (n > v.seek_pos) next_point = n;
+        }
+        auto [qa, qb] = next(bw);
+        if (icon_button(dl, "pv", qa, qb, false, prev_point >= 0, prev_point >= 0 ? "Previous point (one second marks)" : "No earlier point", [&](ImVec2 c, ImU32 col) {
+              arrow(dl, ImVec2(c.x - r * 0.45f, c.y), r * 0.8f, false, col);
+              arrow(dl, ImVec2(c.x + r * 0.45f, c.y), r * 0.8f, false, col); }))
+          ModMenu::instance().click(MenuClick{MenuClick::Type::TlSeek, prev_point, 0});
+        auto [na, nb] = next(bw);
+        if (icon_button(dl, "np", na, nb, false, next_point >= 0, next_point >= 0 ? "Next point" : "At the furthest point played", [&](ImVec2 c, ImU32 col) {
+              arrow(dl, ImVec2(c.x - r * 0.45f, c.y), r * 0.8f, true, col);
+              arrow(dl, ImVec2(c.x + r * 0.45f, c.y), r * 0.8f, true, col); }))
+          ModMenu::instance().click(MenuClick{MenuClick::Type::TlSeek, next_point, 0});
+      }
       x += 10 * S;
       auto [ca, cb] = next(bw);   // record
       const bool can_rec = v.mode == 2;
@@ -1364,8 +1460,60 @@ namespace menu_ui {
           text(dl, f_small, ImVec2(lx, ty + th + 5 * S), DIM, lab);
         }
       }
+      const bool seek_row = v.seek_shown && !v.recording;
+      static bool dragging = false;
+      static int drag_to = 0;
+      if (!seek_row) dragging = false;
+      if (seek_row) {
+        dl->AddRectFilled(ImVec2(tx0, ty + 2 * S), ImVec2(tx1, ty + 6 * S), CHIP);
+        std::string where = "No point to jump to yet in this round";
+        if (v.seek_on && v.seek_max > v.seek_min) {
+          const float span = static_cast<float>(v.seek_max - v.seek_min);
+          auto at = [&](int p) { return tx0 + (tx1 - tx0) * std::clamp((p - v.seek_min) / span, 0.0f, 1.0f); };
+          const int first_point = v.seek_origin + (((std::max)(v.seek_min - v.seek_origin, 0) + 59) / 60) * 60;
+          auto snap = [&](int p) {
+            int q = v.seek_origin + (((std::max)(p - v.seek_origin, 0) + 30) / 60) * 60;
+            if (q < v.seek_min) q = first_point;
+            if (q > v.seek_max || v.seek_max - p <= 30) q = v.seek_max;
+            return q;
+          };
+          const int count = first_point <= v.seek_max ? (v.seek_max - first_point) / 60 + 1 : 0;
+          const int every = count > 0 && (tx1 - tx0) / static_cast<float>(count) < 3.0f * S ? 2 : 1;
+          for (int p = first_point; p <= v.seek_max; p += 60) {
+            if (((p - v.seek_origin) / 60) % every) continue;
+            bool clean = false;
+            for (int c : v.seek_calm)
+              if (c < p && p - c <= 600) { clean = true; break; }
+            const float x = at(p);
+            dl->AddRectFilled(ImVec2(x - 0.5f * S, ty - 1 * S), ImVec2(x + 0.5f * S, ty + 9 * S), clean ? MUTED : RED);
+          }
+          ImGui::SetCursorScreenPos(ImVec2(tx0, ty - 3 * S));
+          ImGui::InvisibleButton("tl_seek", ImVec2((std::max)(tx1 - tx0, 1.0f), 14 * S));
+          if (ImGui::IsItemHovered() && !ImGui::IsItemActive())
+            ImGui::SetTooltip("Click or drag to a mark: the replay jumps there and stays paused.\nMarks are one second apart. A coloured mark has no calm moment in the 10 s before it: effects may look wrong there.");
+          if (ImGui::IsItemActive()) {
+            const float t = std::clamp((io.MousePos.x - tx0) / (std::max)(tx1 - tx0, 1.0f), 0.0f, 1.0f);
+            drag_to = snap(v.seek_min + static_cast<int>(t * span + 0.5f));
+            dragging = true;
+          } else if (dragging) {
+            dragging = false;
+            ModMenu::instance().click(MenuClick{MenuClick::Type::TlSeek, drag_to, 0});
+          }
+          const int shown = dragging ? drag_to : std::clamp(v.seek_pos, v.seek_min, v.seek_max);
+          const float hx = at(shown);
+          dl->AddRectFilled(ImVec2(tx0, ty + 2 * S), ImVec2(hx, ty + 6 * S), RED);
+          dl->AddRectFilled(ImVec2(hx - 2 * S, ty - 3 * S), ImVec2(hx + 2 * S, ty + 11 * S), TEXT);
+          char buf[96];
+          if (shown >= v.seek_max) snprintf(buf, sizeof(buf), "At the furthest point played (%.0f s kept)", span / 60.0f);
+          else snprintf(buf, sizeof(buf), "%.1f s back (of %.0f s kept)", (v.seek_max - shown) / 60.0f, span / 60.0f);
+          where = buf;
+        } else {
+          dragging = false;
+        }
+        text(dl, f_small, ImVec2(tx0, ty + 13 * S), DIM, where);
+      }
       // Last message (saved file, errors)
-      const float sy = v.recording ? ty + th + 5 * S + f_small->FontSize + 4 * S : ty;
+      const float sy = v.recording ? ty + th + 5 * S + f_small->FontSize + 4 * S : seek_row ? ty + 13 * S + f_small->FontSize + 4 * S : ty;
       if (!v.rec_status.empty() && sy + f_small->FontSize < f.o.y + f.h) {
         dl->PushClipRect(ImVec2(tx0, sy), ImVec2(tx1, sy + f_small->FontSize + 2 * S), true);
         text(dl, f_small, ImVec2(tx0, sy), MUTED, v.rec_status);
@@ -1384,13 +1532,14 @@ namespace menu_ui {
         dl->AddLine(ImVec2(f.o.x + pad, rows_top - 3 * S), ImVec2(f.o.x + f.w - pad, rows_top - 3 * S), DIVIDER);
         static ScrollState tl_scroll;
         const int rec_page = 9;  // MenuPage::Recordings
+        const char* unshown_tip = "";
         draw_rows(dl, rows, -1, "timeline", f.o.x, f.o.x + f.w, rows_top, f.o.y + f.h - 6 * S, tl_scroll,
                   [&index, rec_page](MenuClick c) {
                     if (c.a < 0 || c.a >= static_cast<int>(index.size())) return;
                     c.a = index[c.a] + 1;  // + Back row
                     c.page = rec_page;
                     ModMenu::instance().click(c);
-                  });
+                  }, v.showing ? nullptr : &unshown_tip);
       }
     }
     end_window();
@@ -1485,7 +1634,7 @@ namespace menu_ui {
   void draw_status_line(const ReplayManager::Status& s, bool interactive) {
     std::string t;
     auto add = [&t](const std::string& part) { t += (t.empty() ? "" : "  \xC2\xB7  ") + part; };
-    if (s.rewindPoint) add("Rewind point set");
+    if (s.rewindPoint) add(s.rewindStale ? "Rewind point is from another stage area" : "Rewind point set");
     char buf[64];
     if (s.assist == 1) { snprintf(buf, sizeof(buf), "Assist %.1f s", std::max(0.0f, s.assistLeftSeconds)); add(buf); }
     else if (s.assist == 2) add("Assist: Active");
@@ -1526,6 +1675,14 @@ namespace menu_ui {
     const auto& rs = v.replay;
     const bool status_line = ModMenu::instance().statusLineEnabled();
     if (status_line) draw_status_line(rs, v.showing);
+    if (ImGui::GetIO().WantTextInput) draw_status_message("Typing: Enter or Esc gives the keys back to the game", row++);
+    if (GetTickCount64() - g_online_note_ms.load() < 3000) {
+      const std::wstring ok = binds::key[binds::ONLINE_VERSION] ? binds::keyName(binds::key[binds::ONLINE_VERSION]) : std::wstring(L"The key");
+      char ok8[48]{}, note[128];
+      WideCharToMultiByte(CP_UTF8, 0, ok.c_str(), -1, ok8, sizeof(ok8) - 1, nullptr, nullptr);
+      snprintf(note, sizeof(note), "%s opens the Online window outside training and replays", ok8);
+      draw_status_message(note, row++);
+    }
     if (rs.prompt) {
       char q[96], keys[128];
       if (!rs.promptStop) snprintf(q, sizeof(q), "Take over P%d?", rs.prompt);
@@ -2445,7 +2602,7 @@ namespace menu_ui {
         snprintf(zt, sizeof(zt), "%.0fx", zl);
         const ImVec2 zp(zx + small_button_w("Zoom") + 10 * S, y + (CHIP_H * S - f_small->FontSize) * 0.5f);
         text(dl, f_small, zp, MUTED, zt);
-        if (ImGui::IsMouseHoveringRect(zp, ImVec2(zp.x + text_w(f_small, zt), zp.y + f_small->FontSize)))
+        if (ImGui::IsMouseHoveringRect(zp, ImVec2(zp.x + text_w(f_small, zt), zp.y + f_small->FontSize)) && over_window())
           ImGui::SetTooltip(tool == kPick ? "Wheel: zoom, right-drag: move, click: pick" : "Wheel: zoom, right-drag: move, [ ]: size");
       }
       y += CHIP_H * S + pad * 0.6f;
@@ -2742,6 +2899,102 @@ namespace menu_ui {
     }
     pop_widget_style();
   }
+  struct FileWindow {
+    bool open = false, want_open = false, font = false;
+    std::filesystem::path dir, home;
+    std::vector<TexEntry> entries;
+    std::string error;
+  } g_file_window;
+  void file_window_list(const std::filesystem::path& dir) {
+    FileWindow& b = g_file_window;
+    b.dir = dir;
+    b.entries.clear();
+    b.error.clear();
+    if (dir.empty()) {
+      const DWORD drives = GetLogicalDrives();
+      for (int i = 0; i < 26; i++)
+        if (drives & (1u << i)) { const std::wstring d = std::wstring(1, static_cast<wchar_t>(L'A' + i)) + L":\\"; b.entries.push_back({d, true, tb_narrow(d)}); }
+      return;
+    }
+    std::error_code ec;
+    std::vector<TexEntry> folders, files;
+    for (std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+      const std::wstring name = it->path().filename().wstring();
+      if (name.empty() || name[0] == L'.') continue;
+      std::error_code e2;
+      if (it->is_directory(e2)) { folders.push_back({name, true}); continue; }
+      std::wstring ext = it->path().extension().wstring();
+      for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+      if (b.font ? (ext == L".ttf" || ext == L".otf") : ext == L".txt") files.push_back({name, false});
+    }
+    if (ec) b.error = "Couldn't read this folder.";
+    auto by_name = [](const TexEntry& x, const TexEntry& y) { return _wcsicmp(x.name.c_str(), y.name.c_str()) < 0; };
+    std::sort(folders.begin(), folders.end(), by_name);
+    std::sort(files.begin(), files.end(), by_name);
+    b.entries = std::move(folders);
+    b.entries.insert(b.entries.end(), files.begin(), files.end());
+    for (TexEntry& e : b.entries) e.label = tb_narrow(e.name);
+  }
+  void file_window_draw(bool menu_showing) {
+    FileWindow& b = g_file_window;
+    if (const int want = ModMenu::instance().takeFileWindow()) {
+      b.font = want == 2;
+      b.home = ModMenu::instance().fileWindowDir(b.font);
+      std::error_code ec;
+      file_window_list(std::filesystem::is_directory(b.home, ec) ? b.home : std::filesystem::path());
+      b.want_open = true;
+    }
+    if (b.want_open) { ImGui::OpenPopup("file_window"); b.want_open = false; b.open = true; }
+    if (!b.open) return;
+    push_widget_style();
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowSize(ImVec2((std::min)(vp.x * 0.5f, 760.0f * S), (std::min)(vp.y * 0.7f, 600.0f * S)), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("file_window", &b.open, ImGuiWindowFlags_NoTitleBar)) {
+      ImGui::TextUnformatted(b.font ? "Pick a font for the meters and frame bar" : "Pick a recording");
+      ImGui::TextDisabled("%s", b.dir.empty() ? "Drives" : tb_narrow(b.dir.wstring()).c_str());
+      if (ImGui::SmallButton("Up")) file_window_list(b.dir.empty() || b.dir == b.dir.root_path() ? std::filesystem::path() : b.dir.parent_path());
+      ImGui::SameLine();
+      if (ImGui::SmallButton(b.font ? "Fonts folder" : "Recordings folder")) file_window_list(b.home);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Drives")) file_window_list({});
+      if (!b.error.empty()) ImGui::TextUnformatted(b.error.c_str());
+      ImGui::Separator();
+      const float foot = ImGui::GetFrameHeightWithSpacing() * 1.5f;
+      std::filesystem::path go, pick;
+      if (ImGui::BeginChild("file_list", ImVec2(0, -foot), false)) {
+        const bool second_click = ImGui::GetIO().MouseClickedLastCount[0] >= 2;
+        ImGuiListClipper clip;
+        clip.Begin(static_cast<int>(b.entries.size()), ImGui::GetFrameHeightWithSpacing());
+        while (clip.Step())
+          for (int i = clip.DisplayStart; i < clip.DisplayEnd; i++) {
+            const TexEntry& e = b.entries[static_cast<size_t>(i)];
+            ImGui::PushID(i);
+            const std::string label = e.folder ? "[" + e.label + "]" : e.label;
+            if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(0, ImGui::GetFrameHeight())) && !second_click) {
+              if (e.folder) go = b.dir.empty() ? std::filesystem::path(e.name) : b.dir / e.name;
+              else pick = b.dir / e.name;
+            }
+            ImGui::PopID();
+          }
+        if (b.entries.empty() && b.error.empty()) ImGui::TextDisabled(b.font ? "No folders or fonts here." : "No folders or recordings here.");
+      }
+      ImGui::EndChild();
+      if (!go.empty()) file_window_list(go);
+      ImGui::Separator();
+      bool close = !menu_showing;
+      if (ImGui::Button("Cancel")) close = true;
+      if (!pick.empty()) {
+        ModMenu::instance().fileWindowPick(pick, b.font);
+        close = true;
+      }
+      if (close) { b.open = false; ImGui::CloseCurrentPopup(); }
+      ImGui::EndPopup();
+    } else {
+      b.open = false;
+    }
+    pop_widget_style();
+  }
   // ---- Script & boxes. Each fighter's state, sprite, boxes (editable) and the state's script ----
   void draw_box_editor(const MenuView& mv) {
     use(E_MENU);
@@ -2793,6 +3046,13 @@ namespace menu_ui {
       ImGui::SameLine();
       if (ImGui::RadioButton("P2", side == 1)) side = 1;
       const box_editor::SideView& s = v.side[side];
+      const std::map<std::string, std::string> labels = s.present ? box_editor::moveLabels(s.chr) : std::map<std::string, std::string>();
+      static std::string label_err;
+      static const char* const kLabelErr = "Couldn't write StriveLabs_scripts/move_labels.txt";
+      auto label_of = [&](const std::string& n) -> const std::string* {
+        const auto it = labels.find(n);
+        return it == labels.end() ? nullptr : &it->second;
+      };
       if (s.present && !s.objects.empty()) {  // the fighter, or one of its objects (a projectile...)
         at(110);
         auto label = [](const box_editor::ObjView& o) { return (o.state.empty() ? std::string("object") : o.state) + " (" + o.sprite + ")"; };
@@ -3179,39 +3439,90 @@ namespace menu_ui {
         right(80, std::to_string(s.states.size()), true);
         at(95);
         ImGui::SetNextItemWidth(160 * S);
-        ImGui::InputTextWithHint("##be_filter", "Search", filter, sizeof(filter));
+        ImGui::InputTextWithHint("##be_filter", "Name or label", filter, sizeof(filter));
+        at(265);
+        ImGui::TextDisabled("Right-click: label");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click a move to give it your own label.\nLabels are kept in StriveLabs_scripts/move_labels.txt. The game's script isn't changed.");
         if (!s.note.empty()) ImGui::TextDisabled("%s", s.note.c_str());
+        if (!label_err.empty()) ImGui::TextDisabled("%s", label_err.c_str());
         const float foot = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
         if (ImGui::BeginChild("be_moves", ImVec2(0, -foot), true)) {
-          std::string low_f = filter;
-          for (auto& c : low_f) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          auto lower = [](std::string t) {
+            for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return t;
+          };
+          const std::string low_f = lower(filter);
+          auto matches = [&](const std::string& n) {
+            if (low_f.empty() || lower(n).find(low_f) != std::string::npos) return true;
+            const std::string* lb = label_of(n);
+            return lb && lower(*lb).find(low_f) != std::string::npos;
+          };
+          static char label_buf[64] = "";
+          auto button_color = [](const std::string& n, ImVec4& col) {
+            if (n.compare(0, 6, "NmlAtk") != 0) return false;
+            size_t k = 6;
+            if (n.compare(k, 3, "Air") == 0) k += 3;
+            const size_t digits = k;
+            while (k < n.size() && n[k] >= '0' && n[k] <= '9') k++;
+            if (k == digits || k >= n.size()) return false;
+            if (k + 1 < n.size() && std::islower(static_cast<unsigned char>(n[k + 1]))) return false;
+            switch (n[k]) {
+              case 'A': col = ImVec4(1.0f, 0.55f, 0.8f, 1); return true;
+              case 'B': col = ImVec4(0.4f, 0.65f, 1.0f, 1); return true;
+              case 'C': col = ImVec4(0.45f, 0.9f, 0.5f, 1); return true;
+              case 'D': col = ImVec4(1.0f, 0.4f, 0.4f, 1); return true;
+              case 'E': col = ImVec4(1.0f, 0.65f, 0.25f, 1); return true;
+            }
+            return false;
+          };
+          auto move_row = [&](const std::string& n, bool running) {
+            const std::string* lb = label_of(n);
+            const bool open_one = n == s.selected;
+            ImVec4 button(0.55f, 0.8f, 1.0f, 1);
+            const bool normal = button_color(n, button);
+            const bool tinted = running || normal;
+            if (tinted) ImGui::PushStyleColor(ImGuiCol_Text, running ? ImVec4(1.0f, 0.85f, 0.3f, 1) : button);
+            if (ImGui::Selectable(n.c_str(), open_one)) box_editor::selectState(side, open_one ? std::string() : n);
+            if (tinted) ImGui::PopStyleColor();
+            if (n == "RoundInit" && ImGui::IsItemHovered()) ImGui::SetTooltip("The move definitions: each move's input, stance and whether it's a follow-up.");
+            if (ImGui::BeginPopupContextItem("be_label")) {
+              ImGui::TextDisabled("Your label for %s", n.c_str());
+              if (ImGui::IsWindowAppearing()) {
+                snprintf(label_buf, sizeof(label_buf), "%s", lb ? lb->c_str() : "");
+                ImGui::SetKeyboardFocusHere();
+              }
+              ImGui::SetNextItemWidth(240 * S);
+              bool done = ImGui::InputTextWithHint("##be_label_text", "Label", label_buf, sizeof(label_buf), ImGuiInputTextFlags_EnterReturnsTrue);
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Save")) done = true;
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Clear")) { label_buf[0] = 0; done = true; }
+              if (done) {
+                label_err = box_editor::setMoveLabel(s.chr, n, label_buf) ? "" : kLabelErr;
+                ImGui::CloseCurrentPopup();
+              }
+              ImGui::EndPopup();
+            }
+            if (lb) {
+              ImGui::SameLine();
+              ImGui::TextColored(button, "%s", lb->c_str());
+            }
+          };
           for (int i = 0; i < static_cast<int>(s.states.size()); i++) {
             const std::string& n = s.states[static_cast<size_t>(i)];
-            if (!low_f.empty()) {
-              std::string low = n;
-              for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-              if (low.find(low_f) == std::string::npos) continue;
-            }
-            const bool running = n == s.state, open_one = n == s.selected;
-            if (running) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1));  // (the move playing, lit)
+            if (!matches(n)) continue;
             ImGui::PushID(i);
-            if (ImGui::Selectable(n.c_str(), open_one)) box_editor::selectState(side, open_one ? std::string() : n);
+            move_row(n, n == s.state);
             ImGui::PopID();
-            if (running) ImGui::PopStyleColor();
           }
           if (!s.routines.empty()) {  // the routines (RoundInit: the move definitions, inputs and follow-ups)
             ImGui::Spacing();
             ImGui::TextDisabled("Routines (%d)", static_cast<int>(s.routines.size()));
             for (int i = 0; i < static_cast<int>(s.routines.size()); i++) {
               const std::string& n = s.routines[static_cast<size_t>(i)];
-              if (!low_f.empty()) {
-                std::string low = n;
-                for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                if (low.find(low_f) == std::string::npos) continue;
-              }
+              if (!matches(n)) continue;
               ImGui::PushID(100000 + i);
-              if (ImGui::Selectable(n.c_str(), n == s.selected)) box_editor::selectState(side, n == s.selected ? std::string() : n);
-              if (n == "RoundInit" && ImGui::IsItemHovered()) ImGui::SetTooltip("The move definitions: each move's input, stance and whether it's a follow-up.");
+              move_row(n, false);
               ImGui::PopID();
             }
           }
@@ -3230,6 +3541,19 @@ namespace menu_ui {
           ImGui::SetCursorScreenPos(ImVec2(m.o.x + pad, m.o.y + m.head + 6 * S));
           push_widget_style();
           ImGui::BeginChild("be_move", ImVec2(m.w - 2 * pad, m.h - m.head - 12 * S), false);
+          {
+            static char move_label[64] = "";
+            const bool label_editing = ImGui::GetActiveID() == ImGui::GetID("##be_move_label");
+            const std::string* lb = label_of(s.selected);
+            if (!label_editing) snprintf(move_label, sizeof(move_label), "%s", lb ? lb->c_str() : "");
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Label");
+            ImGui::SameLine(60 * S);
+            ImGui::SetNextItemWidth(260 * S);
+            ImGui::InputTextWithHint("##be_move_label", "Your own name for this move", move_label, sizeof(move_label));
+            if (ImGui::IsItemDeactivatedAfterEdit()) label_err = box_editor::setMoveLabel(s.chr, s.selected, move_label) ? "" : kLabelErr;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shown next to the move in the list, and the search finds it.\nThe game's script isn't changed.");
+          }
           ImGui::TextDisabled("%s", s.sel_current >= 0 ? "Playing now" : "Not playing");
           {  // (experimental) the move as it was in another battle version
             const auto& vs = s.sel_versions;
@@ -3337,17 +3661,23 @@ namespace menu_ui {
               }
               {  // The frame data to edit, the attack level, and what it gives on block / on hit
                 const float x0 = ImGui::GetCursorPosX();
-                const float lw = ImGui::CalcTextSize("Level (other)").x + 8 * S, iw = 52 * S, colw = lw + iw + 16 * S;
+                const float lw = ImGui::CalcTextSize("Level (other)").x + 8 * S, iw = 56 * S, colw = lw + iw + 12 * S;
                 auto num = [&](int col, const char* label, const char* id, int value, int lo, int hi, bool can, auto&& set) {
                   ImGui::SetCursorPosX(x0 + col * colw);
                   ImGui::AlignTextToFramePadding();
                   ImGui::TextDisabled("%s", label);
                   ImGui::SameLine(x0 + col * colw + lw);
-                  ImGui::SetNextItemWidth(iw);
                   int val = value;
                   ImGui::BeginDisabled(!can);
+                  ImGui::BeginGroup();
+                  ImGui::SetNextItemWidth(iw - kSpinW * S);
                   ImGui::InputInt(id, &val, 0, 0);
-                  if (ImGui::IsItemDeactivatedAfterEdit() && can && val != value) set(std::clamp(val, lo, hi));
+                  int to = value;
+                  if (ImGui::IsItemDeactivatedAfterEdit() && can && val != value) to = std::clamp(val, lo, hi);
+                  ImGui::SameLine(0, 0);
+                  if (const int step = spin_buttons(id); step && can) to = std::clamp(to + step, lo, hi);
+                  if (to != value) set(to);
+                  ImGui::EndGroup();
                   ImGui::EndDisabled();
                 };
                 auto cellSet = [&](int cell, int delta) {  // a part's length: longer on its last sprite; shorter from its last sprite back
@@ -3437,10 +3767,16 @@ namespace menu_ui {
                 if (ImGui::IsItemHovered() && !in->desc.empty()) ImGui::SetTooltip("%s", in->desc.c_str());
                 const float lw = 320 * S, iw = 90 * S;
                 ImGui::SameLine(lw);
-                const std::string state_text = !in->replaced_from.empty() ? "replaced (was " + in->replaced_from + ")" : in->edited ? std::string("edited (Reset move puts it back)") : in->call;
+                const std::string state_text = !in->replaced_from.empty() ? "replaced (was " + in->replaced_from + ")" : in->edited ? std::string("edited") : in->call;
                 ImGui::TextDisabled("%s", state_text.c_str());
                 {  // the line as another instruction of its size (the button at a fixed place on the right)
                   const float bw = ImGui::CalcTextSize("Replace with...").x + ImGui::GetStyle().FramePadding.x * 2;
+                  if (in->edited) {
+                    const float rw = ImGui::CalcTextSize("Reset line").x + ImGui::GetStyle().FramePadding.x * 2;
+                    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - bw - rw - 6 * S);
+                    if (ImGui::SmallButton("Reset line")) box_editor::resetLine(side, s.selected, in->offset);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts this line back as the game has it. Reset move does the whole move.");
+                  }
                   ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - bw);
                   static std::vector<std::pair<int, std::string>> repl;
                   static char repl_find[48] = "";
@@ -3491,11 +3827,17 @@ namespace menu_ui {
                   if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s\n%s", a.label.c_str(), !a.tip.empty() ? a.tip.c_str() : !in->desc.empty() ? in->desc.c_str() : "No description in the database.");
                   ImGui::SameLine(lw);
-                  ImGui::SetNextItemWidth(iw);
                   int val = a.value;
                   ImGui::BeginDisabled(!a.editable);
+                  ImGui::BeginGroup();
+                  ImGui::SetNextItemWidth(iw - kSpinW * S);
                   ImGui::InputInt("##v", &val, 0, 0);
-                  if (ImGui::IsItemDeactivatedAfterEdit() && a.editable && val != a.value) box_editor::setArg(side, s.selected, in->offset, a.field, val);
+                  long long to = a.value;
+                  if (ImGui::IsItemDeactivatedAfterEdit() && a.editable && val != a.value) to = val;
+                  ImGui::SameLine(0, 0);
+                  if (const int step = spin_buttons("##v"); step && a.editable) to = std::clamp(to + step, static_cast<long long>(INT_MIN), static_cast<long long>(INT_MAX));
+                  if (to != a.value) box_editor::setArg(side, s.selected, in->offset, a.field, static_cast<int>(to));
+                  ImGui::EndGroup();
                   ImGui::EndDisabled();
                   if (!a.editable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("A variable (Mem), not a number: can't be edited.");
                   ImGui::SameLine(lw + iw + 8 * S);
@@ -3521,6 +3863,7 @@ namespace menu_ui {
                 if (low(in.name + ": " + in.args).find(q) != std::string::npos || low(in.desc).find(q) != std::string::npos) found.push_back(i);
               }
             if (find_was != q || find_of != s.selected) { find_was = q; find_of = s.selected; find_at = 0; find_scroll = found.empty() ? -1 : found[0]; }
+            if (find_at >= static_cast<int>(found.size())) find_at = found.empty() ? 0 : static_cast<int>(found.size()) - 1;
             const float x0 = ImGui::GetCursorPosX();
             ImGui::SetNextItemWidth(200 * S);
             const bool enter = ImGui::InputTextWithHint("##be_find", "Search the script", find, sizeof(find), ImGuiInputTextFlags_EnterReturnsTrue);
@@ -3730,7 +4073,7 @@ namespace menu_ui {
           {  // free camera
             const ImVec2 ca(x1 - tw, y), cb(x1, y + th);
             text(dl, f_small, ImVec2(x0, y + (th - f_small->FontSize) * 0.5f), LABEL, "Free camera");
-            if (ImGui::IsMouseHoveringRect(ImVec2(x0, y), ImVec2(x0 + text_w(f_small, "Free camera"), y + th))) ImGui::SetTooltip("%s", recolor_test::kCamHelp);
+            if (ImGui::IsMouseHoveringRect(ImVec2(x0, y), ImVec2(x0 + text_w(f_small, "Free camera"), y + th)) && over_window()) ImGui::SetTooltip("%s", recolor_test::kCamHelp);
             if (clicked_rect("freecam", ImVec2(x0, y), cb)) recolor_test::setFreeCamera(!v.free_cam);
             dl->AddRectFilled(ca, cb, v.free_cam ? RED : CHIP);
             const float ckx = v.free_cam ? cb.x - 3 * S - k : ca.x + 3 * S;
@@ -4065,7 +4408,7 @@ namespace menu_ui {
             const std::string tw = "x" + std::to_string(r.twins);
             const float tx = lx + name_w + 6 * S;
             text(cl, f_small, ImVec2(tx, cy - f_small->FontSize * 0.5f), DIM, tw);
-            if (ImGui::IsMouseHoveringRect(ImVec2(tx, a.y), ImVec2(tx + text_w(f_small, tw.c_str()), b.y)))
+            if (ImGui::IsMouseHoveringRect(ImVec2(tx, a.y), ImVec2(tx + text_w(f_small, tw.c_str()), b.y)) && over_window())
               ImGui::SetTooltip("%d regions share this color", r.twins);
             name_w += 6 * S + text_w(f_small, tw.c_str());
           }
@@ -4073,7 +4416,7 @@ namespace menu_ui {
             const std::string tg = r.only_on + " only";
             const float tx = lx + name_w + 6 * S;
             text(cl, f_small, ImVec2(tx, cy - f_small->FontSize * 0.5f), DIM, tg);
-            if (ImGui::IsMouseHoveringRect(ImVec2(tx, a.y), ImVec2(tx + text_w(f_small, tg.c_str()), b.y)))
+            if (ImGui::IsMouseHoveringRect(ImVec2(tx, a.y), ImVec2(tx + text_w(f_small, tg.c_str()), b.y)) && over_window())
               ImGui::SetTooltip("Only the %s model draws this (seen during its move)", r.only_on.c_str());
             name_w += 6 * S + text_w(f_small, tg.c_str());
           }
@@ -4103,7 +4446,7 @@ namespace menu_ui {
             g_pick_which = which;
             unpack_rgb(which ? r.shadow : r.lit, g_pick_col);
           }
-          if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(ImVec2(lx, a.y), ImVec2(lx + name_w, b.y)) && !renaming) {
+          if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(ImVec2(lx, a.y), ImVec2(lx + name_w, b.y)) && over_window() && !renaming) {
             g_rename_region = i;
             g_rename_focus = true;
             snprintf(g_rename_buf, sizeof(g_rename_buf), "%s", r.name.c_str());
@@ -4720,7 +5063,11 @@ namespace menu_ui {
   void draw() {
     // Outside a training or replay fight (menus, loading, character select): show nothing
     if (!modScreenActive() && !onlineVersionScreen() && !g_online_picker) { g_timeline_visible = false; return; }
-    const MenuView v = ModMenu::instance().view();
+    const bool timed = perf::on;
+    const auto copy_t0 = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const std::shared_ptr<const MenuView> view_held = ModMenu::instance().view();
+    const MenuView& v = *view_held;
+    if (timed) g_copy_ms = perf::since(copy_t0);
     apply_theme(v);
     if (!modScreenActive()) {  // outside the mod's fights: the online version window, or an online fight on it
       g_timeline_visible = false;
@@ -4741,6 +5088,7 @@ namespace menu_ui {
     draw_timeline(v);
     use(E_MENU);
     draw_replay_status(v);
+    file_window_draw(v.showing);
     {  // The color editor. Once it's closed (either way), its selection goes too.
       static bool was_open = false;
       const bool open = recolor_test::isOpen();
@@ -4792,10 +5140,12 @@ namespace menu_ui {
       applied_x = v.x_ratio; applied_y = v.y_ratio;
     }
     const ImVec2 def_size((NAV_W + 540) * S + v.extra_width * 0.5f * S, 500 * S);
+    if (ModMenu::instance().takeRestore()) g_win["StriveLabs##sl_menu"].collapsed = false;
     Frame f = begin_window("StriveLabs##sl_menu", "",
                            ImVec2(io.DisplaySize.x * v.x_ratio - def_size.x * 0.5f, io.DisplaySize.y * v.y_ratio - def_size.y * 0.5f),
                            def_size, ImVec2((NAV_W + 320) * S, (HEAD + v.nav_items.size() * NAV_ROW + 40) * S), true);
     if (f.closed) ModMenu::instance().click(MenuClick{MenuClick::Type::CloseMenu, 0, 0});
+    ModMenu::instance().setMinimized(f.collapsed);
     ImDrawList* dl = f.dl;
     const ImVec2 o = f.o;
     const float w = f.w, h = f.h;
@@ -4862,7 +5212,7 @@ namespace menu_ui {
           const ImVec2 la(o.x + (nav_w - lw) * 0.5f, credit_y - 6 * S - lh);
           dl->AddImage(logo, la, ImVec2(la.x + lw, la.y + lh), ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 230));
           logo_drawn = true;
-          if (ImGui::IsMouseHoveringRect(la, ImVec2(la.x + lw, la.y + lh))) ImGui::SetTooltip("Built on WistfulHopes' work");
+          if (ImGui::IsMouseHoveringRect(la, ImVec2(la.x + lw, la.y + lh)) && over_window()) ImGui::SetTooltip("Built on WistfulHopes' work");
         }
       }
       if (!logo_drawn) text(dl, f_small, ImVec2(o.x + pad, credit_y), DIM, "Built on WistfulHopes' work");
@@ -4895,15 +5245,37 @@ namespace menu_ui {
 
       // Rows and footer
       static ScrollState main_scroll;
-      const float footer_h = 44 * S;
+      const float small_h = f_small->FontSize;
+      const float footer_h = 4 * small_h + 20 * S;
       const float top = body_top + 42 * S, bottom = o.y + h - footer_h;
+      const char* hovered_tip = "";
       const float rows_end = draw_rows(dl, v.rows, v.nav_focus ? -1 : v.cursor, v.title, px, o.x + w - 1, top, bottom, main_scroll,
-                                       [&v](MenuClick c) { send(v, c); });
+                                       [&v](MenuClick c) { send(v, c); }, &hovered_tip);
       if (v.bar_legend) draw_bar_legend(dl, px + pad, o.x + w - pad, rows_end + 16 * S, bottom - 4 * S, v);
       const float lx = px + pad;
+      static bool mouse_led = false;
+      static int led_page = -1, led_cursor = -1, led_nav = -1;
+      const ImGuiIO& hio = ImGui::GetIO();
+      if (hio.MouseDelta.x != 0.0f || hio.MouseDelta.y != 0.0f || hio.MouseWheel != 0.0f) mouse_led = true;
+      if (led_page != v.page || led_cursor != v.cursor || led_nav != v.nav) {
+        mouse_led = false;
+        led_page = v.page; led_cursor = v.cursor; led_nav = v.nav;
+      }
+      const bool row_selected = !v.nav_focus && v.cursor >= 0 && v.cursor < static_cast<int>(v.rows.size());
+      const char* help = mouse_led && hovered_tip[0] ? hovered_tip
+                       : row_selected && v.rows[static_cast<size_t>(v.cursor)].tip[0] ? v.rows[static_cast<size_t>(v.cursor)].tip
+                       : v.page_tip;
+      if (help[0] || !v.status.empty()) dl->AddLine(ImVec2(lx, bottom + 2 * S), ImVec2(o.x + w - pad, bottom + 2 * S), DIVIDER);
+      if (help[0]) {
+        const float help_w = std::max(o.x + w - pad - lx, 1.0f);
+        dl->PushClipRect(ImVec2(lx, bottom + 4 * S), ImVec2(o.x + w - pad, bottom + 6 * S + 3 * small_h), true);
+        dl->AddText(f_small, small_h, ImVec2(lx, bottom + 6 * S), LABEL, help, nullptr, help_w);
+        dl->PopClipRect();
+      }
       if (!v.status.empty()) {
-        dl->AddLine(ImVec2(lx, bottom + 2 * S), ImVec2(o.x + w - pad, bottom + 2 * S), DIVIDER);
-        text(dl, f_small, ImVec2(lx, bottom + 6 * S), MUTED, v.status);
+        dl->PushClipRect(ImVec2(lx, o.y + h - small_h - 8 * S), ImVec2(o.x + w - pad, o.y + h), true);
+        text(dl, f_small, ImVec2(lx, o.y + h - small_h - 6 * S), MUTED, v.status);
+        dl->PopClipRect();
       }
     }
     end_window();

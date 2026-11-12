@@ -8,19 +8,20 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 
 ## What it does
 
-- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show both players or just P1 or P2, for the frame bar and the input row separately. It can draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could. It can also show which active frame a move hit on, the gaps between stuns, and a countdown of the stun and recovery frames left, and fold long stretches after 2 to 10 frames.
+- A frame bar that shows startup, active and recovery frames as you play, with an optional row of inputs under it. You can show both players or just P1 or P2, for the frame bar and the input row separately. It can draw long stretches as one block with their last few frames as cells, and mark moves that came out on the first frame they could. It can also show which active frame a move hit on, the gaps between stuns, and a countdown of the stun and recovery frames left, and fold long stretches after 2 to 30 frames, or never.
 - Hitboxes and hurtboxes.
 - Meters for tension gain, burst, tension pulse, tension penalty and wall damage.
 - Replay takeover, so you can jump into either side of a replay and play it out yourself. Replay Assist can start you a moment early, so you're already in the flow when control is handed to you.
 - Recordings. Save your training slots as .txt files you can edit, share and load back in, or record a player straight from a replay.
-- A timeline with rewind, pause, frame step and record.
+- A timeline with rewind, pause, frame step and record. Experimental: jumping back and forth in a replay, a second at a time.
 - Combo Trials. Pick any combo you've saved or downloaded in Combo Maker and try it in training: it starts where the combo starts, and the game lights up each move as it lands. Training can also run on an older battle version.
 - Combo Search. Find Combo Maker combos online for your character, sorted and filtered, and download them straight into Combo Trials.
 - A damage panel window for P1, P2 or both, which can hide the game's own.
 - A color editor. Recolor any character's outfit, weapon and effects live in training, save named palettes, and bake your recolors into the game's files to see them in character select, versus and online.
 - Script & boxes. See and edit any fighter's hitboxes and move scripts live in training, load moves from older battle versions or from text files, and save what you changed.
-- StriveLabs Online (Ctrl+O). Pick the battle version for Park and room matches, so two players on StriveLabs can play an older version together.
-- A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size.
+- Online version select (Ctrl+O). Pick the battle version for Park and room matches, so two players on StriveLabs can play an older version together.
+- A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size. The line at the bottom says what the selected row does.
+- Copy diagnostics. One click copies what a bug report needs, with your file, folder and mod names left out.
 - Character select remembers your last character, color, stage and music after a restart.
 
 ## Installing
@@ -39,7 +40,7 @@ WINEDLLOVERRIDES="sensapi=n,b" %command%
 
 Please don't use an `xinput1_3` override, it breaks Steam Input.
 
-If you use Unverum, StriveLabs works fine next to your pak mods. Just install it by hand instead of using 1-Click.
+If you use Unverum, StriveLabs works fine next to your pak mods. Just install it manually instead of using 1-Click.
 
 ## Controls
 
@@ -56,8 +57,11 @@ F5 opens the menu, or Back(select) + Start on a controller. Up and Down to move,
 | F7 | Take over P1 (asks first, press again to stop) |
 | F8 | Take over P2 (asks first, press again to stop) |
 | F9 | Rewind to your saved point |
+| Ctrl+O | Online version select (outside training and replays) |
+| Ctrl+Alt+E | Color editor (training) |
+| Ctrl+Alt+B | Script & boxes (training) |
 
-You can rebind all of them on the Controls and Takeover pages. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the Takeover page. Training Record, Training Playback and Training Reset Position (unbound by default) do the same as the game's own buttons, so you can put them on a key or a button combo.
+You can rebind all of them on the Controls and Takeover pages. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the Takeover page. Training Record, Training Playback and Training Reset Position (unbound by default) do the same as the game's own buttons, so you can put them on a key or a button combo. While you type in a text field, only the F keys still work as hotkeys.
 
 ## Replay takeover
 
@@ -66,6 +70,12 @@ In a replay, F7 or F8 pauses on the current frame and asks before taking over. P
 With Replay Assist on (Takeover page, in seconds), F9 goes back a little before your rewind point and lets the replay play both sides. A bar counts down, and at the exact frame you picked, control is handed to you.
 
 A small status line shows what's going on: replay or training, the rewind point, Replay Assist and who you're taking over. Drag it anywhere while the menu is open, or turn it off on the Takeover page.
+
+## Timeline
+
+The Timeline window has rewind, pause, frame step and record. Turn it on with Timeline window on the Timeline page.
+
+Experimental: with Run on replay startup on, the Timeline opens in every replay with marks one second apart. Click or drag to a mark and the replay jumps there and stays paused. On the Controls page you can set keys for three things: going back a single frame, jumping to the mark before, and jumping to the mark after. Leaving it on uses about 450 MB more RAM in replays: the fight is saved about once a second so you can jump back.
 
 ## Color editor
 
@@ -81,18 +91,26 @@ The color editor's Bake tab writes a slot's saved recolor into the game's own fi
 
 ## Script & boxes
 
-Press Ctrl+Alt+B in training. It shows each fighter's move, sprite, hitboxes and the move's script as it plays. With Hitboxes on, boxes can be picked, resized and moved on the fighter, or edited by their numbers. Script values can be changed live: startup, active and recovery, each hit's attack level, and any line's numbers (hover a name for what it does). Replace with... turns a line into another instruction of the same size, Version loads the move as it was in an older battle version, and From file... loads it from a `.bbs` text file you can add lines to (Export move writes one to start from). Search finds lines, and Save edits... / Load edits... keep everything you changed. Edits only apply in training: they're put back before any other fight, online included.
+Press Ctrl+Alt+B in training. It shows each fighter's move, sprite, hitboxes and the move's script as it plays. With Hitboxes on, boxes can be picked, resized and moved on the fighter, or edited by their numbers. Script values can be changed live: startup, active and recovery, each hit's attack level, and any line's numbers (hover a name for what it does). Number fields have up and down arrows, with Ctrl for steps of 10, and Reset line puts a line back the way the game has it. Replace with... turns a line into another instruction of the same size, Version loads the move as it was in an older battle version, and From file... loads it from a `.bbs` text file you can add lines to (Export move writes one to start from). Search finds lines, and Save edits... / Load edits... keep everything you changed. Right-click a move to give it your own label: labels are kept in `StriveLabs_scripts/move_labels.txt` and the game's script isn't changed. Edits only apply in training: they're put back before any other fight, online included.
+
+## Online version select
+
+Outside training and replays, Ctrl+O opens StriveLabs Online. Pick a battle version there before a Park or room match. Your opponent needs StriveLabs with the same version picked. The pick is dropped when you go back to the main menu.
 
 ## Update notifier
 
 From now on, StriveLabs tells you when a new update is out. The first time you open the menu each launch, it asks GitHub (api.github.com) for the latest release. If there's a newer one, the menu's title says "Update available", and clicking it opens the Releases page. Nothing is downloaded or installed.
 
+## Reporting a problem
+
+On the Appearance page, Copy diagnostics puts the StriveLabs version, your settings and parts of the log on the clipboard: the start and end of this run, and the end of the run before. Paste it into your GitHub issue. Nothing is sent anywhere. File names, folder paths and the names of your other mods are left out.
+
 ## Recordings
 
-Save Slot N into txt saves a training slot as a text file, named after the date, time, length and the first inputs. Load into Game's Slot N puts a .txt back into a slot, and you play it with the game's own playback button. Player Side picks 1P or 2P. Your files go in `RED/Binaries/Win64/ue4ss/recordings/`.
+Save to file saves a training slot as a text file, named after the date, length and the first inputs. The File row steps through your recordings, and Browse picks one with a file window in the menu. Player side picks P1 or P2, and Load into slot puts the file back into a slot: you play it with the game's own playback button. Stream to dummy plays a file on the dummy from each round call, and Capture from replay records a player's inputs in a replay, up to 40 seconds. Your files go in `RED/Binaries/Win64/ue4ss/recordings/`.
 
 They use Eddienput notation: `W` wait, `X` tap, `[X]` hold, `]X[` release, `+` same frame and `#` for comments. Inputs are numpad 1 to 9, P K S H D, Dash, RC, FD and Respect. Loops work too. A slot holds up to 2400 frames, which is 40 seconds.
 
 ## Building
 
-It's a UE4SS C++ mod, built with xmake inside an RE-UE4SS checkout. The DLL goes in `ue4ss/Mods/StriveLabs/dlls/main.dll`. The menu uses [Dear ImGui](https://github.com/ocornut/imgui) (MIT, in `third_party/imgui`) and the Barlow fonts (SIL Open Font License, in `ue4ss/StriveLabs_fonts`). Baked paks are compressed with [zlib](https://zlib.net) (zlib license, fetched by xmake). Script & boxes' instruction database: BBScriptDX by Sliyne, bbscript by super-continent.
+It's a UE4SS C++ mod, built with xmake inside an RE-UE4SS checkout. The DLL goes in `ue4ss/Mods/StriveLabs/dlls/main.dll`. The menu uses [Dear ImGui](https://github.com/ocornut/imgui) (MIT, in `third_party/imgui`) and the Barlow fonts (SIL Open Font License, in `ue4ss/StriveLabs_fonts`). Baked paks are compressed with [zlib](https://zlib.net) (zlib license, fetched by xmake). Script & boxes' instruction database: [BBScriptDX](https://gamebanana.com/tools/24481) by Sliyne, [bbscript](https://github.com/super-continent/bbscript) by super-continent.

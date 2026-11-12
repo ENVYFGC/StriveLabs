@@ -444,7 +444,7 @@ namespace bake {
     for (size_t at = 0; at + 24 <= uexp.size(); at++) {
       if (i32(b + at) != 1) continue;
       const uint32_t fl = u32(b + at + 4);
-      if (fl != 0x48 && fl != 0x10501) continue;
+      if (fl != 0x48 && fl != 0x10501 && fl != 0x501) continue;  // (0x501: a mod's texture, its .ubulk offsets counted from past the header files)
       const int32_t n = i32(b + at + 8), sd = i32(b + at + 12);
       if (n <= 0 || n != sd) continue;
       Mip m;
@@ -461,6 +461,22 @@ namespace bake {
       at = dims + 11;  // (past this mip)
     }
     if (mips.empty()) { why = "no mips found"; return false; }
+    {  // A mod tool's .ubulk mips (flag 0x501, no 0x10000) count their offsets from the header files' end; the game's
+      // (0x10501) from 0. Theirs are moved to start at 0 and written the game's way: a bake renames the texture, which
+      // changes the header files' size, so offsets from their end would point at the wrong pixels. The game's are left be.
+      bool modMips = false;
+      int64_t base = 0;
+      for (const Mip& m : mips)
+        if (!m.inline_ && m.flags == 0x501) { if (!modMips) base = m.offset; modMips = true; }
+      if (modMips)
+        for (Mip& m : mips)
+          if (!m.inline_ && m.flags == 0x501) {
+            m.offset -= base;
+            m.flags = 0x10501;
+            std::memcpy(uexp.data() + m.header + 4, &m.flags, 4);
+            std::memcpy(uexp.data() + m.header + 16, &m.offset, 8);
+          }
+    }
     int64_t bulk = 0;
     for (size_t i = 0; i < mips.size(); i++) {
       const Mip& m = mips[i];

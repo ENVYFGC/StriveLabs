@@ -2,6 +2,7 @@
 
 #include "arcsys.h"
 #include "combo_log.h"
+#include "object_scan.h"
 #include "sigscan.h"
 
 #include <Unreal/UObjectGlobals.hpp>
@@ -86,12 +87,11 @@ bool GameState::checkMode()
           // Online fights share one mode; what else is loaded tells Park and rooms from
           // ranked. Only the classes are logged, nothing about the players.
           std::string s = "online fight:";
-          for (const auto* cls : {STR("REDGameState_Lobby"), STR("LobbyPlayerState"), STR("REDLobbyCharacter"),
-                                  STR("REDGameState_Battle")}) {
-            std::vector<UObject*> found;
-            UObjectGlobals::FindAllOf(cls, found);
-            s += " " + std::string(cls, cls + std::char_traits<TCHAR>::length(cls)) + "=" + std::to_string(found.size());
-          }
+          const TCHAR* const classes[4] = {STR("REDGameState_Lobby"), STR("LobbyPlayerState"), STR("REDLobbyCharacter"), STR("REDGameState_Battle")};
+          std::vector<UObject*> found[4];
+          object_scan::allOf({{classes[0], &found[0]}, {classes[1], &found[1]}, {classes[2], &found[2]}, {classes[3], &found[3]}});
+          for (int i = 0; i < 4; i++)
+            s += " " + std::string(classes[i], classes[i] + std::char_traits<TCHAR>::length(classes[i])) + "=" + std::to_string(found[i].size());
           COMBO_LOG(s);
         }
         in_allowed_mode = (std::find(allowed_modes.begin(), allowed_modes.end(), current_mode) != allowed_modes.
@@ -135,6 +135,15 @@ void GameState::checkRound()
     for (unsigned int idx = 0; idx < count; ++idx)
     {
         auto e_type = events->events[idx].type;
+        if (logEvents)
+        {
+            static int logged = 0;
+            if (logged < 400)
+            {
+                logged++;
+                COMBO_LOG("game event " + std::to_string(static_cast<int>(e_type)));
+            }
+        }
         // if(e_type < 41) RC::Output::send<LogLevel::Warning>(STR("Event {}: {}\n"), idx, (int)e_type);
         if (e_type == BOM_EVENT_RESET || e_type == BOM_EVENT_DECISION)
         {

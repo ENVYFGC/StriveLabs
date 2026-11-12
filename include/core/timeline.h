@@ -20,6 +20,7 @@ public:
 
     void setPaused(bool paused);
     bool isPaused() const;
+    void setForced(bool forced);
 
     void advanceFrame();
     bool canAdvanceFrame() const;
@@ -33,6 +34,7 @@ private:
     GameState* gameState = nullptr;
     Keybinds* keybindings = nullptr;
     std::atomic<bool> paused{false};
+    std::atomic<bool> forced{false};
     std::atomic<int> pendingSteps{0};
     std::atomic<unsigned> pendingHotkeys{0};
     bool isFrameAllowed = true;

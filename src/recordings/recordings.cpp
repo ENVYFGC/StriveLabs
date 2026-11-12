@@ -247,6 +247,7 @@ ParseResult parseText(const std::string& text, int32_t side) {
         body.push_back(lines[i]);
       }
       if (depth != 0) { r.error = L"startloop without endloop"; return r; }
+      if (reps > static_cast<int>(kMaxFrames) || flat.size() + body.size() * static_cast<size_t>(reps) > 8 * static_cast<size_t>(kMaxFrames)) { r.error = L"too long - max 2400 frames (40s)"; return r; }
       for (int n = 0; n < reps; n++)
         flat.insert(flat.end(), body.begin(), body.end());
       continue;
@@ -264,7 +265,8 @@ ParseResult parseText(const std::string& text, int32_t side) {
       if ((tok[0] == 'W' || tok[0] == 'w') && tok.size() > 1 &&
           std::all_of(tok.begin() + 1, tok.end(),
                       [](unsigned char c) { return std::isdigit(c) != 0; })) {
-        const int n = std::atoi(tok.c_str() + 1);
+        const int n = tok.size() > 6 ? static_cast<int>(kMaxFrames) + 1 : std::atoi(tok.c_str() + 1);
+        if (r.frames.size() + static_cast<size_t>(n) > static_cast<size_t>(kMaxFrames)) { r.error = L"too long - max 2400 frames (40s)"; return r; }
         for (int k = 0; k < n; k++) r.frames.push_back(held);
         continue;
       }

@@ -92,7 +92,8 @@ struct MenuRowView {
   std::vector<std::string> choices;  // Choice options, cleaned of the old "<  >" padding
   int choice = -1;                   // selected index for Choice
   bool capturing = false;            // Bind row waiting for an input
-  std::string tip;                   // hover tooltip, empty = none
+  const char* tip = "";              // help text, "" = none
+  bool caution = false;
 };
 
 // A page popped out into its own ImGui window.
@@ -143,6 +144,9 @@ struct MenuView {
   unsigned rec_frames = 0;
   std::string rec_status;
   std::vector<MenuRowView> rec_rows;  // Recordings page rows, for the timeline window
+  bool seek_shown = false, seek_on = false;
+  int seek_min = 0, seek_max = 0, seek_pos = 0, seek_origin = 0;
+  std::vector<int> seek_calm;
   std::vector<MenuPanelView> panels;
   int nav = 0;               // highlighted entry in the side menu
   bool nav_focus = true;     // true on the root page: the cursor is in the side menu
@@ -152,13 +156,14 @@ struct MenuView {
   std::vector<MenuRowView> rows;
   int cursor = 0;            // selected row in the right pane, -1 = none (rows never include Back)
   std::string status;
+  const char* page_tip = "";
   float x_ratio = 0.5f, y_ratio = 0.5f, extra_width = 0.0f;
 };
 
 // Mouse actions from the ImGui menu, applied on the game thread in update().
 struct MenuClick {
   enum class Type { OpenNav, Row, SetChoice, Move, TensionWindow, CloseMenu,
-                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor, VersionWindow } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
+                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor, VersionWindow, TlSeek } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
   int a = 0;          // nav index or row index
   int b = 0;          // Row: 1 = right / activate, 0 = left; SetChoice: choice index
   int page = -1;      // Row / SetChoice in a popped-out window: that window's page
@@ -191,8 +196,16 @@ public:
   bool isRewindPointNotificationVisible() const;
 
   bool isShowing() const { return is_showing; }
+  bool takesInput() const;
+  void setMinimized(bool minimized);
+  void replayStarted();
+  bool takeRestore();
+  bool replayTimeline() const;
+  int takeFileWindow();
+  std::filesystem::path fileWindowDir(bool font) const;
+  void fileWindowPick(const std::filesystem::path& file, bool font);
   void hide();                           // game thread: close the menu (left training / replay)
-  MenuView view() const;                 // render thread: copy of the latest snapshot
+  std::shared_ptr<const MenuView> view() const;  // render thread: the latest snapshot
   // Game thread, outside the mod's fights: the snapshot from the current settings, so
   // what the overlay shows there (online) follows them without a training fight first.
   void refreshView() { buildView(); }

@@ -31,12 +31,13 @@ void Timeline::onPreTick(const std::function<void()>& callback)
     if (!gameState || !gameState->checkMode())
     {
         paused = false;
+        forced = false;
         pendingSteps = 0;
     }
 
     // Battle and replay must use the same decision even if a battle update
     // finishes the first restored frame and changes the rewind state.
-    isFrameAllowed = !isPaused();
+    isFrameAllowed = forced || !isPaused();
     if (!isFrameAllowed && pendingSteps > 0)
     {
         pendingSteps--;
@@ -53,6 +54,11 @@ void Timeline::setPaused(bool paused)
 bool Timeline::isPaused() const
 {
     return paused;
+}
+
+void Timeline::setForced(bool forced)
+{
+    this->forced = forced;
 }
 
 void Timeline::advanceFrame()

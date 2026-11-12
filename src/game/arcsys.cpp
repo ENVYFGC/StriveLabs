@@ -4,6 +4,20 @@
 #include <DynamicOutput/Output.hpp>
 #include <Unreal/World.hpp>
 #include "sigscan.h"
+#include <Unreal/UObject.hpp>
+#include <Unreal/UObjectGlobals.hpp>
+#include <Unreal/UFunction.hpp>
+#include <Unreal/FWeakObjectPtr.hpp>
+#include <Unreal/NameTypes.hpp>
+#include <Unreal/Hooks.hpp>
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <iterator>
+#include <mutex>
+#include <algorithm>
+#include <string>
+#include <vector>
 
 UWorld** UWorld::GWorld = nullptr;
 
@@ -62,6 +76,211 @@ AREDGameState_Battle* getGameState() {
 
   if (GameState == nullptr || !GameState->IsA(Class)) return nullptr;
   return GameState;
+}
+
+int asw_stage_area()
+{
+  auto* GameState = getGameState();
+  const asw_scene* Scene = GameState ? GameState->Scene : nullptr;
+  return Scene ? *reinterpret_cast<const int*>(reinterpret_cast<const char*>(Scene) + 0x180) : kNoStageArea;
+}
+
+namespace
+{
+  struct StageListener
+  {
+    RC::Unreal::FWeakObjectPtr object;
+    RC::Unreal::FName function;
+  };
+  static_assert(sizeof(StageListener) == 0x10);
+  struct StageListenerList
+  {
+    StageListener* data;
+    int32_t count;
+    int32_t room;
+  };
+  struct StageEvent
+  {
+    const char* name;
+    size_t offset;
+  };
+  const StageEvent stage_events[] = {{"OnRoundReset", 0x228}, {"OnBattleStart", 0x238}, {"OnAppearEventStart", 0x248},
+                                     {"OnBoxMoveStart", 0x258}, {"OnBoxMoveStart2", 0x268}, {"OnBarinFinish", 0x278},
+                                     {"OnBoxMoveEnd", 0x288}, {"OnBgChangeInBoxMove", 0x298}};
+  constexpr int kStageEvents = static_cast<int>(std::size(stage_events));
+  const int stage_event_bytes[] = {4, 8, 8, 6, 6, 6, 6, 5};
+  const int stage_watch_order[] = {0, 7, 6, 4, 3, 5, 1, 2};
+  constexpr int kStageWatched = 64;
+  struct StageWatched
+  {
+    std::atomic<RC::Unreal::UFunction*> function{nullptr};
+    std::atomic<RC::Unreal::UObject*> object{nullptr};
+    std::atomic<int> event{0};
+    std::atomic<int> size{0};
+  };
+  StageWatched stage_watched[kStageWatched];
+  std::atomic<int> stage_watched_count{0};
+  std::atomic<bool> stage_firing{false};
+  std::mutex stage_recorded_m;
+  std::vector<asw_stage_call> stage_recorded;
+  asw_stage_call stage_last_reset{kStageRoundReset, 4, {1}};
+  bool stage_record_on = false;
+
+  std::vector<RC::Unreal::UObject*> stage_level_events()
+  {
+    std::vector<RC::Unreal::UObject*> found;
+    auto* GameState = getGameState();
+    if (!GameState) return found;
+    const char* manager = *reinterpret_cast<const char* const*>(reinterpret_cast<const char*>(GameState) + 0x8C8);
+    if (!manager) return found;
+    auto* const* list = *reinterpret_cast<RC::Unreal::UObject* const* const*>(manager + 0x28);
+    const int32_t count = *reinterpret_cast<const int32_t*>(manager + 0x30);
+    if (!list || count <= 0 || count > 64) return found;
+    for (int32_t i = 0; i < count; i++)
+      if (list[i]) found.push_back(list[i]);
+    return found;
+  }
+
+  struct StageTarget
+  {
+    RC::Unreal::UObject* object;
+    RC::Unreal::UFunction* function;
+  };
+
+  std::vector<StageTarget> stage_targets(int event)
+  {
+    std::vector<StageTarget> out;
+    if (event < 0 || event >= kStageEvents) return out;
+    for (RC::Unreal::UObject* actor : stage_level_events())
+    {
+      const auto* list = reinterpret_cast<const StageListenerList*>(reinterpret_cast<const char*>(actor) + stage_events[event].offset);
+      if (!list->data || list->count <= 0 || list->count > 64) continue;
+      const std::vector<StageListener> copy(list->data, list->data + list->count);
+      for (const StageListener& l : copy)
+      {
+        RC::Unreal::UObject* target = l.object.Get();
+        RC::Unreal::UFunction* fn = target ? target->GetFunctionByNameInChain(l.function) : nullptr;
+        if (fn && fn->GetPropertiesSize() <= 256) out.push_back({target, fn});
+      }
+    }
+    return out;
+  }
+
+  void stage_record_call(RC::Unreal::UObject* context, RC::Unreal::UFunction* function, void* params)
+  {
+    if (stage_firing.load(std::memory_order_relaxed)) return;
+    const int count = stage_watched_count.load(std::memory_order_relaxed);
+    for (int i = 0; i < count; i++)
+    {
+      if (stage_watched[i].function.load(std::memory_order_relaxed) != function || stage_watched[i].object.load(std::memory_order_relaxed) != context) continue;
+      asw_stage_call call;
+      call.event = stage_watched[i].event.load();
+      call.size = std::clamp(stage_watched[i].size.load(), 0, static_cast<int>(sizeof(call.params)));
+      if (params && call.size > 0) memcpy(call.params, params, static_cast<size_t>(call.size));
+      std::lock_guard<std::mutex> lock(stage_recorded_m);
+      if (stage_recorded.size() < 64) stage_recorded.push_back(call);
+      return;
+    }
+  }
+}
+
+bool asw_stage_untouched()
+{
+  auto* GameState = getGameState();
+  const asw_scene* Scene = GameState ? GameState->Scene : nullptr;
+  return Scene && *reinterpret_cast<const int*>(reinterpret_cast<const char*>(Scene) + 0x188) == 0;
+}
+
+bool asw_stage_changing()
+{
+  auto* GameState = getGameState();
+  const asw_engine* Engine = GameState ? GameState->Engine : nullptr;
+  return Engine && *(reinterpret_cast<const uint8_t*>(Engine) + 0x156) != 0;
+}
+
+bool asw_stage_walls(int& left, int& right)
+{
+  auto* GameState = getGameState();
+  const asw_scene* Scene = GameState ? GameState->Scene : nullptr;
+  if (!Scene) return false;
+  left = *reinterpret_cast<const int*>(reinterpret_cast<const char*>(Scene) + 0x134);
+  right = *reinterpret_cast<const int*>(reinterpret_cast<const char*>(Scene) + 0x138);
+  return right > left;
+}
+
+const char* asw_stage_event_name(int event)
+{
+  return event >= 0 && event < kStageEvents ? stage_events[event].name : "?";
+}
+
+bool asw_stage_can_reset()
+{
+  return !stage_targets(kStageRoundReset).empty();
+}
+
+const void* asw_stage_identity()
+{
+  const std::vector<RC::Unreal::UObject*> actors = stage_level_events();
+  return actors.empty() ? nullptr : actors.front();
+}
+
+int asw_stage_fire(const asw_stage_call& call)
+{
+  const std::vector<StageTarget> targets = stage_targets(call.event);
+  stage_firing = true;
+  for (const StageTarget& t : targets)
+  {
+    uint8_t params[256] = {};
+    memcpy(params, call.params, static_cast<size_t>(std::clamp(call.size, 0, static_cast<int>(sizeof(call.params)))));
+    t.object->ProcessEvent(t.function, params);
+  }
+  stage_firing = false;
+  return static_cast<int>(targets.size());
+}
+
+int asw_stage_round_reset()
+{
+  return asw_stage_fire(stage_last_reset);
+}
+
+void asw_stage_record_start()
+{
+  if (stage_record_on) return;
+  stage_record_on = true;
+  RC::Unreal::Hook::RegisterProcessEventPreCallback([](RC::Unreal::UObject* context, RC::Unreal::UFunction* function, void* params) {
+    stage_record_call(context, function, params);
+  });
+}
+
+void asw_stage_record_refresh()
+{
+  if (!stage_record_on) return;
+  stage_watched_count = 0;
+  int count = 0;
+  for (int e : stage_watch_order)
+    for (const StageTarget& t : stage_targets(e))
+    {
+      if (count >= kStageWatched) break;
+      stage_watched[count].function = t.function;
+      stage_watched[count].object = t.object;
+      stage_watched[count].event = e;
+      stage_watched[count].size = (std::min)(static_cast<int>(t.function->GetPropertiesSize()), stage_event_bytes[e]);
+      count++;
+    }
+  stage_watched_count = count;
+}
+
+std::vector<asw_stage_call> asw_stage_recorded()
+{
+  std::vector<asw_stage_call> out;
+  if (!stage_record_on) return out;
+  {
+    std::lock_guard<std::mutex> lock(stage_recorded_m);
+    out.swap(stage_recorded);
+  }
+  for (const asw_stage_call& call : out)
+    if (call.event == kStageRoundReset) stage_last_reset = call;
+  return out;
 }
 
 asw_rollback* asw_rollback::get()

@@ -28,6 +28,8 @@ namespace imgui_overlay {
   void setOnlinePicker(bool open);
   bool onlinePickerOpen();
   int takeOnlinePickStep();
+  bool typing();
+  void noteOnlineKey();
 
   // Game thread: the frame bar's cells and stats lines for this frame.
   struct FrameBarView {

@@ -4,7 +4,7 @@
 // Checks GitHub for a newer StriveLabs once, in the background, when the menu first opens. It only reports
 // it, nothing is downloaded.
 namespace update_check {
-  constexpr const char* kVersion = "3.5.2";  // this build's version (the release tag without its "v")
+  constexpr const char* kVersion = "3.5.4";  // this build's version (the release tag without its "v")
   void start();                            // call once, from any thread
   std::string newer();                     // the newer release's tag ("v3.6"), or "" if none or not known yet
   const char* releasesUrl();

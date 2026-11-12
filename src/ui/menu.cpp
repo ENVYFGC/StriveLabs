@@ -11,6 +11,9 @@
 #include "imgui_overlay.h"
 #include "combo_trials.h"
 #include "combo_online.h"
+#include "update_check.h"
+#include <cctype>
+#include <cstring>
 #include <mutex>
 #include <atomic>
 #include <thread>
@@ -123,7 +126,7 @@ namespace Settings {
       OptionData{L"Frame Bar Rows:", 3, {L"<    Both    >", L"<  P1 only   >", L"<  P2 only   >"}},
       "framebar_rows", 0};
   SettingsEntry BAR_FOLD_AFTER = SettingsEntry{
-      OptionData{L"Fold Stretches Longer Than:", 4, {L"<  10 frames >", L"<  5 frames  >", L"<  3 frames  >", L"<  2 frames  >"}},
+      OptionData{L"Fold Stretches Longer Than:", 6, {L"<  10 frames >", L"<  5 frames  >", L"<  3 frames  >", L"<  2 frames  >", L"<  30 frames >", L"<    Never    >"}},
       "framebar_fold_after", 0};
   // Folded compact mode: everything folds, one number per cell, stretch lengths on
   // brackets beside the bar, and the punish window in green.
@@ -233,6 +236,9 @@ namespace Settings {
   SettingsEntry TIMELINE_ON = SettingsEntry{
       OptionData{L"Timeline Window:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "timeline_on", 0};  // off until you turn it on; remembered across restarts
+  SettingsEntry TIMELINE_REPLAY = SettingsEntry{
+      OptionData{L"Run On Replay Startup:", 2, {L"<     No     >", L"<    Yes     >"}},
+      "timeline_replay_startup", 0};
   // Where the meters sit: anywhere, on top of the frame bar, or right under the damage panel.
   SettingsEntry METERS_SNAP = SettingsEntry{
       OptionData{L"Meters Position:", 3, {L"<    Free    >", L"< On frame bar >", L"< Under damage >"}},
@@ -243,11 +249,11 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 49> settings = {
+  std::array<SettingsEntry *, 50> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
-      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON,
+      &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON, &TIMELINE_REPLAY,
       &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE, &BAR_TITLE, &BAR_PANEL, &BAR_ROWS, &BAR_FOLD_AFTER, &BAR_UNFOLD, &BAR_COMPACT, &BAR_UNFOLD_REC, &VERSION_SHOWN, &METERS_TITLE, &DAMAGE_TITLE, &DAMAGE_BG, &VERSION_TITLE, &VERSION_BG, &BAR_BLOCKS, &BAR_PERFECT, &BAR_HITS, &BAR_GAPS, &BAR_COUNTDOWN, &METERS_PANEL, &METERS_SPLIT, &DAMAGE_PANEL, &DAMAGE_HIDE_GAME, &DAMAGE_AT_GAME,
   };
 
@@ -417,7 +423,9 @@ namespace Settings {
   }
 
   void saveConfig() {
-    std::ofstream configFile(CONFIG_PATH);
+    auto tmpPath = CONFIG_PATH;
+    tmpPath += ".new";
+    std::ofstream configFile(tmpPath, std::ios::trunc);
     if (!configFile) {
       RC::Output::send<LogLevel::Error>(STR("Unable to save config file\n"));
       return;
@@ -431,7 +439,16 @@ namespace Settings {
     }
     binds::save(configFile);
     configFile << "overlay_font=" << overlayFont() << "\n";
+    configFile.flush();
+    const bool written = configFile.good();
     configFile.close();
+    std::error_code ec;
+    if (written) std::filesystem::rename(tmpPath, CONFIG_PATH, ec);
+    if (!written || ec) {
+      std::filesystem::remove(tmpPath, ec);
+      RC::Output::send<LogLevel::Error>(STR("Unable to save config file\n"));
+      return;
+    }
     RC::Output::send<LogLevel::Verbose>(STR("Saved config file\n"));
   }
 
@@ -703,7 +720,13 @@ namespace {
 
   std::filesystem::path fontsDir() { return Settings::WORKING_DIRECTORY / "StriveLabs_fonts"; }
 
+  std::atomic<int> g_file_window_want{0};
+
   void startBrowse(bool font = false) {
+    if (imgui_overlay::running()) {
+      g_file_window_want = font ? 2 : 1;
+      return;
+    }
     if (g_browse_open.exchange(true)) return;  // already open
     g_browse_font = font;
     const std::wstring dir = (font ? fontsDir() : Settings::recordingsDir()).wstring();
@@ -810,8 +833,21 @@ namespace {
   // ---- Capture from a replay: start / stop, 40 seconds at most -------------
   int g_cap_side = 1;  // 0 = P1, 1 = P2
   // Timeline window switch, saved in the config
-  bool timelineOn() { return Settings::TIMELINE_ON.value != 0; }
-  void setTimelineOn(bool on) { Settings::TIMELINE_ON.value = on ? 1 : 0; Settings::saveConfig(); }
+  bool g_timeline_closed = false;
+  int g_timeline_last_mode = 0;
+  bool replayTimelineOn() { return Settings::TIMELINE_REPLAY.value != 0; }
+  bool timelineOn() {
+    const int mode = Timeline::instance().mode();
+    if (mode == 2 && g_timeline_last_mode != 2) g_timeline_closed = false;
+    g_timeline_last_mode = mode;
+    if (mode == 2 && replayTimelineOn()) return !g_timeline_closed;
+    return Settings::TIMELINE_ON.value != 0;
+  }
+  void setTimelineOn(bool on) {
+    if (Timeline::instance().mode() == 2 && replayTimelineOn()) { g_timeline_closed = !on; return; }
+    Settings::TIMELINE_ON.value = on ? 1 : 0;
+    Settings::saveConfig();
+  }
 
   std::wstring secondsText(uint32_t frames) {
     wchar_t buf[32];
@@ -856,6 +892,7 @@ namespace {
   void streamSelectedRecording() {
     if (recordings::streamActive() || recordings::streamArmed()) {
       recordings::streamStop();
+      combo_trials::streamRestore(true);
       g_rec_status = L"Stream stopped";
       return;
     }
@@ -863,7 +900,10 @@ namespace {
     auto parsed = recordings::parseFile(g_rec_files[g_rec_file_idx], g_rec_side);
     if (!parsed.ok()) { g_rec_status = parsed.error; return; }
     recordings::streamArm(std::move(parsed.frames));
-    g_rec_status = L"Ready, starts with the round";
+    const bool dummy_on_left = g_rec_side == recordings::kDirRight;
+    g_rec_status = combo_trials::streamSetup(dummy_on_left)
+        ? std::wstring(L"Round Call on, dummy on the ") + (dummy_on_left ? L"P1" : L"P2") + L" side. Starts with the round call"
+        : std::wstring(L"Ready, starts with the round");
   }
 
   void loadSelectedRecording() {
@@ -1090,7 +1130,174 @@ namespace {
 
   // Row order, section headings and actions share one definition for mouse,
   // keyboard/controller navigation and both menu renderers. Config IDs stay put.
-  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont, TakeoverToggle };
+  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont, TakeoverToggle, CopyDiagnostics, Notice };
+  ULONGLONG g_diag_copied_at = 0;
+  ULONGLONG g_diag_failed_at = 0;
+
+  size_t diagFind(const std::string& line, const char* what) {
+    const size_t n = strlen(what);
+    for (size_t i = 0; i + n <= line.size(); i++)
+      if (_strnicmp(line.c_str() + i, what, n) == 0) return i;
+    return std::string::npos;
+  }
+
+  std::vector<std::string> diagLines(const std::filesystem::path& file) {
+    std::vector<std::string> lines;
+    std::ifstream in(file, std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      lines.push_back(std::move(line));
+    }
+    return lines;
+  }
+
+  std::string diagSettings() {
+    std::string out;
+    for (const std::string& line : diagLines(Settings::CONFIG_PATH)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      const std::string value = line.substr(eq + 1);
+      const bool number = !value.empty() && value.find_first_not_of("0123456789.-+eE ") == std::string::npos;
+      out += line.substr(0, eq + 1) + (number ? value : std::string(value.empty() ? "" : "(set)")) + "\n";
+    }
+    return out;
+  }
+
+  struct DiagText {
+    std::vector<std::string> head, tail;
+    bool whole = true;
+  };
+
+  DiagText diagRead(const std::filesystem::path& file) {
+    DiagText text;
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return text;
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    const std::streamoff kTail = 512 * 1024, kHead = 64 * 1024;
+    auto lines = [&](std::streamoff from, std::streamoff count, bool cut_first, bool cut_last) {
+      std::string buf(static_cast<size_t>(count), '\0');
+      in.clear();
+      in.seekg(from);
+      in.read(buf.data(), count);
+      buf.resize(static_cast<size_t>(in.gcount()));
+      std::vector<std::string> out;
+      for (size_t at = 0; at < buf.size();) {
+        const size_t end = buf.find('\n', at);
+        if (end == std::string::npos) {
+          if (!cut_last) out.push_back(buf.substr(at));
+          break;
+        }
+        out.push_back(buf.substr(at, end - at));
+        at = end + 1;
+      }
+      if (cut_first && !out.empty()) out.erase(out.begin());
+      for (std::string& line : out)
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+      return out;
+    };
+    if (size <= 0) return text;
+    if (size <= kTail) {
+      text.tail = lines(0, size, false, false);
+      return text;
+    }
+    text.whole = false;
+    text.head = lines(0, kHead, false, true);
+    text.tail = lines(size - kTail, kTail, true, false);
+    return text;
+  }
+
+  bool diagScrub(std::string& line, size_t& named, size_t& effects) {
+    line.erase(std::remove(line.begin(), line.end(), '\0'), line.end());
+    static const char* const kNamesFiles[] = {".stpl", ".bbs", ".ttf", ".otf", ".slpn", ".png", ".bmp", ".tif", ".txt", "palette", "share:", "exported", "imported", "label"};
+    if (diagFind(line, " emitter ") != std::string::npos && diagFind(line, " takes ") != std::string::npos) {
+      effects++;
+      return false;
+    }
+    if (std::any_of(std::begin(kNamesFiles), std::end(kNamesFiles), [&](const char* w) { return diagFind(line, w) != std::string::npos; }) ||
+        (diagFind(line, ".pak") != std::string::npos && diagFind(line, "| bake:") == std::string::npos)) {
+      named++;
+      return false;
+    }
+    static const char* const kKnownModules[] = {"main.dll", "UE4SS.dll", "GGST-Win64-Shipping.exe", "RED-Win64-Shipping.exe", "ntdll.dll", "KERNELBASE.dll",
+                                                "kernel32.dll", "ucrtbase.dll", "VCRUNTIME140.dll", "d3d11.dll", "dxgi.dll", "user32.dll"};
+    for (const char* ext : {".dll", ".exe"})
+      for (size_t at = diagFind(line, ext); at != std::string::npos;) {
+        size_t from = line.find_last_of(" \t(|", at);
+        from = from == std::string::npos ? 0 : from + 1;
+        const std::string name = line.substr(from, at + 4 - from);
+        size_t next = at + 4;
+        if (std::none_of(std::begin(kKnownModules), std::end(kKnownModules), [&](const char* k) { return _stricmp(name.c_str(), k) == 0; })) {
+          from = 0;
+          for (const char* before : {" at ", " from ", " and ", " in ", ", ", "| "})
+            if (const size_t found = line.rfind(before, at); found != std::string::npos) from = (std::max)(from, found + strlen(before));
+          line.replace(from, at + 4 - from, "(another module)");
+          next = from + 16;
+        }
+        const size_t more = next < line.size() ? diagFind(line.substr(next), ext) : std::string::npos;
+        at = more == std::string::npos ? more : next + more;
+      }
+    for (size_t at = 0; at + 2 < line.size(); at++)
+      if (std::isalpha(static_cast<unsigned char>(line[at])) && line[at + 1] == ':' && (line[at + 2] == '\\' || line[at + 2] == '/') &&
+          (at == 0 || !std::isalnum(static_cast<unsigned char>(line[at - 1])))) {
+        line = line.substr(0, at) + "(a path)";
+        break;
+      }
+    for (const char* users : {"\\users\\", "/users/"})
+      if (const size_t at = diagFind(line, users); at != std::string::npos) line = line.substr(0, at) + "(a path)";
+    for (const char* mods : {"~mods/", "~mods\\"})
+      if (const size_t at = diagFind(line, mods); at != std::string::npos) line = line.substr(0, at + 6) + "(a mod)";
+    if (line.size() > 300) line = line.substr(0, 300) + "...";
+    return true;
+  }
+
+  std::string diagLog(const std::filesystem::path& file, size_t first, size_t last) {
+    DiagText text = diagRead(file);
+    size_t named = 0, effects = 0;
+    for (std::vector<std::string>* part : {&text.head, &text.tail})
+      part->erase(std::remove_if(part->begin(), part->end(), [&](std::string& line) { return !diagScrub(line, named, effects); }), part->end());
+    std::string out;
+    auto add = [&](const std::vector<std::string>& lines, size_t from, size_t to) {
+      for (size_t i = from; i < to && i < lines.size(); i++) out += lines[i] + "\n";
+    };
+    const size_t tail_from = text.tail.size() > last ? text.tail.size() - last : 0;
+    if (text.whole && text.tail.size() <= first + last) {
+      add(text.tail, 0, text.tail.size());
+    } else {
+      add(text.whole ? text.tail : text.head, 0, first);
+      out += first ? "(lines in between skipped)\n" : "(earlier lines skipped)\n";
+      add(text.tail, tail_from, text.tail.size());
+    }
+    if (out.empty()) out = "(no log)\n";
+    if (named || effects) out += "(left out: " + std::to_string(named) + " lines that name files, " + std::to_string(effects) + " effect color lines)\n";
+    return out;
+  }
+
+  bool copyDiagnostics() {
+    const std::string text = std::string("StriveLabs ") + update_check::kVersion + "\n\n-- settings --\n" + diagSettings() + "\n-- this run's log --\n" +
+                             diagLog(Settings::WORKING_DIRECTORY / "combo_log.txt", 60, 150) + "\n-- the run before --\n" +
+                             diagLog(Settings::WORKING_DIRECTORY / "combo_log.1.txt", 0, 60);
+    UINT page = CP_UTF8;
+    int count = MultiByteToWideChar(page, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (count <= 0) {
+      page = CP_ACP;
+      count = MultiByteToWideChar(page, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    }
+    if (count <= 0 || !OpenClipboard(nullptr)) return false;
+    bool ok = false;
+    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (static_cast<size_t>(count) + 1) * sizeof(wchar_t))) {
+      if (auto* to = static_cast<wchar_t*>(GlobalLock(mem))) {
+        MultiByteToWideChar(page, 0, text.data(), static_cast<int>(text.size()), to, count);
+        to[count] = 0;
+        GlobalUnlock(mem);
+        EmptyClipboard();
+        ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+      }
+      if (!ok) GlobalFree(mem);
+    }
+    CloseClipboard();
+    return ok;
+  }
   struct SettingsRowDef {
     const wchar_t* section = L"";
     const wchar_t* label = L"";
@@ -1187,9 +1394,12 @@ namespace {
       return rows;
     }
     if (page == MenuPage::Timeline) {
-      std::vector<SettingsRowDef> rows = {{L"Settings", L"Timeline window", &TIMELINE_ON}};
-      if (imgui_overlay::running())
+      std::vector<SettingsRowDef> rows = {{L"Settings", L"Timeline window", &TIMELINE_ON}, {L"Experimental", L"Run on replay startup", &TIMELINE_REPLAY}};
+      if (imgui_overlay::running()) {
+        rows.push_back({L"", L"Leaving it on uses about 450 MB more RAM in replays: the fight is saved about once a second so you can jump back.", nullptr, nullptr,
+                        SettingsAction::Notice});
         rows.push_back({L"Appearance", L"Timeline size", nullptr, &UI_SCALE_TIMELINE});
+      }
       return rows;
     }
     if (page == MenuPage::Keybinds || page == MenuPage::Takeover) {
@@ -1199,8 +1409,25 @@ namespace {
         rows.push_back(row);
       };
       if (page == MenuPage::Keybinds) {
-        for (int action = 0; action < binds::COUNT; action++)
-          if (!isTakeoverHotkey(action)) hotkey(action);
+        static const struct { const wchar_t* section; int action; } CONTROLS[] = {
+          {L"Menu", binds::MENU}, {L"", binds::UP}, {L"", binds::DOWN}, {L"", binds::LEFT}, {L"", binds::RIGHT},
+          {L"Show and hide", binds::FRAMEBAR}, {L"", binds::HITBOXES}, {L"", binds::ONLINE_VERSION},
+          {L"Pause the whole game", binds::PAUSE}, {L"", binds::ADVANCE},
+          {L"Timeline (replays)", binds::TICK_BACK}, {L"", binds::TICK_FORWARD},
+          {L"Hold the fight (training and replays)", binds::BOX_PAUSE}, {L"", binds::BOX_STEP}, {L"", binds::STEP_BACK},
+          {L"Rewind and takeover", binds::SAVE}, {L"", binds::LOAD}, {L"", binds::TAKEOVER_P1}, {L"", binds::TAKEOVER_P2},
+          {L"Training", binds::TRAINING_RECORD}, {L"", binds::TRAINING_PLAYBACK}, {L"", binds::TRAINING_RESET},
+          {L"", binds::FREE_CAMERA}, {L"", binds::COLOR_EDITOR}, {L"", binds::BOX_EDITOR},
+        };
+        const wchar_t* section = L"";
+        for (const auto& c : CONTROLS) {
+          if (c.section[0]) section = c.section;
+          const bool timeline_only = c.action == binds::STEP_BACK || c.action == binds::TICK_BACK || c.action == binds::TICK_FORWARD;
+          if (timeline_only && !replayTimelineOn()) continue;
+          hotkey(c.action);
+          rows.back().section = section;
+          section = L"";
+        }
       } else {
         rows.push_back({L"Rewind", L"Playback delay", nullptr, &REWIND_DELAY_SECONDS});
         rows.push_back({L"", L"Replay assist", nullptr, &REPLAY_ASSIST_SECONDS});
@@ -1230,6 +1457,7 @@ namespace {
         {L"Windows", L"Menu size", nullptr, &UI_SCALE},
         {L"", L"Hide window frames", &UI_HIDE_WINDOW_DECORATIONS},
         {L"", L"Reset window positions", nullptr, nullptr, SettingsAction::ResetWindows},
+        {L"Report a problem", L"Copy diagnostics", nullptr, nullptr, SettingsAction::CopyDiagnostics},
       };
     return {};
   }
@@ -1239,6 +1467,131 @@ namespace {
            page == MenuPage::TimingInput || page == MenuPage::Tension ||
            page == MenuPage::Timeline || page == MenuPage::Keybinds || page == MenuPage::Takeover ||
            (page == MenuPage::Layout && imgui_overlay::running());
+  }
+
+  const char* pageTip(MenuPage page) {
+    switch (page) {
+      case MenuPage::Layout:      return "How the menu and the overlay windows look: colors, font, size and window frames.";
+      case MenuPage::Keybinds:    return "Hotkeys. Right or a click on a row, then a key or pad button. Backspace clears. Takeover keys are on Takeover.";
+      case MenuPage::FrameBar:    return "The frame bar: startup, active and recovery as you play. Folded cells show how many frames they hold.";
+      case MenuPage::Hitboxes:    return "Hitboxes and hurtboxes drawn on the fighters.";
+      case MenuPage::Tension:     return "The meters window (tension, burst, wall damage) and the damage panel windows.";
+      case MenuPage::Recordings:  return "Save training slots as .txt files, load them back, or feed a file straight to the dummy.";
+      case MenuPage::Takeover:    return "Replay takeover: jump into either side of a replay, with a rewind point to go back to.";
+      case MenuPage::Timeline:    return "A small window with rewind, pause, frame step and record.";
+      case MenuPage::TimingInput: return "A delay on every fight frame, in training and replays, and the battle version window.";
+      case MenuPage::ComboTrials: return "Try a combo you saved or downloaded in Combo Maker. Training starts where the combo starts.";
+      case MenuPage::ComboSearch: return "Find Combo Maker combos online for the character you're playing and keep them for Combo Trials.";
+      default: return "";
+    }
+  }
+
+  const char* bindTip(int action) {
+    switch (action) {
+      case binds::FRAMEBAR:          return "Shows or hides the frame bar.";
+      case binds::HITBOXES:          return "Shows or hides hitboxes and hurtboxes.";
+      case binds::PAUSE:             return "Freezes the whole game, drawing included. With the color editor or free camera on, only the fight. Press again to go on.";
+      case binds::ADVANCE:           return "While frozen with Pause, goes one frame forward. Hold it to keep stepping.";
+      case binds::MENU:              return "Opens and closes this menu.";
+      case binds::SAVE:              return "Sets the rewind point at this frame, in training or a replay.";
+      case binds::TAKEOVER_P1:       return "In a replay, asks to take over P1. Press again for yes. Later it asks to stop and goes back to the rewind point.";
+      case binds::TAKEOVER_P2:       return "In a replay, asks to take over P2. Press again for yes. Later it asks to stop and goes back to the rewind point.";
+      case binds::LOAD:              return "Goes back to your rewind point.";
+      case binds::UP:                return "Moves up in this menu.";
+      case binds::DOWN:              return "Moves down in this menu.";
+      case binds::LEFT:              return "Goes back, or changes a value down.";
+      case binds::RIGHT:             return "Selects, or changes a value up.";
+      case binds::TRAINING_RECORD:   return "The game's own Record button for the dummy, on a key or pad button of your choice.";
+      case binds::TRAINING_PLAYBACK: return "The game's own Playback button for the dummy, on a key or pad button of your choice.";
+      case binds::TRAINING_RESET:    return "The game's own Reset Position, on a key or pad button of your choice.";
+      case binds::ONLINE_VERSION:    return "Opens or closes StriveLabs Online: the battle version for Park and room matches. Not in training or replays.";
+      case binds::BOX_PAUSE:         return "Training and replays: holds the fight but keeps the game drawing, so the mouse and the editors still work. Press again to let it go.";
+      case binds::BOX_STEP:          return "Training and replays: with the fight held by Hold fight, goes one frame forward. Hold it to keep stepping.";
+      case binds::STEP_BACK:         return "Replays: goes one frame back and holds the fight there. Hold it to keep stepping back.";
+      case binds::TICK_BACK:         return "Replays: jumps back to the previous mark on the Timeline (the marks are one second apart) and holds the fight there.";
+      case binds::TICK_FORWARD:      return "Replays: jumps forward to the next mark on the Timeline (the marks are one second apart) and holds the fight there.";
+      case binds::FREE_CAMERA:       return "Training: a camera you move yourself, with or without the color editor.";
+      case binds::COLOR_EDITOR:      return "Training: opens and closes the color editor.";
+      case binds::BOX_EDITOR:        return "Training: opens and closes Script & boxes (each fighter's move, boxes and script).";
+      default: return "";
+    }
+  }
+
+  const char* rowTip(const SettingsRowDef& def) {
+    static const struct { const char* id; const char* tip; } tips[] = {
+      {"framebar", "Shows the frame bar in training and replays."},
+      {"show_dash", "Gives dash frames their own color. Off, they look like standing still."},
+      {"crossup_enabled", "Marks the frame where the players switch sides."},
+      {"framebar_rows", "Which player's row the bar shows."},
+      {"framebar_fold_after", "When both players stay in one state longer than this, it folds into one cell with its length. Active frames never fold."},
+      {"framebar_compact", "Folds stretches over 2 frames: one number per cell, lengths on brackets, the punish window in green."},
+      {"framebar_blocks", "Joins each stretch's cells into one block, or keeps them as separate cells."},
+      {"framebar_perfect", "Marks a move that came out on the first frame it could."},
+      {"framebar_hits", "Marks the active frame a move connected on."},
+      {"framebar_gaps", "Numbers the free frames between two stuns."},
+      {"framebar_countdown", "Draws the stun or recovery still to come as outlined cells, with a blue line where it ends."},
+      {"input_bar", "A row of inputs under each player's bar row, for both players or one."},
+      {"framebar_unfold", "Keeps the last frames of a folded stretch as cells, so its end lines up with the other player."},
+      {"framebar_unfold_recovery", "Keeps those last frames only on stretches where a player is recovering."},
+      {"color_scheme", "The colors of the bar's states. A legend shows under the settings when the menu is tall enough."},
+      {"fade", "Each frame of a stretch is drawn a little darker than the one before."},
+      {"delim", "Draws a line where one state ends and the next begins."},
+      {"ui_bar_bg", "How dark the frame bar's background is."},
+      {"ui_scale_bar", "The size of the frame bar window."},
+      {"hitboxes", "Draws hitboxes and hurtboxes on the fighters in training and replays."},
+      {"delay_amount", "Holds every fight frame this long before it runs, in training and replays. The fight plays slower."},
+      {"battle_version_shown", "A small window naming the battle version the fight is running on."},
+      {"ui_version_bg", "How dark the battle version window's background is."},
+      {"tension_enabled", "Shows the meters window."},
+      {"tension_current", "A line with the tension each side has."},
+      {"tension_gain", "Tension each side gained since the round started or the last position reset."},
+      {"tension_advantage", "A line with P1's tension gain minus P2's."},
+      {"tension_adv_change", "The last change in tension advantage. It stays until the advantage changes again."},
+      {"tension_pulse", "A line with each side's tension pulse."},
+      {"tension_penalty", "A line with each side's tension penalty."},
+      {"tension_burst", "A line with each side's burst."},
+      {"wall_damage", "A line with each side's wall damage."},
+      {"meters_windows", "One meters window for both players, or one for each."},
+      {"tension_side", "Moves the meters window left or right. On the frame bar it picks the bar's end. Not used with P1 and P2 windows."},
+      {"meters_snap", "Free to drag, kept on top of the frame bar, or kept under the damage panel."},
+      {"meters_decimals", "How many decimals the meter numbers show."},
+      {"ui_scale_meters", "The size of the meters, damage and battle version windows."},
+      {"ui_overlay_bg", "How dark the meters and damage windows' background is."},
+      {"damage_panel", "The game's training damage panel in a window of its own, for P1, P2 or both."},
+      {"damage_hide_game", "Hides the game's damage panel for the sides shown above. Only with Position on Free."},
+      {"damage_position", "Free: the mod's own window. Game's spot: no extra window, the game's panel stays and Meters can sit under it."},
+      {"timeline_on", "Shows the timeline window: rewind, pause, frame step and record."},
+      {"timeline_replay_startup", "Yes: every replay starts with the timeline window open and its jumps on, whatever Timeline window says. Closing the window hides it for that replay. Changes count from the next replay."},
+      {"ui_scale_timeline", "The size of the timeline window."},
+      {"rewind_delay_seconds", "After Rewind, the fight stays paused this long. Training and replays. Not used with Replay Assist."},
+      {"replay_assist_seconds", "While taking over, Rewind goes back at least this much earlier. The replay plays both sides, then hands you control."},
+      {"status_line", "A line saying replay or training, the rewind point, Replay Assist and who you're taking over."},
+      {"status_bg_opacity", "How dark the status line's background is."},
+      {"status_text_size", "The size of the status line's text."},
+      {"ui_accent", "The menu's highlight color."},
+      {"ui_opacity", "How see-through the menu's background is."},
+      {"ui_scale", "The size of this menu."},
+      {"ui_hide_window_decorations", "Menu closed: hides the overlay windows' title and background. A window's own Title or Background setting wins."},
+    };
+    if (def.capture >= binds::GAME_BASE) return "Your button for this during takeover, with Use custom buttons on.";
+    if (def.capture >= 0) return bindTip(def.capture);
+    switch (def.action) {
+      case SettingsAction::ResetWindows:   return "Puts every window back to its default place and size.";
+      case SettingsAction::PickColor:      return "Pick any color for the highlight. Sets Accent color to Custom.";
+      case SettingsAction::PickFont:       return "The font of the overlay windows. Opens a file picker for a .ttf or .otf.";
+      case SettingsAction::ResetFont:      return "Back to the Barlow font.";
+      case SettingsAction::TakeoverToggle: return "During takeover, play with the buttons below. Off, the game's own button setup is used.";
+      case SettingsAction::CopyDiagnostics: return "Copies the version, settings and parts of the log to paste into a report. File, folder and mod names are left out.";
+      default: break;
+    }
+    const std::string* id = def.setting ? &def.setting->id_ : def.number ? &def.number->id_ : nullptr;
+    if (!id) return "";
+    if (id->size() > 6 && id->compare(id->size() - 6, 6, "_title") == 0)
+      return "This window's title bar. Default follows Appearance > Hide window frames. Menu open: point at the window to see its frame.";
+    if (id->size() > 11 && id->compare(id->size() - 11, 11, "_background") == 0)
+      return "This window's background. Default follows Appearance > Hide window frames. Menu open: point at the window to see its frame.";
+    for (const auto& t : tips) if (*id == t.id) return t.tip;
+    return "";
   }
 
   size_t rowCountForPage(MenuPage page) {
@@ -1372,9 +1725,27 @@ extern int g_picker_seq;
 
 namespace {
   std::mutex g_view_mutex;
-  MenuView g_view;
+  std::shared_ptr<const MenuView> g_view = std::make_shared<const MenuView>();
   std::vector<MenuClick> g_clicks;
   std::atomic<unsigned> g_popped{0};
+  std::atomic<bool> g_menu_minimized{false}, g_menu_restore{false};
+}
+
+bool ModMenu::takesInput() const { return is_showing && (!g_menu_minimized || binds::capturing >= 0); }
+void ModMenu::setMinimized(bool minimized) { g_menu_minimized = minimized; }
+void ModMenu::replayStarted() { g_timeline_closed = false; }
+bool ModMenu::takeRestore() { return g_menu_restore.exchange(false); }
+
+bool ModMenu::replayTimeline() const { return replayTimelineOn(); }
+
+int ModMenu::takeFileWindow() { return g_file_window_want.exchange(0); }
+
+std::filesystem::path ModMenu::fileWindowDir(bool font) const { return font ? fontsDir() : Settings::recordingsDir(); }
+
+void ModMenu::fileWindowPick(const std::filesystem::path& file, bool font) {
+  std::lock_guard<std::mutex> lock(g_browse_mutex);
+  g_browse_pick = file;
+  g_browse_font = font;
 }
 
 void ModMenu::update(PressedKeys data) {
@@ -1404,13 +1775,18 @@ void ModMenu::updateInner(PressedKeys data) {
   if (data.toggle_hitbox)   changeSetting(Settings::HITBOX_INDEX);
   if (data.toggle_menu) {
     // Keep the current page and cursor when reopening the menu.
-    is_showing = !is_showing;
+    if (is_showing && g_menu_minimized) g_menu_restore = true;
+    else {
+      is_showing = !is_showing;
+      if (is_showing) { g_menu_restore = true; g_menu_minimized = false; }
+    }
   }
 
   if (!is_showing) return;
 
   if (binds::consumeDirty()) Settings::saveConfig();
   if (binds::capturing >= 0) return;  // waiting for a key/button; inputs go to the capture
+  if (g_menu_minimized) return;
 
   const auto page = static_cast<MenuPage>(current_page);
 
@@ -1467,6 +1843,12 @@ void ModMenu::updateInner(PressedKeys data) {
       case SettingsAction::PickFont: startBrowse(true); break;
       case SettingsAction::ResetFont: Settings::setOverlayFont(""); Settings::saveConfig(); break;
       case SettingsAction::TakeoverToggle: binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); break;
+      case SettingsAction::CopyDiagnostics: {
+        const bool copied = copyDiagnostics();
+        g_diag_copied_at = copied ? GetTickCount64() : 0;
+        g_diag_failed_at = copied ? 0 : GetTickCount64();
+        break;
+      }
       default: break;
     }
     return;
@@ -2000,7 +2382,7 @@ namespace {
 
 std::string battleVersionName(int index) { return utf8(versionName(index)); }
 
-MenuView ModMenu::view() const {
+std::shared_ptr<const MenuView> ModMenu::view() const {
   std::lock_guard<std::mutex> lock(g_view_mutex);
   return g_view;
 }
@@ -2047,11 +2429,13 @@ void ModMenu::applyClick(const MenuClick& c) {
         Timeline::instance().advanceFrame();
       return;
     case MenuClick::Type::TlRecord:   toggleCapture(); return;
+    case MenuClick::Type::TlSeek:     ReplayManager::instance().seekTo(c.a, c.b != 0); return;
     case MenuClick::Type::TlShow:     setTimelineOn(c.b != 0); return;
     default: break;
   }
   if (c.type == MenuClick::Type::TensionWindow) {
-    Settings::TENSION_ENABLED.value = c.b ? 1 : 0;
+    if (c.a == 1 || c.a == 2) Settings::DAMAGE_PANEL.value = static_cast<int>(Settings::DAMAGE_PANEL.value) & ~c.a;
+    else Settings::TENSION_ENABLED.value = c.b ? 1 : 0;
     Settings::saveConfig();
     return;
   }
@@ -2152,7 +2536,8 @@ void ModMenu::buildView() {
   MenuView v;
   v.showing = is_showing;
   const auto page = static_cast<MenuPage>(current_page);
-  for (size_t i = 0; i < ROOT_PAGE_COUNT; i++) v.nav_items.push_back(clean(ROOT_PAGES[i].label));
+  if (is_showing)
+    for (size_t i = 0; i < ROOT_PAGE_COUNT; i++) v.nav_items.push_back(clean(ROOT_PAGES[i].label));
   v.nav_focus = (page == MenuPage::Root);
   // On the root page the right pane previews the highlighted page.
   const MenuPage shown = v.nav_focus ? ROOT_PAGES[static_cast<size_t>(cursor_position) % ROOT_PAGE_COUNT].page : page;
@@ -2170,18 +2555,14 @@ void ModMenu::buildView() {
 
   // Rows of one page; used for the right pane and for every popped-out window.
   auto buildRows = [&](MenuPage shown, std::vector<MenuRowView>& out, std::string& status) {
-  auto row = [&](MenuRowView::Kind k, const std::string& label, const std::string& value = {}) {
-    MenuRowView r; r.kind = k; r.label = label; r.value = value; out.push_back(r);
+  auto row = [&](MenuRowView::Kind k, const std::string& label, const std::string& value = {}, const char* tip = "") {
+    MenuRowView r; r.kind = k; r.label = label; r.value = value; r.tip = tip; out.push_back(r);
   };
 
   if (isSettingsPage(shown)) {
     for (const auto& def : settingsRowsForPage(shown)) {
       MenuRowView r; r.label = clean(def.label); r.section = utf8(def.section);
-      if (const auto* s = def.setting) {  // the windows' own title / background rows
-        const std::string& id = s->id_;
-        if ((id.size() > 6 && id.compare(id.size() - 6, 6, "_title") == 0) || (id.size() > 11 && id.compare(id.size() - 11, 11, "_background") == 0))
-          r.tip = "When the menu is closed";
-      }
+      r.tip = rowTip(def);
       if (def.capture >= 0) {
         const bool game = def.capture >= binds::GAME_BASE;
         const int id = game ? def.capture - binds::GAME_BASE : def.capture;
@@ -2204,6 +2585,13 @@ void ModMenu::buildView() {
       } else {
         r.kind = MenuRowView::Kind::Action;
         r.value = def.action == SettingsAction::PickColor ? "Pick" : "Reset";
+        if (def.action == SettingsAction::CopyDiagnostics)
+          r.value = g_diag_copied_at && GetTickCount64() - g_diag_copied_at < 3000 ? "Copied" : g_diag_failed_at && GetTickCount64() - g_diag_failed_at < 3000 ? "Clipboard busy" : "Copy";
+        if (def.action == SettingsAction::Notice) {
+          r.kind = MenuRowView::Kind::Text;
+          r.caution = true;
+          r.value.clear();
+        }
         if (def.action == SettingsAction::PickFont) {
           std::string f = Settings::overlayFont();
           f = f.empty() ? "Barlow" : f.substr(0, f.find_last_of('.'));
@@ -2213,42 +2601,45 @@ void ModMenu::buildView() {
       out.push_back(std::move(r));
     }
   } else if (shown == MenuPage::Recordings) {
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Slot";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Slot"; r.tip = "The game's training recording slot to save from or load into.";
       for (int i = 1; i <= recordings::kSlotCount; i++) r.choices.push_back(std::to_string(i));
       r.choice = g_rec_slot; r.value = utf8(recordings::describeSlot(g_rec_slot)); out.push_back(r); }
-    row(MenuRowView::Kind::Action, "Save to file", "Save");
-    row(MenuRowView::Kind::Number, "File", g_rec_files.empty() ? "No recordings" : utf8(fitValue(g_rec_files[g_rec_file_idx].stem().wstring(), 40)));
-    row(MenuRowView::Kind::Action, "Browse", "Browse");
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Player side";
+    row(MenuRowView::Kind::Action, "Save to file", "Save", "Saves the slot as a .txt in ue4ss/recordings, named after the date, length and first inputs.");
+    row(MenuRowView::Kind::Number, "File", g_rec_files.empty() ? "No recordings" : utf8(fitValue(g_rec_files[g_rec_file_idx].stem().wstring(), 40)),
+        "The .txt to load or stream. Left and Right step through the recordings folder.");
+    row(MenuRowView::Kind::Action, "Browse", "Browse", "Picks a .txt with a file window.");
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Player side"; r.tip = "Which way the file's inputs face: P1 faces right, P2 faces left. 4 and 6 turn with it.";
       r.choices = {"P1", "P2"}; r.choice = g_rec_side == recordings::kDirLeft ? 1 : 0; out.push_back(r); }
-    row(MenuRowView::Kind::Action, "Load into slot", "Load");
+    row(MenuRowView::Kind::Action, "Load into slot", "Load", "Puts the file into the slot. Play it with the game's own playback button.");
     row(MenuRowView::Kind::Action, "Stream to dummy",
         (recordings::streamActive() || recordings::streamArmed())
-          ? stopLabel(recordings::streamPos(), recordings::streamLen()) : "Start");
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Capture side";
+          ? stopLabel(recordings::streamPos(), recordings::streamLen()) : "Start",
+        "Plays the file on the dummy from each round call. Turns Round Call on and puts the dummy on Player side. Training only.");
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Capture side"; r.tip = "The player whose inputs Capture from replay records.";
       r.choices = {"P1", "P2"}; r.choice = g_cap_side; out.push_back(r); }
     row(MenuRowView::Kind::Action, "Capture from replay",
-        ReplayManager::instance().captureActive() ? stopLabel(ReplayManager::instance().captureFrames(), 2400) : std::string("Start"));
+        ReplayManager::instance().captureActive() ? stopLabel(ReplayManager::instance().captureFrames(), 2400) : std::string("Start"),
+        "In a replay, records that player's inputs into a .txt, up to 40 seconds.");
     status = utf8(g_rec_status);
   } else if (shown == MenuPage::ComboTrials) {
     int last_version = -1;
     for (const TrialRowRef& t : trialRows()) {
       switch (t.kind) {
         case TrialRow::Stop:
-          row(MenuRowView::Kind::Action, "Stop trial", "Stop");
+          row(MenuRowView::Kind::Action, "Stop trial", "Stop", "Ends the trial.");
           out.back().section = combo_trials::active() ? utf8(combo_trials::trialName()) : std::string("No combo loaded");
           break;
         case TrialRow::Watch:
-          row(MenuRowView::Kind::Action, "Watch demo", combo_trials::watching() ? "Stop" : "Watch");
+          row(MenuRowView::Kind::Action, "Watch demo", combo_trials::watching() ? "Stop" : "Watch", "The combo's own recording plays your character.");
           break;
         case TrialRow::Practice: {
           const int v = combo_trials::trialVersion();
           row(MenuRowView::Kind::Action, v > 0 && v < kNewestVersion ? "Use " + utf8(versionName(v)) : std::string("Use its version"), "Set");
-          out.back().tip = "Applies next time training loads";
+          out.back().tip = "Runs training on the battle version this combo was made on. Applies next time training loads.";
           break;
         }
         case TrialRow::Version: {
-          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Battle version"; r.section = "Versions"; r.tip = "Applies next time training loads";
+          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Battle version"; r.section = "Versions"; r.tip = "The battle version training runs on, from the next time it loads. Only versions of your saved combos are listed.";
           int sel = 0;
           for (size_t k = 0; k < g_version_choices.size(); k++) {
             r.choices.push_back(k == 0 ? std::string("Current") : utf8(versionName(g_version_choices[k])));
@@ -2258,7 +2649,7 @@ void ModMenu::buildView() {
           break;
         }
         case TrialRow::Online: {
-          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Online version"; r.tip = "Park and rooms, same as your opponent";
+          MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Online version"; r.tip = "The battle version for Park and room matches, until the main menu. Your opponent needs StriveLabs on the same version.";
           const auto c = onlineChoices();
           for (size_t k = 0; k < c.size(); k++) {
             r.choices.push_back(k == 0 ? std::string("Off") : utf8(versionName(c[k])));
@@ -2269,7 +2660,7 @@ void ModMenu::buildView() {
         }
         case TrialRow::Combo: {
           const auto& e = g_trials[t.combo];
-          row(MenuRowView::Kind::Action, utf8(trialLabel(e)), "Try");
+          row(MenuRowView::Kind::Action, utf8(trialLabel(e)), "Try", "Starts this combo as a trial. Each move lights up as it lands.");
           if (e.version != last_version) {
             last_version = e.version;
             const std::wstring v = versionName(e.version);
@@ -2282,9 +2673,9 @@ void ModMenu::buildView() {
     status = utf8(g_trials_status);
   } else if (shown == MenuPage::ComboSearch && g_detail >= 0 && g_detail < static_cast<int>(combo_online::results().size())) {
     row(MenuRowView::Kind::Action, "Back", "Back");
-    row(MenuRowView::Kind::Action, "Try", combo_online::busy() ? "Waiting..." : "Try");
-    row(MenuRowView::Kind::Action, "Save to Combo Trials", combo_online::busy() ? "Waiting..." : "Keep");
-    row(MenuRowView::Kind::Action, "More by this player", "Search");
+    row(MenuRowView::Kind::Action, "Try", combo_online::busy() ? "Waiting..." : "Try", "Downloads this combo and starts it as a trial.");
+    row(MenuRowView::Kind::Action, "Save to Combo Trials", combo_online::busy() ? "Waiting..." : "Keep", "Downloads this combo and keeps it on the Combo Trials page.");
+    row(MenuRowView::Kind::Action, "More by this player", "Search", "Searches again for this player's combos only.");
     {
       const auto& r = combo_online::results()[static_cast<size_t>(g_detail)];
       const auto lines = detailLines(r);
@@ -2300,28 +2691,28 @@ void ModMenu::buildView() {
     }
     status = utf8(g_search_status);
   } else if (shown == MenuPage::ComboSearch) {
-    row(MenuRowView::Kind::Action, "Search Combo Maker", combo_online::busy() ? "Waiting..." : "Search");
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Sort by";
+    row(MenuRowView::Kind::Action, "Search Combo Maker", combo_online::busy() ? "Waiting..." : "Search", "Looks up combos for the character you're playing, with the sort and filters below.");
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Sort by"; r.tip = "The order of the results.";
       r.choices = {"Downloads", "Likes", "Newest", "Clear rate"}; r.choice = g_online_sort; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Page";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Page"; r.tip = "Which page of results to fetch.";
       for (int k = 1; k <= 20; k++) r.choices.push_back(std::to_string(k));
       r.choice = g_online_page; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Opponent"; r.section = "Filters";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Opponent"; r.section = "Filters"; r.tip = "Only combos made against this character.";
       r.choices.push_back("Anyone");
       for (int k = 0; k < kCharaCount; k++) r.choices.push_back(kCharaNames[k]);
       r.choice = g_online_vs; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Version";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Version"; r.tip = "Any battle version, or only combos made on the current one.";
       r.choices = {"Any", "Current only"}; r.choice = g_online_ver; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Position";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Position"; r.tip = "Only combos tagged corner or midscreen.";
       r.choices = {"Any", "Corner", "Midscreen"}; r.choice = g_online_pos; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Gauge";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Gauge"; r.tip = "Only combos tagged with this tension.";
       r.choices = {"Any", "0%", "50%", "100%"}; r.choice = g_online_gauge; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Creator";
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Creator"; r.tip = "Anyone, or only the player picked with More by this player.";
       r.choices = {"Anyone"};
       if (!g_online_by_id.empty()) r.choices.push_back(g_online_by_name.empty() ? std::string("That player") : g_online_by_name);
       r.choice = g_online_by; out.push_back(r); }
     const size_t first_result = out.size();
-    for (const auto& o : combo_online::results()) row(MenuRowView::Kind::Action, onlineLabel(o), "Details");
+    for (const auto& o : combo_online::results()) row(MenuRowView::Kind::Action, onlineLabel(o), "Details", "Opens the combo: its steps, and Try or Save.");
     if (out.size() > first_result) out[first_result].section = "Results";
     status = utf8(g_search_status);
   } else if (shown == MenuPage::Layout) {
@@ -2339,15 +2730,16 @@ void ModMenu::buildView() {
   if (!is_showing) g_trials_last_shown = MenuPage::Root;  // reopening the menu reads the list again
   if (is_showing && shown == MenuPage::ComboTrials && g_trials_last_shown != MenuPage::ComboTrials) refreshTrials();
   g_trials_last_shown = is_showing ? shown : MenuPage::Root;
-  buildRows(shown, v.rows, v.status);
+  if (is_showing) buildRows(shown, v.rows, v.status);
   // The damage panel's frame rows (Total Action, Attack Startup...) come from the game,
   // which only works them out with its own frame data display on (training setting 87).
-  if (shown == MenuPage::Tension && Settings::DAMAGE_PANEL.value != 0 && v.status.empty()) {
+  if (is_showing && shown == MenuPage::Tension && Settings::DAMAGE_PANEL.value != 0 && v.status.empty()) {
     const uintptr_t root = combo_trials::saveRoot();
     if (root && *reinterpret_cast<const int32_t*>(root + 0x282D4 + 87 * 4) == 0)
       v.status = "Frame rows need the game's Frame Data display on.";
   }
   v.page = static_cast<int>(shown);
+  v.page_tip = pageTip(shown);
   v.tension_page = shown == MenuPage::Tension;
   v.poppable = isSettingsPage(shown) || shown == MenuPage::Recordings;
   v.tension_on = Settings::TENSION_ENABLED.value != 0;
@@ -2388,13 +2780,19 @@ void ModMenu::buildView() {
   v.recording = ReplayManager::instance().captureActive();
   v.rec_frames = ReplayManager::instance().captureFrames();
   v.rec_status = utf8(g_rec_status);
+  v.seek_shown = v.mode == 2 && ReplayManager::instance().seekAvailable();
+  v.seek_on = v.seek_shown && ReplayManager::instance().seekRange(v.seek_min, v.seek_max, v.seek_pos);
+  v.seek_calm.clear();
+  if (v.seek_on) ReplayManager::instance().seekPoints(v.seek_origin, v.seek_calm);
   if (v.mode != 0) {
     static bool scanned = false;  // the timeline lists files before the Recordings page is ever opened
     if (!scanned) { scanned = true; refreshRecordingFiles(); }
-    std::string unused;
-    buildRows(MenuPage::Recordings, v.rec_rows, unused);
+    if (v.timeline_on) {
+      std::string unused;
+      buildRows(MenuPage::Recordings, v.rec_rows, unused);
+    }
   }
-  const unsigned mask = g_popped;
+  const unsigned mask = is_showing ? g_popped.load() : 0u;
   for (size_t i = 0; i < 32; i++) {
     if (!(mask & (1u << i))) continue;
     MenuPanelView pv;
@@ -2407,8 +2805,9 @@ void ModMenu::buildView() {
     v.panels.push_back(std::move(pv));
   }
 
+  std::shared_ptr<const MenuView> next = std::make_shared<const MenuView>(std::move(v));
   std::lock_guard<std::mutex> lock(g_view_mutex);
-  g_view = std::move(v);
+  g_view.swap(next);
 }
 
 bool ModMenu::inputBarEnabled() const { return Settings::INPUT_BAR.value != 0; }
@@ -2424,8 +2823,8 @@ int ModMenu::unfoldFrames() const {
 }
 int ModMenu::foldAfter() const {
   if (compactBar()) return 2;  // compact: everything folds
-  static const int frames[] = {10, 5, 3, 2};
-  return frames[std::clamp(static_cast<int>(Settings::BAR_FOLD_AFTER.value), 0, 3)];
+  static const int frames[] = {10, 5, 3, 2, 30, 1000000};
+  return frames[std::clamp(static_cast<int>(Settings::BAR_FOLD_AFTER.value), 0, 5)];
 }
 bool ModMenu::compactBar() const { return Settings::BAR_COMPACT.value != 0 && imgui_overlay::running(); }
 bool ModMenu::unfoldOnlyRecovery() const { return Settings::BAR_UNFOLD_REC.value != 0; }
