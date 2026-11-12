@@ -426,7 +426,7 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
     }
   }
 
-  // Sort so hurtboxes draw first and attacking boxes (hit / grab / followup_hit)
+  // Sort so hurtboxes draw first and attacking boxes (followup_hit / grab / hit)
   // draw on top.  Otherwise the larger green hurtbox overdraws a smaller orange
   // followup_hit box at 0.25 alpha and the attacker's hit region disappears.
   // stable_sort preserves within-type order so the asymmetric clip_fill loop
@@ -434,9 +434,9 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
   auto box_priority = [](hitbox::box_type t) {
     switch (t) {
       case hitbox::box_type::hurt:         return 0;
-      case hitbox::box_type::hit:          return 1;
-      case hitbox::box_type::grab:         return 2;
-      case hitbox::box_type::followup_hit: return 3;
+      case hitbox::box_type::followup_hit: return 1;
+      case hitbox::box_type::hit:          return 2;
+      case hitbox::box_type::grab:         return 3;
       default:                             return 0;
     }
   };
@@ -446,20 +446,28 @@ void draw_hitboxes(const DrawTool &tool, const asw_entity &entity, bool active) 
       });
 
 
-  for (auto i = 0; i < hitboxes.size(); i++) {
-    // Clip outlines
-    for (auto j = 0; j < hitboxes.size(); j++) {
-      if (i != j && hitboxes[i].type == hitboxes[j].type)
-        hitboxes[i].clip_lines(hitboxes[j]);
-    }
 
-    // Clip fill against every hitbox after, since two boxes
-    // shouldn't both be clipped against each other
-    for (auto j = i + 1; j < hitboxes.size(); j++) {
-      if (hitboxes[i].type == hitboxes[j].type)
-        hitboxes[i].clip_fill(hitboxes[j]);
-    }
-
+    for (auto i = 0; i < hitboxes.size(); i++) {
+        // Clip outlines
+        for (auto j = 0; j < hitboxes.size(); j++) {
+            if (i != j &&
+                (hitboxes[i].type == hitboxes[j].type ||
+                 (hitboxes[i].type == hitbox::box_type::followup_hit &&
+                  hitboxes[j].type == hitbox::box_type::hit))) {
+                hitboxes[i].clip_lines(hitboxes[j]);
+            }
+        }
+    
+        // Clip fill against every hitbox after, since two boxes
+        // shouldn't both be clipped against each other
+        for (auto j = i + 1; j < hitboxes.size(); j++) {
+            if (hitboxes[i].type == hitboxes[j].type ||
+                (hitboxes[i].type == hitbox::box_type::followup_hit &&
+                 hitboxes[j].type == hitbox::box_type::hit)) {
+                hitboxes[i].clip_fill(hitboxes[j]);
+            }
+        }
+        
     draw_hitbox(tool, entity, hitboxes[i]);
   }
 
