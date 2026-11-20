@@ -9,13 +9,13 @@ namespace binds {
   const char* const NAMES[COUNT] = {"framebar", "hitboxes", "pause", "advance", "menu", "save",
                                     "takeover_1p", "takeover_2p", "load", "up", "down", "left", "right",
                                     "training_record", "training_playback", "training_reset", "online_version",
-                                    "box_pause", "box_step", "free_camera", "color_editor", "box_editor", "step_back", "tick_back", "tick_forward"};
+                                    "box_pause", "box_step", "free_camera", "color_editor", "box_editor", "step_back", "tick_back", "tick_forward", "reload_script", "hide_hud"};
   const wchar_t* const LABELS[COUNT] = {L"Frame bar", L"Hitboxes", L"Pause", L"Advance Frame",
                                         L"Menu", L"Rewind point & takeover", L"Takeover 1P", L"Takeover 2P",
                                         L"Rewind", L"Menu Up", L"Menu Down", L"Menu Left", L"Menu Right",
                                         L"Record dummy", L"Play dummy", L"Reset position",
                                         L"Online window", L"Hold fight", L"Step forward one frame", L"Free camera",
-                                        L"Color editor", L"Script & boxes", L"Step back one frame", L"Previous timeline tick", L"Next timeline tick"};
+                                        L"Color editor", L"Script & boxes", L"Step back one frame", L"Previous timeline tick", L"Next timeline tick", L"Reload script file", L"Hide all HUD"};
   int key[COUNT] = {VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0,
                     BindWatcherI::KEY_CTRL | 'O', 0, 0, 0,
                     BindWatcherI::KEY_CTRL | BindWatcherI::KEY_ALT | 'E', BindWatcherI::KEY_CTRL | BindWatcherI::KEY_ALT | 'B', 0, 0, 0};

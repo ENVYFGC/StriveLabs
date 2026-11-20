@@ -13,7 +13,7 @@
 struct Palette {
   FLinearColor projectile_color;
   FLinearColor background_color;
-  FLinearColor state_colors[8];
+  FLinearColor state_colors[11];
 };
 
 struct CurrentOptions {
@@ -85,7 +85,7 @@ struct PressedKeys {
 // update and copied under a lock by the render thread, so ImGui never touches
 // live menu state. Strings are UTF-8.
 struct MenuRowView {
-  enum class Kind { Back, Open, Choice, Action, Number, Bind, Text } kind = Kind::Open;  // Text: a line to read, no control
+  enum class Kind { Back, Open, Choice, Action, Number, Bind, Text, Fold, Field } kind = Kind::Open;  // Text: a line to read, no control
   std::string label;
   std::string section;               // heading before this row; not a selectable row
   std::string value;                 // Action/Number/Bind/Open text
@@ -94,6 +94,10 @@ struct MenuRowView {
   bool capturing = false;            // Bind row waiting for an input
   const char* tip = "";              // help text, "" = none
   bool caution = false;
+  bool arrows = false;
+  bool ranged = false;               // Number with a range: drawn as a slider
+  bool live = true;                  // applied while dragging (false: when the handle is let go)
+  double num = 0, lo = 0, hi = 0, step = 0;
 };
 
 // A page popped out into its own ImGui window.
@@ -118,7 +122,8 @@ struct MenuView {
   int meters_title = 0, damage_title = 0, damage_panel_bg = 0, version_title = 0, version_panel = 0;
   float version_bg = 0.84f;  // battle version background alpha
   bool bar_compact = false;  // folded compact mode is on (its marks go in the legend)
-  unsigned bar_colors[8] = {};  // the frame bar's state colors, IM_COL32 layout
+  unsigned bar_colors[11] = {};  // the frame bar's state colors, IM_COL32 layout
+  bool bar_knockdown = true;
   bool meters_under_damage = false;  // or right under the damage panel (each side under its own)
   bool damage_at_game = false;       // damage windows where the game draws its own panel
   // Appearance
@@ -132,7 +137,9 @@ struct MenuView {
   unsigned accent_rgb = 0xFF0000;  // 0xRRGGBB
   unsigned custom_rgb = 0xFF0000;
   float opacity = 0.94f;           // panel background alpha
-  float overlay_bg = 0.84f;        // meters (and damage panel) background alpha
+  float overlay_bg = 0.84f;        // meters background alpha
+  float damage_bg = 0.84f;         // damage panel background alpha
+  float note_bg = 0.84f;           // on-screen messages background alpha
   float bar_bg = 0.84f;            // frame bar background alpha
   int picker_seq = 0;              // changes when the custom color picker should open
   // Timeline window
@@ -163,7 +170,7 @@ struct MenuView {
 // Mouse actions from the ImGui menu, applied on the game thread in update().
 struct MenuClick {
   enum class Type { OpenNav, Row, SetChoice, Move, TensionWindow, CloseMenu,
-                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor, VersionWindow, TlSeek } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
+                    TlRewind, TlSetPoint, TlPlay, TlStep, TlRecord, TlShow, BarWindow, SetColor, VersionWindow, TlSeek, SetNumber } type;  // SetColor: a = 0xRRGGBB  // Move: a, b = center x, y ratio * 10000
   int a = 0;          // nav index or row index
   int b = 0;          // Row: 1 = right / activate, 0 = left; SetChoice: choice index
   int page = -1;      // Row / SetChoice in a popped-out window: that window's page
@@ -209,10 +216,12 @@ public:
   // Game thread, outside the mod's fights: the snapshot from the current settings, so
   // what the overlay shows there (online) follows them without a training fight first.
   void refreshView() { buildView(); }
+  void savePending(bool now = false);
   void click(const MenuClick& click);    // render thread: queue a mouse action
   void setPopped(unsigned mask);         // render thread: bit per MenuPage shown in its own window
   static std::filesystem::path dataDir(); // ue4ss folder (fonts, logo, config)
   static float uiScale(int which = 0);    // size setting: 0 menu, 1 meters, 2 frame bar, 3 timeline (any thread)
+  static float barTextScale();
   static std::string overlayFont();       // meters and frame bar font file in StriveLabs_fonts, "" = Barlow (any thread)
   bool barEnabled() const;
   bool inputBarEnabled() const;
@@ -229,6 +238,7 @@ public:
   int damagePanel() const;           // sides with the game's training damage panel in our windows: bit 1 = 1P, 2 = 2P
   bool hideGameDamagePanel() const;  // and the game's own one hidden
   bool countdown() const;     // frames of stun and recovery left, while both sides are stuck
+  bool markKnockdown() const;
   bool statusLineEnabled() const;
   float statusLineOpacity() const;  // black background behind the status line, 0..1
   float statusLineSize() const;     // status line text size, 1 = normal
@@ -237,8 +247,13 @@ public:
   bool delimEnabled() const;
   bool cancelEnabled() const;
   bool dashEnabled() const;
+  bool oldHurtboxes() const;
+  int oldRiscDamage() const;
+  bool editsKeepToday() const;
+  bool hudKeepsEditors() const;
   int pauseType() const;
   int delayAmount() const;
+  int inputDelay() const;
   double rewindDelaySeconds() const;
   double replayAssistSeconds() const;
   bool crossupEnabled() const;

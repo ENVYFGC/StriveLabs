@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <string>
 
 namespace perf {
 enum Bucket { REPLAY, MENU, PAUSE_MENU, TRIALS, DAMAGE, COLORS, BAR, GAME, HELD, HUD, BUCKETS };
@@ -11,6 +12,8 @@ void add(int bucket, double ms);
 void tickDone(double whole_ms, bool counted);
 void hudDone();
 void overlayFrame(double copy_ms, double draw_ms);
+double workingSetMb();
+void memoryTick(bool fight);
 
 inline double since(std::chrono::steady_clock::time_point t0)
 {

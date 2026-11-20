@@ -1,4 +1,5 @@
 #include "draw_utils.h"
+#include <chrono>
 
 namespace {
   constexpr double EXPECTED_DISP_RATIO = 16.0 / 9.0;
@@ -71,15 +72,25 @@ void DrawTool::updateRefs()
 }
 
 bool DrawTool::update(void *actual_hud) {
-  if (actual_hud != ref_hud)
+  if (matchStarted)
+  {
+    matchStarted = false;
+    valid = false;
+
+    ref_hud = (UObject *)actual_hud;
+    updateRefs();
+  }
+  else if (actual_hud != ref_hud)
   {
     valid = false;
-    
-    if (matchStarted)
+  }
+  else if (!valid)
+  {
+    static auto last_try = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_try > std::chrono::seconds(1))
     {
-      matchStarted = false;
-      
-      ref_hud = (UObject *)actual_hud;
+      last_try = now;
       updateRefs();
     }
   }

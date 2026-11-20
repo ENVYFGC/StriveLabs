@@ -165,6 +165,8 @@ void install() {
   COMBO_LOG(orig_ToRecFlag && g_abort ? "handshake: ready" : "handshake: not found, the online version stays off");
 }
 
+bool ready() { return orig_ToRecFlag && g_abort; }
+
 namespace {
   // Recolor sharing: our account goes out in round 1's intro (after the version pattern, if any), and the
   // opponent's is read when the round starts. Nothing is ever aborted. No pattern just means no sharing.

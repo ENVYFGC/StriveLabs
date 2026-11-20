@@ -10,6 +10,7 @@
 
 namespace handshake {
   void install();  // finds what it needs in the game; logs what's missing
+  bool ready();
   // Battle update, every frame, any mode (online fights aren't the mod's other modes).
   void update(void* game_state);
   // Every analyzer's input as the battle takes it (rollback re-simulation too).

@@ -348,7 +348,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     active.keep = static_cast<uint8_t>(keepFor(current_state.type, current_state.type));
 
     // ... and was long enough that we want trucated
-    if (previous_state.state_time > numberAfter()) {
+    if (previous_state.state_time > numberAfter() || previous_state.type == PST_Lying) {
       DEBUG_PRINT(STR("Last section requires truncating\n"));
       previous.trunc = previous_state.state_time;
     }
@@ -356,7 +356,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     // Stun again after some neutral frames that followed stun: a gap the side in stun
     // could have acted in.
     if (current_state.isStunned() && previous_state.type == PST_Idle &&
-        (pre_idle == PST_BlockStunned || pre_idle == PST_HitStunned)) {
+        (pre_idle == PST_BlockStunned || isHitLike(pre_idle))) {
       previous.gap = previous_state.state_time;
     }
 
@@ -367,7 +367,7 @@ void PlayerData::updateSegment(int prev_idx, int curr_idx) {
     const auto was = previous_state.type;
     const bool recovery_ran_out = was != PST_Recovering || previous_state.rec_left <= 0;
     if ((current_state.type == PST_Busy || current_state.type == PST_Attacking) && current_state.time <= 1 && !current_state.cut_short &&
-        recovery_ran_out && (was == PST_BlockStunned || was == PST_HitStunned || was == PST_Recovering)) {
+        recovery_ran_out && (was == PST_BlockStunned || isHitLike(was) || was == PST_Recovering)) {
       active.mods |= MT_Perfect;
     }
   } else {
@@ -467,8 +467,12 @@ PlayerState::PlayerState(asw_player &player, asw_player &opp, const PlayerState 
     type = PST_Idle;
   else if (block_stunned)
     type = PST_BlockStunned;
-  else if (hit_stunned || knockdown)
+  else if (ModMenu::instance().markKnockdown() && player.is_down_loop())
+    type = player.is_strike_invuln() ? PST_Knockdown : PST_Lying;
+  else if (hit_stunned || (knockdown && !ModMenu::instance().markKnockdown()))
     type = PST_HitStunned;
+  else if (knockdown)
+    type = player.is_strike_invuln() ? PST_Knockdown : PST_HitStunned;
   else if (player_active && last.active_stall)
     type = PST_Attacking;
   else if (projectile_active && last.active_stall)
@@ -553,9 +557,14 @@ void FrameBar::Data::drawFrame(const CurrentOptions& scheme, const FrameInfo &in
       tool.drawRect(left - BORDER_THICKNESS, top - BORDER_THICKNESS, SEG_WIDTH + 2 * BORDER_THICKNESS, SEG_HEIGHT + 2 * BORDER_THICKNESS, scheme.palette.background_color);
     }
     
-    auto color = scheme.palette.state_colors[info.state];
+    auto color = scheme.palette.state_colors[info.state == PST_Lying ? PST_HitStunned : info.state];
     if(scheme.show_fade) color = color * info.decay;
     tool.drawRect(left, top, SEG_WIDTH, SEG_HEIGHT, color);
+    if (info.state == PST_Lying) {
+      auto under = scheme.palette.state_colors[PST_Lying];
+      if(scheme.show_fade) under = under * info.decay;
+      tool.drawRect(left, top + SEG_HEIGHT - SEG_HEIGHT / 5, SEG_WIDTH, SEG_HEIGHT / 5, under);
+    }
 
     if(scheme.show_delim && info.mods & MT_SegmentEnd) {
       tool.drawRect(left + SEG_WIDTH, top - BORDER_THICKNESS, BORDER_THICKNESS, SEG_HEIGHT + 2 * BORDER_THICKNESS, color_white);
@@ -653,7 +662,7 @@ void FrameBar::Data::addFrame() {
     return;
   }
   // covers COUNTER HIT, this might cover all cases
-  else if ((next.first.time == data.first.current_state.time && next.first.time > 1 && (next.second.type == PST_HitStunned || next.second.type == PST_BlockStunned)) || (next.second.time == data.second.current_state.time && next.second.time > 1 && (next.first.type == PST_HitStunned || next.first.type == PST_BlockStunned))) {
+  else if ((next.first.time == data.first.current_state.time && next.first.time > 1 && (isHitLike(next.second.type) || next.second.type == PST_BlockStunned)) || (next.second.time == data.second.current_state.time && next.second.time > 1 && (isHitLike(next.first.type) || next.first.type == PST_BlockStunned))) {
     if constexpr (ENABLE_STATE_DEBUG) {
       RC::Output::send<LogLevel::Warning>(STR("STUN SKIP {} {} {} {}\n"), p_one.hitstop, p_one.atk_param_hit.hitstop, p_two.hitstop, p_two.hitstop);
     }
@@ -796,7 +805,9 @@ void FrameBar::Data::addFrame() {
     for (int p = 0; p < 2; p++) {
       PlayerData& me = *pd[p];
       const PlayerState& opp = pd[1 - p]->current_state;
-      const bool new_stun = opp.isStunned() && (opp.state_time == 1 || opp.stun > pd[1 - p]->previous_state.stun);
+      const PlayerState& opp_was = pd[1 - p]->previous_state;
+      const bool stun_began = opp.state_time == 1 && !(isHitLike(opp.type) && isHitLike(opp_was.type));
+      const bool new_stun = opp.isStunned() && (stun_began || opp.stun > opp_was.stun);
       if (me.previous_state.type == PST_Attacking && new_stun) {
         me.segments[prev_idx].mods |= MT_Connect;
         if (me.working_stats.hit_on == 0 && me.working_stats.actives.size() == 1) {
@@ -937,12 +948,18 @@ void FrameBar::Data::draw() {
         out.on = in.state != PST_None;
         out.frames = out.on ? in.frames : 0;
         if (!out.on) continue;
-        auto color = options.palette.state_colors[in.state];
+        auto color = options.palette.state_colors[in.state == PST_Lying ? PST_HitStunned : in.state];
         if (options.show_fade) color = color * static_cast<float>(in.decay);
         out.color = pack(color);
+        out.under = 0;
+        if (in.state == PST_Lying) {
+          auto under = options.palette.state_colors[PST_Lying];
+          if (options.show_fade) under = under * static_cast<float>(in.decay);
+          out.under = pack(under);
+        }
         out.mods = static_cast<unsigned char>(in.mods);
         out.free = in.state == PST_Idle || in.state == PST_Dash;
-        out.stun = in.state == PST_BlockStunned || in.state == PST_HitStunned;
+        out.stun = in.state == PST_BlockStunned || isHitLike(in.state);
         out.recovering = in.state == PST_Recovering;
         out.trunc = in.trunc;
         out.keep = in.keep;

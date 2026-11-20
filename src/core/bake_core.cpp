@@ -5,9 +5,12 @@
 #include <bcrypt.h>
 #include <zlib.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <set>
 
 #pragma comment(lib, "bcrypt")
 
@@ -633,6 +636,23 @@ namespace bake {
     }
   }
 
+  Bytes zlibPack(const Bytes& in) {
+    uLongf n = compressBound(static_cast<uLong>(in.size()));
+    Bytes out(n);
+    if (compress2(out.data(), &n, in.data(), static_cast<uLong>(in.size()), 6) != Z_OK) return {};
+    out.resize(n);
+    return out;
+  }
+
+  void tintDecal(std::vector<uint8_t>& rgba, float smax, const float rgb[3]) {
+    if (!(smax > 0.0f)) return;
+    for (size_t q = 0; q + 3 < rgba.size(); q += 4) {
+      uint8_t* c = &rgba[q];
+      const float st = 1.0f - static_cast<float>(c[0] + c[1] + c[2]) / 765.0f, k = std::clamp(st / smax, 0.0f, 1.0f);
+      for (int i = 0; i < 3; i++) c[i] = static_cast<uint8_t>(std::lround(255.0f - k * (255.0f - 255.0f * rgb[i])));
+    }
+  }
+
   std::string sha1hex(const Bytes& d) {
     uint8_t h[20] = {};
     sha1(d.data(), d.size(), h);
@@ -714,6 +734,177 @@ namespace bake {
       at = e.end;
       names.push_back(mount + n);
     }
+    return true;
+  }
+
+  bool readPak(const std::wstring& path, std::vector<PakFile>& files, std::string& why) {
+    files.clear();
+    Bytes b;
+    std::error_code size_ec;
+    const uintmax_t on_disk = std::filesystem::file_size(path, size_ec);
+    if (size_ec || on_disk > (uintmax_t{1} << 29)) { why = size_ec ? "can't read it" : "too large to be one of ours"; return false; }
+    uint64_t unpacked = 0;
+    if (!readAll(path, b) || b.size() < 222) { why = "can't read it"; return false; }
+    const uint8_t* f = b.data() + b.size() - 222;
+    if (f[16] != 0 || u32(f + 17) != kMagic || i32(f + 21) != 9) { why = "footer"; return false; }
+    const int64_t io = i64(f + 25), isz = i64(f + 33);
+    if (io < 0 || isz < 0 || static_cast<size_t>(io + isz) > b.size() - 222) { why = "index place"; return false; }
+    const uint8_t* idx = b.data() + io;
+    uint8_t h[20];
+    if (!sha1(idx, static_cast<size_t>(isz), h) || std::memcmp(h, f + 41, 20) != 0) { why = "index hash"; return false; }
+    size_t at = 0;
+    auto str = [&](std::string& s) {
+      if (at + 4 > static_cast<size_t>(isz)) return false;
+      const int32_t n = i32(idx + at);
+      at += 4;
+      if (n <= 0 || at + static_cast<size_t>(n) > static_cast<size_t>(isz)) return false;
+      s.assign(reinterpret_cast<const char*>(idx + at), static_cast<size_t>(n) - 1);
+      at += static_cast<size_t>(n);
+      return true;
+    };
+    std::string mount;
+    if (!str(mount) || mount != "../../../" || at + 4 > static_cast<size_t>(isz)) { why = "mount point"; return false; }
+    const int32_t count = i32(idx + at);
+    at += 4;
+    if (count < 0 || count > (1 << 16)) { why = "file count"; return false; }
+    for (int32_t i = 0; i < count; i++) {
+      PakFile pf;
+      Entry e;
+      if (!str(pf.name) || !readEntry(idx, at, static_cast<size_t>(isz), e)) { why = "index entry"; return false; }
+      at = e.end;
+      if (e.off < 0 || e.size < 0 || e.usize < 0 || e.comp > 1 || e.usize > (int64_t{1} << 30)) { why = "entry for " + pf.name; return false; }
+      unpacked += static_cast<uint64_t>(e.usize);
+      if (unpacked > (uint64_t{1} << 30)) { why = "too much data to be one of ours"; return false; }
+      Entry fh;
+      if (!readEntry(b.data(), static_cast<size_t>(e.off), static_cast<size_t>(io), fh)) { why = "entry header for " + pf.name; return false; }
+      const size_t hdr_len = fh.end - static_cast<size_t>(e.off);
+      if (static_cast<size_t>(e.off) + hdr_len + static_cast<size_t>(e.size) > static_cast<size_t>(io)) { why = "data place for " + pf.name; return false; }
+      const uint8_t* stored = b.data() + e.off + hdr_len;
+      if (!sha1(stored, static_cast<size_t>(e.size), h) || std::memcmp(h, e.hash, 20) != 0) { why = "hash of " + pf.name; return false; }
+      if (!e.comp) {
+        if (e.size != e.usize) { why = "size of " + pf.name; return false; }
+        pf.data.assign(stored, stored + e.size);
+      } else {
+        pf.data.resize(static_cast<size_t>(e.usize));
+        size_t out_at = 0;
+        for (const auto& [s, t] : e.blocks) {
+          if (s < static_cast<int64_t>(hdr_len) || t < s || static_cast<size_t>(t) > hdr_len + static_cast<size_t>(e.size) || out_at >= pf.data.size()) { why = "block of " + pf.name; return false; }
+          const size_t n = (std::min)(kBlock, pf.data.size() - out_at);
+          uLongf got = static_cast<uLongf>(n);
+          if (uncompress(pf.data.data() + out_at, &got, b.data() + e.off + s, static_cast<uLong>(t - s)) != Z_OK || got != n) { why = "unpacking " + pf.name; return false; }
+          out_at += n;
+        }
+        if (out_at != pf.data.size()) { why = "size of " + pf.name; return false; }
+      }
+      files.push_back(std::move(pf));
+    }
+    return true;
+  }
+
+  void shareLast(const std::vector<std::string>& manifest, std::vector<PakFile> files, const std::string& me, ShareLast& out) {
+    out = ShareLast{};
+    for (const std::string& l : manifest) {
+      const size_t t2 = l.size() > 6 ? l.find('\t', 6) : std::string::npos;
+      if (l.rfind("owner\t", 0) == 0 && t2 != std::string::npos) out.owner[l.substr(6, t2 - 6)] = l.substr(t2 + 1);
+      else if (l.rfind("moved\t", 0) == 0 && t2 != std::string::npos) out.moved.push_back({l.substr(6, t2 - 6), l.substr(t2 + 1)});
+      else if (l.rfind("baked\t", 0) == 0 && l.compare(6, me.size() + 2, me + ": ") != 0) out.baked.push_back(l.substr(6));
+    }
+    for (PakFile& f : files) {
+      auto o = out.owner.find(f.name);
+      if (o == out.owner.end()) continue;
+      if (o->second != me) out.carried.push_back(std::move(f));
+      else if (f.name.find("/SL_baked/") == std::string::npos) out.mine_before.push_back(std::move(f));
+    }
+  }
+
+  std::string shareOwner(const std::string& chr, const std::string& color, const std::string& only) {
+    return chr + "/" + color + (only.empty() ? std::string() : "#" + only);
+  }
+
+  std::vector<std::string> shareMine(const std::vector<std::string>& manifest, const std::string& me) {
+    std::vector<std::string> out;
+    for (const std::string& l : manifest) {
+      const size_t t2 = l.size() > 6 ? l.find('\t', 6) : std::string::npos;
+      if (l.rfind("owner\t", 0) != 0 || t2 == std::string::npos || l.compare(t2 + 1, std::string::npos, me) != 0) continue;
+      const std::string name = l.substr(6, t2 - 6);
+      if (name.find("/SL_baked/") == std::string::npos) out.push_back(name);
+    }
+    return out;
+  }
+
+  std::vector<std::string> shareOthers(const std::vector<std::string>& manifest, const std::string& me) {
+    std::vector<std::string> out;
+    for (const std::string& l : manifest) {
+      const size_t t2 = l.size() > 6 ? l.find('\t', 6) : std::string::npos;
+      if (l.rfind("owner\t", 0) != 0 || t2 == std::string::npos) continue;
+      const std::string o = l.substr(t2 + 1);
+      if (o != me && std::find(out.begin(), out.end(), o) == out.end()) out.push_back(o);
+    }
+    return out;
+  }
+
+  std::string newestPak(const std::vector<std::string>& stems, const std::string& stem) {
+    std::string best;
+    long long n = 0;
+    for (const std::string& s : stems) {
+      if (s.size() <= stem.size() + 1 || s.compare(0, stem.size() + 1, stem + "_") != 0) continue;
+      const std::string rest = s.substr(stem.size() + 1);
+      if (rest.size() > 12 || !std::all_of(rest.begin(), rest.end(), [](char c) { return c >= '0' && c <= '9'; })) continue;
+      if (const long long k = std::stoll(rest); k > n) { n = k; best = s; }
+    }
+    return best;
+  }
+
+  bool perColorPath(const std::string& pkg) {
+    for (size_t at = pkg.find("/Color"); at != std::string::npos; at = pkg.find("/Color", at + 1))
+      if (at + 9 <= pkg.size() && std::isdigit(static_cast<unsigned char>(pkg[at + 6])) && std::isdigit(static_cast<unsigned char>(pkg[at + 7])) && pkg[at + 8] == '/') return true;
+    return false;
+  }
+
+  std::string decalCache(const std::vector<std::string>& names, const std::string& color, const std::string& tex, bool worn_copy, bool per_color) {
+    const std::string own = "decal_" + color + "_" + tex + ".png";
+    if (std::find(names.begin(), names.end(), own) != names.end()) return own;
+    if (!worn_copy || per_color) return {};
+    std::vector<std::string> other;
+    const std::string tail = "_" + tex + ".png";
+    for (const std::string& n : names)
+      if (n.size() > tail.size() + 6 && n.rfind("decal_Color", 0) == 0 && n.compare(n.size() - tail.size(), std::string::npos, tail) == 0 &&
+          n.compare(6, n.size() - 6 - tail.size(), color) != 0 && n.find('.') == n.size() - 4 && n.find('_', 6) == n.size() - tail.size())
+        other.push_back(n);
+    std::sort(other.begin(), other.end());
+    return other.empty() ? std::string() : other.front();
+  }
+
+  bool shareNext(const std::string& me, const std::vector<PakFile>& mine, const std::vector<PakFile>& back, const ShareLast& last,
+                 const std::vector<std::string>& done, const std::vector<std::pair<std::string, std::string>>& moved, std::vector<PakFile>& files,
+                 std::vector<std::string>& manifest) {
+    files = mine;
+    manifest.clear();
+    std::set<std::string> w, have, owners;
+    for (const PakFile& f : mine) w.insert(f.name);
+    have = w;
+    bool any = !mine.empty();
+    for (const PakFile& b : back)
+      if (have.insert(b.name).second) { files.push_back(b); any = true; }
+    if (!any) { files.clear(); return false; }
+    for (const PakFile& f : last.carried) {
+      if (!have.insert(f.name).second) continue;
+      files.push_back(f);
+      if (auto o = last.owner.find(f.name); o != last.owner.end()) owners.insert(o->second);
+    }
+    for (const PakFile& f : files) {
+      if (w.count(f.name)) manifest.push_back("owner\t" + f.name + "\t" + me);
+      else if (auto o = last.owner.find(f.name); o != last.owner.end() && o->second != me) manifest.push_back("owner\t" + f.name + "\t" + o->second);
+    }
+    for (const std::string& d : done) manifest.push_back("baked\t" + me + ": " + d);
+    for (const std::string& b : last.baked) {
+      const size_t c = b.find(": ");
+      if (c != std::string::npos && owners.count(b.substr(0, c))) manifest.push_back("baked\t" + b);
+    }
+    auto uasset = [](const std::string& pkg) { return pkg.rfind("/Game/", 0) == 0 ? "RED/Content/" + pkg.substr(6) + ".uasset" : pkg; };
+    for (const auto& [from, to] : moved) manifest.push_back("moved\t" + from + "\t" + to);
+    for (const auto& [from, to] : last.moved)
+      if (have.count(uasset(to)) && !w.count(uasset(to))) manifest.push_back("moved\t" + from + "\t" + to);
     return true;
   }
 

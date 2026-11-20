@@ -14,7 +14,7 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 - Replay takeover, so you can jump into either side of a replay and play it out yourself. Replay Assist can start you a moment early, so you're already in the flow when control is handed to you.
 - Recordings. Save your training slots as .txt files you can edit, share and load back in, or record a player straight from a replay.
 - A timeline with rewind, pause, frame step and record. Experimental: jumping back and forth in a replay, a second at a time.
-- Combo Trials. Pick any combo you've saved or downloaded in Combo Maker and try it in training: it starts where the combo starts, and the game lights up each move as it lands. Training can also run on an older battle version.
+- Combo Trials. Pick any combo you've saved or downloaded in Combo Maker and try it: it starts the game's own Combo Recipe fight for that combo, with its opponent, its battle version and the game's step list and demo. Record a combo opens the game's Combo Maker recording on the battle version you picked. Training can also run on an older battle version.
 - Combo Search. Find Combo Maker combos online for your character, sorted and filtered, and download them straight into Combo Trials.
 - A damage panel window for P1, P2 or both, which can hide the game's own.
 - A color editor. Recolor any character's outfit, weapon and effects live in training, save named palettes, and bake your recolors into the game's files to see them in character select, versus and online.
@@ -22,6 +22,7 @@ It started as WistfulHopes' [GGST Frame Viewer + Replay Takeover 0.2.4](https://
 - Online version select (Ctrl+O). Pick the battle version for Park and room matches, so two players on StriveLabs can play an older version together.
 - A menu you can set up how you like. Move, resize, minimize and pop out any window, and pick your own colors and size. The line at the bottom says what the selected row does.
 - Copy diagnostics. One click copies what a bug report needs, with your file, folder and mod names left out.
+- Hide all HUD. One key takes the game's HUD and every StriveLabs window off the screen, for screenshots and clips.
 - Character select remembers your last character, color, stage and music after a restart.
 
 ## Installing
@@ -63,6 +64,14 @@ F5 opens the menu, or Back(select) + Start on a controller. Up and Down to move,
 
 You can rebind all of them on the Controls and Takeover pages. Keyboard, pad buttons, triggers and the left stick all work, and Backspace clears a bind. The buttons you play with during replay takeover are set on the Takeover page. Training Record, Training Playback and Training Reset Position (unbound by default) do the same as the game's own buttons, so you can put them on a key or a button combo. While you type in a text field, only the F keys still work as hotkeys.
 
+Hide all HUD is on the Controls page, unbound by default. It hides the game's HUD and every StriveLabs window, and pressing it again brings them back. With Editor panels while the HUD is hidden turned on (Appearance page), the color editor and Script & boxes stay usable on the clean screen. It does nothing in online matches.
+
+## Training
+
+The Training page has Input delay, 0 to 7 frames: your own inputs reach your fighter that many frames late. Slow motion slows the whole fight instead.
+
+Training runs on picks the battle version training runs on, from the next load. It lists the versions both characters were in. With Fighters with edits keep today's script on, a fighter with Script & boxes edits keeps today's script and boxes on an older version. The rules, the shared script and the other fighter stay on the old one. Rules from older versions brings back two things on today's version: the hurtboxes characters had when hit or blocking before 5.00, and the R.I.S.C. rules of 4.09 or 4.06.
+
 ## Replay takeover
 
 In a replay, F7 or F8 pauses on the current frame and asks before taking over. Press the same key again for yes, or Esc for no. On a pad, Right on the d-pad is yes and Left is no. Stopping asks the same way, and takes you back to your rewind point if you set one.
@@ -81,17 +90,27 @@ Experimental: with Run on replay startup on, the Timeline opens in every replay 
 
 In training, press Ctrl+Alt+E with the character and color you want to recolor. The fight pauses and the camera is yours. The buttons at the top are the parts of the outfit (Body, Weapon, DI and so on). Regions lists the part's colors: the left swatch is the lit color, the right one is the shadow. Material colors covers outlines and glows, and Effects covers the fire and the other effects. Save with Ctrl+S.
 
-Your recolor shows in training as you make it. To see it everywhere else (character select, versus, replays and online, where only you see it), bake it: see Baking below. Palettes save a recolor with a title, your name as the author, and a note. A palette keeps exactly how it looked, so it looks the same when someone else loads it, even with a skin mod. Parts you didn't recolor are left alone. Effects you recolor with Capture effects, and decal line colors, stay training-only.
+Your recolor shows in training as you make it. To see it everywhere else (character select, versus, replays and online, where only you see it), bake it: see Baking below. Palettes save a recolor with a title, your name as the author, and a note. A palette keeps exactly how it looked, so it looks the same when someone else loads it, even with a skin mod. Parts you didn't recolor are left alone.
 
 Your work is kept in `RED/Binaries/Win64/ue4ss/StriveLabs_colors/` (on Xbox, `Content/RED/Binaries/WinGDK/ue4ss/StriveLabs_colors/`). Saves are in `saved/`, palettes and exports in `recolors/`. A palette you delete or replace, and the recolor a Load or Reset replaces, go to `recolors/palettes/<character>/.trash`.
 
+Material colors, Material numbers and Material pictures list every color, number and picture of the part's materials, each with the material it belongs to. A picture can be swapped for another color's picture or for a PNG of your own (From a PNG file...). Picking on the fighter finds the part by itself, and What draws this tells you which material draws the spot you clicked. Weapon skins are parts of their own, and so is Giovanna's Powered up look.
+
+Axl's second costume hair gradient, Dizzy's second costume pattern and Unika's Thunderseal have no tab and can't be recolored yet.
+
 ## Baking
 
-The color editor's Bake tab writes a slot's saved recolor into the game's own files, so it shows everywhere, with nothing put on during fights. Bake this slot bakes the slot you're editing; Bake saved slots... lists every saved recolor with what it holds and only bakes the ones you tick. Reload instance (back to the main menu and in again) to see it. Unbake puts the game's colors back. Bakes are compressed paks in `StriveLabs_colors/baked/`; the game's own files are never changed. Bake again after changing a recolor and after a game update (bakes made before an update are left off until then). Recolor sharing is turned off.
+The color editor's Bake tab writes a slot's saved recolor into the game's own files, so it shows everywhere, with nothing put on during fights. Bake this slot bakes the slot you're editing; Bake saved slots... lists every saved recolor with what it holds and only bakes the ones you tick. Reload instance (back to the main menu and in again) to see it. Unbake puts the game's colors back. Bakes are compressed paks in `StriveLabs_colors/baked/`; the game's own files are never changed. Bake again after changing a recolor and after a game update (bakes made before an update are left off until then). Files shared by all of a character's colors go into their own All colors pak, with its own Unbake. Recolor sharing is turned off.
 
 ## Script & boxes
 
 Press Ctrl+Alt+B in training. It shows each fighter's move, sprite, hitboxes and the move's script as it plays. With Hitboxes on, boxes can be picked, resized and moved on the fighter, or edited by their numbers. Script values can be changed live: startup, active and recovery, each hit's attack level, and any line's numbers (hover a name for what it does). Number fields have up and down arrows, with Ctrl for steps of 10, and Reset line puts a line back the way the game has it. Replace with... turns a line into another instruction of the same size, Version loads the move as it was in an older battle version, and From file... loads it from a `.bbs` text file you can add lines to (Export move writes one to start from). Search finds lines, and Save edits... / Load edits... keep everything you changed. Right-click a move to give it your own label: labels are kept in `StriveLabs_scripts/move_labels.txt` and the game's script isn't changed. Edits only apply in training: they're put back before any other fight, online included.
+
+Undo, Redo and History cover everything you change: boxes, lines and loaded files. Insert after..., Duplicate line, Remove line and Paste lines add and take away lines, with a preview on hover, and Copy lines as text copies them out. Names in a line can be edited too. Open routine, or a double-click on a call line, opens the routine it calls.
+
+The list has one dropdown: Moves, Routines, Objects, Shared, Shared objects, Favourites and Recent. Objects are the fighter's projectiles and effects, and they can be edited without spawning them. Shared routines and Shared objects come from the common script every character uses: changing a shared routine makes your own copy for both fighters, and Put the game's routine back undoes it. On a createObject line, its lines lists the object's own lines under it.
+
+From file... also takes a `.bbs` that holds many moves or routines, and Reload file reloads everything loaded from a file. Export pak writes the character's edited script as a pak in `StriveLabs_scripts/export/<character>/`.
 
 ## Online version select
 

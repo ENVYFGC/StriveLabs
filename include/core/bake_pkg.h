@@ -33,10 +33,11 @@ namespace bake {
     // The package again, with its names as they are now, `newUexp` and the exports' new sizes
     bool build(const Bytes& newUexp, const std::vector<int64_t>& sizes, Bytes& outA, Bytes& outE, std::string& why) const;
     bool build(Bytes& outA, Bytes& outE, std::string& why) const;
+    bool addImport(const std::string& pkg, size_t exp, Bytes& outA, Bytes& outE, int32_t& object, std::string& why) const;
 
    private:
-    int32_t total_ = 0, name_off_ = 0, names_end_ = 0, export_off_ = 0, import_off_ = 0;
-    size_t p_total_ = 0, p_names_ = 0, p_bulk_ = 0, p_gens_ = 0;
+    int32_t total_ = 0, name_off_ = 0, names_end_ = 0, export_off_ = 0, import_off_ = 0, preload_off_ = 0;
+    size_t p_total_ = 0, p_names_ = 0, p_bulk_ = 0, p_gens_ = 0, p_imports_ = 0, p_preload_ = 0;
     int32_t gens_ = 0;
     std::vector<std::pair<size_t, int32_t>> offsets_;  // (summary offsets past the name map: where, value)
   };
@@ -68,7 +69,12 @@ namespace bake {
   // ---- the edits baking makes (each returns the new .uasset/.uexp) ----
   // A vector parameter on a material instance: overwritten if it has it, else added (zero GUID unless given)
   bool setVector(Package& mic, const std::string& param, const float rgba[4], const uint8_t guid[16], Bytes& outA, Bytes& outE,
-                 bool& added, std::string& why);
+                 bool& added, std::string& why, const Prop* model = nullptr);
+  bool numberListOf(Package& mic, Prop& out, std::string& why);
+  bool setScalar(Package& mic, const std::string& param, float value, Bytes& outA, Bytes& outE, bool& added, std::string& why, const Prop* model = nullptr);
+  bool textureListOf(Package& mic, Prop& out, std::string& why);
+  bool setTextureParam(Package& mic, const std::string& param, const std::string& texture, Bytes& outA, Bytes& outE, std::string& how, std::string& why,
+                       const Prop* model = nullptr);
   // The material's import of package `oldPath` pointing at `newPath` (same object name inside)
   bool repoint(Package& mic, const std::string& oldPath, const std::string& newPath, Bytes& outA, Bytes& outE, std::string& why);
   // A texture package copied to `newPath` (same object name): its own path is its one name entry
@@ -77,6 +83,21 @@ namespace bake {
   // and MaxValueVec put in rgb's ratio, each keeping its total, exactly as the editor does to the loaded asset
   bool setEffectColor(Package& ptc, const std::string& label, const float rgb[3], Bytes& outA, Bytes& outE, std::string& why);
   std::vector<float> ratioed(const std::vector<float>& orig, const float rgb[3]);
+
+  bool importsPackage(const Package& p, const std::string& pkg);
+  bool parentPackage(Package& mic, std::string& out, std::string& why);
+  bool vectorValue(Package& mic, const std::string& param, float out[4]);
+
+  struct ColorModule {
+    int emitter = -1, module = -1;
+    size_t exp = 0;
+    std::string cls, prop, byName;
+    std::vector<float> values;
+    bool fed = false;
+  };
+  bool colorModules(Package& ps, std::vector<ColorModule>& out, std::string& why);
+  bool effectColorValues(Package& ptc, std::vector<std::pair<std::string, std::vector<float>>>& out, std::string& why);
+  bool setModuleValues(Package& ps, const ColorModule& m, const std::vector<float>& values, Bytes& outA, Bytes& outE, std::string& why);
   // Parses the result again and writes it back unchanged: it must come out byte for byte
   bool verifyPackage(const Bytes& a, const Bytes& e, std::string& why);
 }

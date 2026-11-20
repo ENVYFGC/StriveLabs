@@ -11,6 +11,7 @@
 #include "game_state.h"
 #include "timeline.h"
 #include "menu.h"
+#include "input_delay.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -1216,10 +1217,10 @@ public:
     void seekGuard()
     {
         if (!seekCatching) return;
-        keybindings->resetButton(keybindings->TOGGLE_SAVE_BUTTON);
-        keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
-        keybindings->resetButton(keybindings->TAKEOVER_P1_BUTTON);
-        keybindings->resetButton(keybindings->TAKEOVER_P2_BUTTON);
+        keybindings->resetAction(binds::SAVE);
+        keybindings->resetAction(binds::LOAD);
+        keybindings->resetAction(binds::TAKEOVER_P1);
+        keybindings->resetAction(binds::TAKEOVER_P2);
         loadState = false;
         rewindRequested = false;
         if (analyzer || !gameState->roundActive || !gameState->checkModeReplay()) seekFinish("stopped, the round or the replay changed");
@@ -1665,16 +1666,16 @@ public:
         // replay it re-snapshotted all six read heads and reset takeover state
         // on that same timer.
 
-        if (keybindings->getButtonState(keybindings->TOGGLE_SAVE_BUTTON))
+        if (keybindings->actionState(binds::SAVE))
         {
-            keybindings->resetButton(keybindings->TOGGLE_SAVE_BUTTON);
+            keybindings->resetAction(binds::SAVE);
             placeRewindPoint();
         }
 
         if (loadState || (!gameState->checkModeReplay()
-            && keybindings->getButtonState(keybindings->TOGGLE_LOAD_BUTTON)))
+            && keybindings->actionState(binds::LOAD)))
         {
-            keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
+            keybindings->resetAction(binds::LOAD);
             if (trial != Trial::Off)
             {
                 COMBO_LOG("catch-up test: stopped, a rewind came in");
@@ -1707,6 +1708,7 @@ public:
                 if (otherStage && !rewindCanPutBack())
                     COMBO_LOG("load: the stage changed since the rewind point (a wall break), it can look wrong until the round ends");
                 diverged = pointDiverged;
+                input_delay::forget_wanted = true;
                 // Our own jump back: keep the ring, only restart its spacing from here.
                 ringLast = replayPosition();
                 haveRingLast = gameState->checkModeReplay();
@@ -1740,21 +1742,21 @@ public:
         seekGuard();
         if (seekCatching) return;
 
-        if (keybindings->getButtonState(keybindings->TOGGLE_SAVE_BUTTON))
+        if (keybindings->actionState(binds::SAVE))
         {
-            keybindings->resetButton(keybindings->TOGGLE_SAVE_BUTTON);
+            keybindings->resetAction(binds::SAVE);
             placeRewindPoint();
         }
 
-        if (keybindings->getButtonState(keybindings->TAKEOVER_P1_BUTTON))
+        if (keybindings->actionState(binds::TAKEOVER_P1))
         {
-            keybindings->resetButton(keybindings->TAKEOVER_P1_BUTTON);
+            keybindings->resetAction(binds::TAKEOVER_P1);
             takeoverKey(&asw_engine::get()->inputs[0]);
         }
 
-        if (keybindings->getButtonState(keybindings->TAKEOVER_P2_BUTTON))
+        if (keybindings->actionState(binds::TAKEOVER_P2))
         {
-            keybindings->resetButton(keybindings->TAKEOVER_P2_BUTTON);
+            keybindings->resetAction(binds::TAKEOVER_P2);
             takeoverKey(&asw_engine::get()->inputs[3]);
         }
 
@@ -1769,9 +1771,9 @@ public:
         }
         if (promptSide && BindWatcherI::takeEscape()) closePrompt("no");
 
-        if (keybindings->getButtonState(keybindings->TOGGLE_LOAD_BUTTON))
+        if (keybindings->actionState(binds::LOAD))
         {
-            keybindings->resetButton(keybindings->TOGGLE_LOAD_BUTTON);
+            keybindings->resetAction(binds::LOAD);
             if (promptSide) closePrompt("F9");
             if (isTakeover)
             {
@@ -2050,12 +2052,15 @@ public:
                 const uintptr_t hit = sigscan::get().scan(
                     "\xE8\x00\x00\x00\x00\x84\xC0\x75\x00\xE8\x00\x00\x00\x00\x84\xC0\x75\x00\x48\x8B\xCF\x48\x8D\x14\x5B\x48\x03\x0D\x00\x00\x00\x00\x0F\xB6\x8C\xD1",
                     "x????xxx?x????xxx?xxxxxxxxxx????xxxx");
-                const uintptr_t fn = *reinterpret_cast<uint32_t*>(hit + 0x1) + hit + 0x5;
-                orig_BattleKeyCheck = fn;
-                // Decode the first instruction's RIP-relative disp32 to reach is_battle.
-                auto p = reinterpret_cast<uint8_t*>(
-                    *reinterpret_cast<int32_t*>(fn + 0x3) + fn + 0x7);
-                candidates.push_back({"sigscan(nov)", p});
+                const uintptr_t fn = *reinterpret_cast<int32_t*>(hit + 0x1) + hit + 0x5;
+                if (is_ptr_in_game_module(reinterpret_cast<const void*>(fn)) && is_ptr_in_game_module(reinterpret_cast<const void*>(fn + 0x6)))
+                {
+                    orig_BattleKeyCheck = fn;
+                    // Decode the first instruction's RIP-relative disp32 to reach is_battle.
+                    auto p = reinterpret_cast<uint8_t*>(
+                        *reinterpret_cast<int32_t*>(fn + 0x3) + fn + 0x7);
+                    candidates.push_back({"sigscan(nov)", p});
+                }
             } catch (...) {
                 orig_BattleKeyCheck = 0;
             }
@@ -2071,6 +2076,9 @@ public:
             for (const auto& c : candidates) {
                 if (!c.ptr) continue;
                 if (!is_ptr_in_game_module(c.ptr)) continue;
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (!VirtualQuery(c.ptr, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+                    || !(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
                 // Validate by READ only — never write until we've picked a winner.
                 // A real boolean flag will be 0 or 1; anything else means the
                 // address lands in .text/.rdata or an unrelated data byte.

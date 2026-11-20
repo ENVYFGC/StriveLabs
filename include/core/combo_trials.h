@@ -4,6 +4,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@ namespace combo_trials {
     bool older = false;       // made on an older patch than the newest combo saved
     unsigned number = 0;      // Combo Maker number (0 for your own unsent ones)
     std::wstring creator, title;
+    int opponent = -1;
   };
 
   void init(const std::filesystem::path& dir);  // finds what it needs in the game; logs what's missing
@@ -23,9 +25,14 @@ namespace combo_trials {
   // Puts the combo into training's Combo Recipe and its start settings (position,
   // side, range, gauges...) into training, then asks for a position reset. Your own
   // settings are kept aside (also in a file) until stop(). Empty on success, else why not.
-  std::wstring load(const Entry& e);
-  // The same for a combo block held in memory (a Combo Maker download not kept).
-  std::wstring loadData(const void* block, size_t size);
+  std::wstring start(const Entry& e, bool& reloading);
+  std::wstring record(int& version);
+  bool recording();
+  std::wstring startData(const void* block, size_t size, bool& reloading);
+  bool startPending();
+  bool stockFight();
+  bool nativeFight();
+  void nativeTick();
   // Ends the trial: clears the recipe and puts your training settings back.
   void stop();
   bool active();
@@ -53,6 +60,18 @@ namespace combo_trials {
   // Battle version for training, as the game counts them (39 = 5.03), 0 = the
   // current one. Takes effect the next time training loads; both sides get it.
   void setTrainingVersion(int version);
+  void setOldRiscDamage(int mode);
+  bool oldRiscRules();
+  void setKeepToday(bool on);
+  bool keepTodayOn();
+  bool trainingOld();
+  bool runsToday(const std::string& chr);
+  void setEditedChars(const std::vector<std::string>& chars);
+  std::vector<std::string> takeServedToday();
+  std::map<std::string, int> filesThisLoad();
+  unsigned loadNumber();
+  bool fileNamesSeen();
+  bool trainingMode();
   int trainingVersion();
   // Game thread, in a battle: the battle version it runs on, as the game counts them
   // (an older one in replays, Combo Maker, or training on a picked one). 0 if unknown.
@@ -78,6 +97,7 @@ namespace combo_trials {
   int gameModeNow();
   int localSide();            // our side in the fight, 0 = P1
   bool onlineFight();         // the game's mode is the online one (Park, rooms; ranked to be confirmed)
+  std::string charaCode(int chara);
   int opponentChara();        // the other side's character, -1 if none
   // Game thread, every system update: any fight running (online ones too).
   void updateOnline(bool any_battle_running);

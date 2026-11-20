@@ -8,6 +8,8 @@
 #include "box_editor.h"
 #include "recolor_share.h"
 #include "update_check.h"
+#include "hud_hide.h"
+#include "tex_upload.h"
 #include <random>
 #include <tuple>
 
@@ -38,6 +40,7 @@
 #include "backends/imgui_impl_win32.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+namespace crash_log { void closing(); }
 
 bool modScreenActive();  // dllmain.cpp
 bool onlineVersionScreen();  // dllmain.cpp
@@ -84,7 +87,8 @@ namespace {
 
   // Mouse and keyboard go to ImGui only while the F5 menu is open.
   LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (g_running && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
+    if (msg == WM_CLOSE || msg == WM_DESTROY) { crash_log::closing(); ModMenu::instance().savePending(true); }
+    if (g_running && (!hud_hide::hidden() || (hud_hide::editors() && (recolor_test::isOpen() || box_editor::isOpen())) || recolor_test::soloCamera()) && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
                       (!modScreenActive() && menu_ui::g_online_picker))) {
       {
         std::lock_guard<std::recursive_mutex> in(g_input_mutex);
@@ -175,7 +179,13 @@ namespace {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     // Window positions (popped pages, tension window) are kept in the ue4ss folder.
-    static const std::string ini = (ModMenu::dataDir() / "StriveLabs_windows.ini").string();
+    static const std::string ini = [] {
+      const std::wstring w = (ModMenu::dataDir() / "StriveLabs_windows.ini").wstring();
+      const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+      std::string u(static_cast<size_t>(n > 0 ? n : 0), '\0');
+      if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), u.data(), n, nullptr, nullptr);
+      return u;
+    }();
     io.IniFilename = ini.c_str();
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
@@ -399,12 +409,37 @@ namespace {
     recolor_test::scanResult(id, w * 2, h * 2, out);
   }
 
+  void probe_capture(IDXGISwapChain* swap) {
+    static int seen_id = -1, seen_frame = -1, presents = 0;
+    static std::vector<uint8_t> buf;
+    int id = 0, frame = 0;
+    float x = 0, y = 0;
+    if (!recolor_test::probeWanted(id, frame, x, y)) return;
+    if (id != seen_id || frame != seen_frame) { seen_id = id; seen_frame = frame; presents = 0; }
+    if (++presents < 4) return;
+    int w = 0, h = 0;
+    std::string why;
+    const int got = grab_frame(swap, buf, w, h, 2, why);
+    if (got < 0) { recolor_test::probeFailed(id, why); return; }
+    if (got == 0) return;
+    if (w < 5 || h < 5 || buf.size() < static_cast<size_t>(w) * h * 3) { recolor_test::probeFailed(id, "the picture is too small."); return; }
+    const int cx = (std::min)((std::max)(static_cast<int>(x * w), 2), w - 3), cy = (std::min)((std::max)(static_cast<int>(y * h), 2), h - 3);
+    uint8_t px[75] = {};
+    int k = 0;
+    for (int dy = -2; dy <= 2; dy++)
+      for (int dx = -2; dx <= 2; dx++, k++) std::memcpy(px + k * 3, &buf[(static_cast<size_t>(cy + dy) * w + (cx + dx)) * 3], 3);
+    recolor_test::probeGrabbed(id, frame, px);
+  }
   bool is_unreal_window(IDXGISwapChain* swap) {  // the game's own window (not a splash, movie or overlay one)
     DXGI_SWAP_CHAIN_DESC desc{};
     wchar_t cls[32] = {};
     return SUCCEEDED(swap->GetDesc(&desc)) && desc.OutputWindow && GetClassNameW(desc.OutputWindow, cls, 32) && wcscmp(cls, L"UnrealWindow") == 0;
   }
   HRESULT __stdcall hook_present(IDXGISwapChain* swap, UINT sync, UINT flags) {
+    if (g_running && g_device && g_context && is_game_window(swap)) {
+      std::unique_lock<std::mutex> up(g_frame_mutex, std::try_to_lock);
+      if (up.owns_lock()) tex_upload::frame(g_device, g_context);
+    }
     if (!(modScreenActive() || onlineVersionScreen() || menu_ui::g_online_picker)) return g_present(swap, sync, flags);  // Nothing to draw, so present the game's frame as it is
     if (!g_running && !g_init_failed && (is_unreal_window(swap) || ++g_other_presents > 300)) {  // Set up when first needed, on the game's own window
       std::lock_guard<std::mutex> once(g_frame_mutex);  // two threads must not both set up
@@ -426,6 +461,7 @@ namespace {
       bool rebuild = ModMenu::overlayFont() != menu_ui::loaded_font;
       for (int e = 0; e < menu_ui::E_COUNT; e++)
         rebuild |= std::fabs(ModMenu::uiScale(e) - menu_ui::loaded_scales[e]) > 0.001f;
+      rebuild |= std::fabs(ModMenu::barTextScale() - menu_ui::loaded_bar_text) > 0.001f;
       if (rebuild) {
         ImGui_ImplDX11_InvalidateDeviceObjects();
         ImGui::GetIO().Fonts->Clear();
@@ -434,12 +470,19 @@ namespace {
         menu_ui::load_fonts(static_cast<float>(desc.BufferDesc.Height));
         ImGui_ImplDX11_CreateDeviceObjects();
       }
+      const bool hud_hidden = hud_hide::hidden();
       if (is_game_window(swap)) {  // Before our overlay draws
         DXGI_SWAP_CHAIN_DESC desc{};
         swap->GetDesc(&desc);
-        if (ImGui::GetIO().WantTextInput) menu_ui::g_typing_ms = GetTickCount64();
-        recolor_test::overlayFrame(ImGui::GetIO().WantTextInput, static_cast<int>(desc.BufferDesc.Width), static_cast<int>(desc.BufferDesc.Height));
+        const bool text_input = (!hud_hidden || hud_hide::editors()) && ImGui::GetIO().WantTextInput;
+        if (text_input) menu_ui::g_typing_ms = GetTickCount64();
+        recolor_test::overlayFrame(text_input, static_cast<int>(desc.BufferDesc.Width), static_cast<int>(desc.BufferDesc.Height));
         scan_capture(swap);
+        probe_capture(swap);
+      }
+      if (hud_hidden && !hud_hide::editors() && !recolor_test::soloCamera()) {
+        frame.unlock();
+        return g_present(swap, sync, flags);
       }
       {
         std::lock_guard<std::recursive_mutex> in(g_input_mutex);
@@ -447,8 +490,8 @@ namespace {
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
       }
-      ImGui::GetIO().MouseDrawCursor = (modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
-                                       (!modScreenActive() && menu_ui::g_online_picker);
+      ImGui::GetIO().MouseDrawCursor = (!hud_hidden || (hud_hide::editors() && (recolor_test::isOpen() || box_editor::isOpen()))) && ((modScreenActive() && (ModMenu::instance().isShowing() || menu_ui::g_timeline_visible || recolor_test::isOpen() || box_editor::isOpen() || recolor_test::soloCamera())) ||
+                                       (!modScreenActive() && menu_ui::g_online_picker));
       draw_ui();
       ImGui::Render();
       g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
@@ -492,6 +535,10 @@ namespace imgui_overlay {
   bool onlinePickerOpen() { return menu_ui::g_online_picker; }
   bool typing() { return GetTickCount64() - menu_ui::g_typing_ms.load() < 250; }
   void noteOnlineKey() { menu_ui::g_online_note_ms = GetTickCount64(); }
+  void note(const std::string& text) {
+    { std::lock_guard<std::mutex> lk(menu_ui::g_note_m); menu_ui::g_note = text; }
+    menu_ui::g_note_ms = GetTickCount64();
+  }
   int takeOnlinePickStep() { return menu_ui::g_online_pick_step.exchange(0); }
 
   void setBattleVersion(const std::string& name) {

@@ -18,9 +18,14 @@ enum PlayerStateType {
   PST_ProjectileAttacking,
   PST_Recovering,
   PST_Dash,
+  PST_Knockdown,
+  PST_Otg,
+  PST_Lying,
   PST_None,
   PST_End
 };
+
+inline bool isHitLike(PlayerStateType t) { return t == PST_HitStunned || t == PST_Knockdown || t == PST_Otg || t == PST_Lying; }
 
 enum ModifierType {
   MT_None = 0x0,
@@ -92,7 +97,7 @@ public:
   PlayerState() = default;
   PlayerState(asw_player &curr_player, asw_player &opp_player, const PlayerState &last, bool combo_active, bool show_crossup);
 
-  bool isStunned() const { return type == PST_HitStunned || type == PST_BlockStunned; }
+  bool isStunned() const { return isHitLike(type) || type == PST_BlockStunned; }
   bool anyProjectiles() const { return (type == PST_ProjectileAttacking) || any_prjt; }
 };
 

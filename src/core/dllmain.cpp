@@ -11,7 +11,7 @@
 namespace crash_log { void install(const std::filesystem::path& dir); }
 namespace select_memory { void init(const std::filesystem::path& dir); void save(); }
 namespace recolor_test { void init(const std::filesystem::path& dir); void update(bool round_started); void afterBattleUpdate(); void battleGone(); void menuUpdate(bool in_fight); void menuRelease(); bool isOpen(); bool holdsFight(); bool setupRunning();
-                         void toggleCamera(); bool soloCamera(); void soloCameraOff(); void toggle(); void outsideTraining(); }
+                         void toggleCamera(); bool gameCameraPov(float out[7], const void** manager = nullptr); void gameCameraPutBack(); bool soloCamera(); void soloCameraOff(); void replayCamera(); void toggle(); void outsideTraining(); }
 #include "box_editor.h"
 #include "menu.h"
 #include "recordings.h"
@@ -29,6 +29,9 @@ namespace recolor_test { void init(const std::filesystem::path& dir); void updat
 #include "recolor_share.h"
 #include "combo_online.h"
 #include "perf_log.h"
+#include "input_delay.h"
+#include "hud_hide.h"
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -47,6 +50,7 @@ using namespace std::chrono_literals;
 
 #define WIN32_LEAN_AND_MEAN
 #include "Windows.h"
+#include <psapi.h>
 #include <Xinput.h>
 #pragma comment(lib, "xinput9_1_0.lib")
 
@@ -60,7 +64,6 @@ class BattleReplayManager;
 
 // Functions
 using funcAHUDPostRender_t = void (*)(void*);
-using funcACamUpdateCamera_t = void (*)(void*, float);
 using funcMatchStart_t = void (*)(AREDGameState_Battle*);
 using funcUpdateBattle_t = void (*)(AREDGameState_Battle*, float);
 using funcUpdateBattleInput_t = void (*)(asw_inputs*, RECFLG_ENUM);
@@ -70,7 +73,6 @@ using funcUpdateOnPreTick_t = void (*)(AREDGameState_Battle*, float);
 
 // Hooks
 void hook_AHUDPostRender(void*);
-void hook_ACamUpdateCamera(void*, float);
 void hook_MatchStart(AREDGameState_Battle*);
 void hook_UpdateBattle(AREDGameState_Battle*, float);
 
@@ -90,13 +92,15 @@ const void* vtable_hook(const void** vtable, const int index, const void* hook)
 
 // Functions
 funcAHUDPostRender_t orig_AHUDPostRender;
-funcACamUpdateCamera_t orig_ACamUpdateCamera;
 funcMatchStart_t orig_MatchStart;
 funcUpdateBattle_t orig_UpdateBattle;
 funcUpdateBattleInput_t orig_UpdateBattleInput;
 funcUpdateSystem_t orig_UpdateSystem;
 funcUpdateReplay_t orig_UpdateReplay;
 funcUpdateOnPreTick_t orig_UpdateOnPreTick;
+
+static std::atomic<bool> g_mod_ready{false};
+static bool modReady() { return g_mod_ready.load(std::memory_order_acquire); }
 
 // State Data
 UE4SSProgram* Program;
@@ -168,16 +172,20 @@ public:
 
     void updateBinds()
     {
-        if (keybindings.getButtonState(keybindings.PAUSE_BUTTON))
+        const bool in_editor = !isPaused && game_state.checkModeTraining() &&
+                               (recolor_test::isOpen() || box_editor::isOpen() || Timeline::instance().isPaused());
+        if (keybindings.actionState(binds::PAUSE))
         {
-            keybindings.resetButton(keybindings.PAUSE_BUTTON);
-            isPaused = !isPaused;
+            keybindings.resetAction(binds::PAUSE);
+            if (in_editor) ModMenu::instance().click(MenuClick{MenuClick::Type::TlPlay});
+            else isPaused = !isPaused;
         }
 
-        if (keybindings.getButtonState(keybindings.ADVANCE_BUTTON))
+        if (keybindings.actionState(binds::ADVANCE))
         {
-            keybindings.resetButton(keybindings.ADVANCE_BUTTON);
-            shouldAdvance = true;
+            keybindings.resetAction(binds::ADVANCE);
+            if (in_editor) ModMenu::instance().click(MenuClick{MenuClick::Type::TlStep});
+            else shouldAdvance = true;
         }
     }
 
@@ -237,10 +245,6 @@ class UeTracker
         const auto** AHUD_vtable = (const void**)get_rip_relative(
             sigscan::get().scan("\x48\x8D\x05\x00\x00\x00\x00\xC6\x83\x18\x03", "xxx????xxxx") + 3);
         orig_AHUDPostRender = (funcAHUDPostRender_t)vtable_hook(AHUD_vtable, 214, hook_AHUDPostRender);
-
-        const auto** ACamera_vtable = (const void**)get_rip_relative(
-            sigscan::get().scan("\x48\x8D\x05\x00\x00\x00\x00\x48\x89\x07\x48\x8D\x8F\x00\x00\x00\x00\xC7\x87\x00\x00\x00\x00\xFF\xFF\xFF\xFF", "xxx????xxxxxx????xx????xxxx") + 3);
-        orig_ACamUpdateCamera = (funcACamUpdateCamera_t)vtable_hook(ACamera_vtable, 208, hook_ACamUpdateCamera);
     }
 
     void findProp()
@@ -290,6 +294,60 @@ void add(int bucket, double ms)
 }
 
 void hudDone() { g_huds++; }
+
+namespace {
+    struct Mem { double ws = 0, priv = 0, peak = 0; bool ok = false; };
+    Mem memRead()
+    {
+        Mem m;
+        PROCESS_MEMORY_COUNTERS_EX c{};
+        c.cb = sizeof(c);
+        if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&c), sizeof(c))) return m;
+        m.ws = static_cast<double>(c.WorkingSetSize) / 1048576.0;
+        m.priv = static_cast<double>(c.PrivateUsage) / 1048576.0;
+        m.peak = static_cast<double>(c.PeakWorkingSetSize) / 1048576.0;
+        m.ok = true;
+        return m;
+    }
+    std::string memText(const Mem& m)
+    {
+        char b[120];
+        snprintf(b, sizeof(b), "working set %.0f MB, private %.0f MB, peak working set %.0f MB", m.ws, m.priv, m.peak);
+        return b;
+    }
+}
+
+double workingSetMb()
+{
+    const Mem m = memRead();
+    return m.ok ? m.ws : -1.0;
+}
+
+void memoryTick(bool fight)
+{
+    static ULONGLONG checked = 0, logged_at = 0;
+    static double logged = -1.0;
+    static bool was_fight = false;
+    const ULONGLONG now = GetTickCount64();
+    const bool started = fight && !was_fight;
+    was_fight = fight;
+    if (!started && now - checked < 5000) return;
+    checked = now;
+    const Mem m = memRead();
+    if (!m.ok) return;
+    char b[220];
+    if (logged < 0)
+        snprintf(b, sizeof(b), "memory: first reading: %s", memText(m).c_str());
+    else if (m.ws - logged >= 512.0 || logged - m.ws >= 512.0)
+        snprintf(b, sizeof(b), "memory: working set %+.0f MB since the last memory line %llu s ago: %s", m.ws - logged, (now - logged_at) / 1000, memText(m).c_str());
+    else if (started && now - logged_at >= 60000)
+        snprintf(b, sizeof(b), "memory: a fight starts: %s", memText(m).c_str());
+    else
+        return;
+    COMBO_LOG(b);
+    logged = m.ws;
+    logged_at = now;
+}
 
 void overlayFrame(double copy_ms, double draw_ms)
 {
@@ -341,10 +399,11 @@ void tickDone(double whole_ms, bool counted)
     char line[540];
     snprintf(line, sizeof(line),
              "perf: mod %.3f ms per tick (replay %.3f, menu %.3f, pause menu %.3f, trials %.3f, damage panel %.3f, colors %.3f, frame bar %.3f, rest %.3f), "
-             "worst tick %.2f ms (%s %.2f), %d ticks over 4 ms, hud draw %.3f ms per frame, overlay windows %.3f ms per frame (menu data copy %.4f), %d ticks without catch-up, %d frames",
+             "worst tick %.2f ms (%s %.2f), %d ticks over 4 ms, hud draw %.3f ms per frame, overlay windows %.3f ms per frame (menu data copy %.4f), %d ticks without catch-up, %d frames, "
+             "the game's own fight update %.3f ms per tick",
              g_mod / n, g_sum[REPLAY] / n, g_sum[MENU] / n, g_sum[PAUSE_MENU] / n, g_sum[TRIALS] / n, g_sum[DAMAGE] / n, g_sum[COLORS] / n, g_sum[BAR] / n,
              (std::max)(g_mod - named, 0.0) / n, g_worst, g_worst_part, g_worst_part_ms, g_slow, g_huds ? g_sum[HUD] / g_huds : 0.0, frames ? draw / frames : 0.0, frames ? copy / frames : 0.0,
-             g_ticks, frames);
+             g_ticks, frames, g_sum[GAME] / n);
     COMBO_LOG(line);
     for (double& t : g_sum) t = 0;
     g_mod = g_worst = g_worst_part_ms = 0;
@@ -376,6 +435,7 @@ bool modScreenActive() { return GetTickCount64() - g_last_battle_update < 300; }
 
 void hook_MatchStart(AREDGameState_Battle* GameState)
 {
+    if (!modReady()) { orig_MatchStart(GameState); return; }
     ReplayManager::instance().onMatchStart();
     select_memory::save();  // remember this character select's picks for the next restart
     Timeline::instance().setPaused(false);
@@ -414,27 +474,20 @@ void hook_AHUDPostRender(void* hud)
     if (perf::on) perf::hudDone();
     if (DrawTool::instance().update(hud))
     {
+        const bool hud_hidden = hud_hide::hidden();
         if (g_overlays_visible && GetTickCount64() - g_last_battle_update < 300)
         {
             if (ModMenu::instance().hitboxEnabled()) drawAllBoxes();
-            if (ModMenu::instance().barEnabled()) the_bar.draw();
-            tension_overlay.draw();
+            if (!hud_hidden || imgui_overlay::running())
+            {
+                if (ModMenu::instance().barEnabled()) the_bar.draw();
+                tension_overlay.draw();
+            }
         }
-        ModMenu::instance().draw();
+        if (!hud_hidden) ModMenu::instance().draw();
     }
 }
 
-void hook_ACamUpdateCamera(void* cam, float DeltaTime)
-{
-    if (!game_state.checkMode())
-    {
-        orig_ACamUpdateCamera(cam, DeltaTime);
-        return;
-    }
-
-    if (pause_manager.advancing()) return;
-    orig_ACamUpdateCamera(cam, DeltaTime);
-}
 
 // Gamepad: Back+Start toggles the menu, D-pad navigates. Feeds the same button
 // states the keyboard hook does, so the menu code does not know the difference.
@@ -454,8 +507,58 @@ static void pollGamepad()
     }
 }
 
+using funcCameraUpdate_t = void (*)(void*, float);
+static funcCameraUpdate_t orig_CameraUpdate = nullptr;
+static const void** g_camera_vtable = nullptr;
+static bool g_fight_skipped = false;
+static uint64_t g_fight_tick = 0;
+static input_delay::Queue g_input_delay;
+static ULONGLONG g_fight_skipped_at = 0;
+
+static void hook_CameraUpdate(void* cam, float DeltaTime)
+{
+    if (g_fight_skipped && GetTickCount64() - g_fight_skipped_at < 250)
+    {
+        recolor_test::gameCameraPutBack();
+        return;
+    }
+    orig_CameraUpdate(cam, DeltaTime);
+}
+
+static void fightSkipped()
+{
+    g_fight_skipped = true;
+    g_fight_skipped_at = GetTickCount64();
+    if (g_camera_vtable) return;
+    static int found = 0;
+    if (found < 0) return;
+    if (found == 0)
+    {
+        found = -1;
+        try
+        {
+            if (sigscan::get().scan("\x48\x8B\x89\xC0\x02\x00\x00\x48\x85\xC9\x74\x0A\x48\x8B\x01\x48\xFF\xA0\x80\x06\x00\x00", "xxxxxxxxxxxxxxxxxxxxxx")) found = 1;
+        }
+        catch (...) {}
+        if (found < 0)
+        {
+            COMBO_LOG("camera: the game's camera update wasn't found, so the camera isn't held while the fight is");
+            return;
+        }
+    }
+    float pov[7] = {};
+    const void* mgr = nullptr;
+    if (!recolor_test::gameCameraPov(pov, &mgr) || !mgr) return;
+    const void** vt = *reinterpret_cast<const void** const*>(mgr);
+    const void* ours = reinterpret_cast<const void*>(&hook_CameraUpdate);
+    if (vt[208] != ours) orig_CameraUpdate = reinterpret_cast<funcCameraUpdate_t>(vtable_hook(vt, 208, ours));
+    g_camera_vtable = vt;
+    COMBO_LOG("camera: held still on frames the fight doesn't update");
+}
+
 void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 {
+    if (!modReady()) { orig_UpdateBattle(GameState, DeltaTime); return; }
     // One frame per press: last frame's is over, also when this mode isn't handled.
     g_training_press = 0;
     g_battle_ran = true;
@@ -468,15 +571,17 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     } whole_tick;
     if (!g_timeline_hooks_tried && ModMenu::instance().replayTimeline()) installTimelineHooks(false);
     handshake::update(GameState);
-    if (const int bv = combo_trials::battleVersion(); bv > 0)  // paused and online too
+    if (const int bv = combo_trials::battleVersion(); bv > 0 && combo_trials::gameModeNow() != 0x1A)  // paused and online too
       imgui_overlay::setBattleVersion(battleVersionName(bv) + (combo_trials::onlineVersionInUse() ? " (online)" : ""));
     const bool mode_handled = game_state.checkMode();  // (also brings the mode up to date for the line below)
-    if (!game_state.checkModeTraining()) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); recolor_test::outsideTraining(); recordings::streamStop(); combo_trials::streamRestore(false); }  // (never Script & boxes' edits, or the free camera, outside training)
+    if (!game_state.checkModeTraining()) input_delay::forget_wanted = true;
+    if (!game_state.checkModeTraining()) { box_editor::outsideTraining(); recolor_test::outsideTraining(); if (!game_state.checkModeReplay()) recolor_test::soloCameraOff(); recordings::streamStop(); combo_trials::streamRestore(false); }  // (never Script & boxes' edits, or the free camera, outside training)
     if (!mode_handled)
     {
         g_training_pending = 0;
         combo_trials::update(false);  // a trial's settings never go into other modes
         perf::Scope game(perf::GAME);
+        g_fight_skipped = false;
         orig_UpdateBattle(GameState, DeltaTime);
         return;
     }
@@ -516,10 +621,12 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     if (keybindings.takeAction(binds::STEP_BACK) && game_state.checkModeReplay()) ReplayManager::instance().stepBack();
     if (keybindings.takeAction(binds::TICK_BACK) && game_state.checkModeReplay()) ReplayManager::instance().stepTick(-1);
     if (keybindings.takeAction(binds::TICK_FORWARD) && game_state.checkModeReplay()) ReplayManager::instance().stepTick(1);
-    if (keybindings.takeAction(binds::FREE_CAMERA) && game_state.checkModeTraining()) recolor_test::toggleCamera();  // (with or without the color editor)
+    if (keybindings.takeAction(binds::FREE_CAMERA) && held_modes) recolor_test::toggleCamera();  // (with or without the color editor)
     if (keybindings.takeAction(binds::COLOR_EDITOR) && game_state.checkModeTraining()) recolor_test::toggle();
     if (keybindings.takeAction(binds::BOX_EDITOR) && game_state.checkModeTraining()) box_editor::toggle();
+    if (keybindings.takeAction(binds::RELOAD_SCRIPT) && game_state.checkModeTraining()) box_editor::reloadMoveFiles();
     if (keybindings.takeAction(binds::ONLINE_VERSION)) imgui_overlay::noteOnlineKey();
+    if (keybindings.takeAction(binds::HIDE_HUD)) hud_hide::toggle(game_state.currentMode());
     {
         perf::Scope timed(perf::TRIALS);
         combo_trials::update(game_state.checkModeTraining());
@@ -544,19 +651,22 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     {
         perf::Scope timed(perf::COLORS);
         if (game_state.checkModeTraining()) { recolor_test::update(false); recolor_test::afterBattleUpdate(); box_editor::tick(); }  // paused here too
+        else if (game_state.checkModeReplay()) recolor_test::replayCamera();
+        fightSkipped();
         return;
     }
 
     {
     perf::Scope timed(perf::MENU);
+    const bool menu_keys = !hud_hide::hidden();
     ModMenu::instance().update(PressedKeys{
-        keybindings.getButtonState(keybindings.TOGGLE_FRAMEBAR_BUTTON),
-        keybindings.getButtonState(keybindings.TOGGLE_HITBOX_BUTTON),
-        keybindings.getButtonState(keybindings.TOGGLE_MENU_BUTTON),
-        keybindings.getButtonState(keybindings.MENU_UP_BUTTON),
-        keybindings.getButtonState(keybindings.MENU_DOWN_BUTTON),
-        keybindings.getButtonState(keybindings.MENU_RIGHT_BUTTON),
-        keybindings.getButtonState(keybindings.MENU_LEFT_BUTTON)
+        keybindings.actionState(binds::FRAMEBAR),
+        keybindings.actionState(binds::HITBOXES),
+        menu_keys && keybindings.actionState(binds::MENU),
+        menu_keys && keybindings.actionState(binds::UP),
+        menu_keys && keybindings.actionState(binds::DOWN),
+        menu_keys && keybindings.actionState(binds::RIGHT),
+        menu_keys && keybindings.actionState(binds::LEFT)
     });
     }
     keybindings.resetButtons();
@@ -564,6 +674,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     game_state.checkRound();
 
     const bool round_started = game_state.roundJustStarted;
+    if (round_started) input_delay::forget_wanted = true;
     if (game_state.roundJustStarted)
     {
         game_state.roundJustStarted = false;
@@ -597,7 +708,8 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         recolor_test::afterBattleUpdate();
         box_editor::tick();
     }  // the free camera, paused
-    if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: no fight update this frame
+    if (game_state.checkModeReplay() && !Timeline::instance().canAdvanceFrame()) recolor_test::replayCamera();
+    if (!Timeline::instance().canAdvanceFrame()) { fightSkipped(); return; }  // timeline pause: no fight update this frame
     if (g_training_pending)
     {
         g_training_press = g_training_pending;
@@ -607,6 +719,8 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
     }
     {
         perf::Scope game(perf::GAME);
+        g_fight_skipped = false;
+        g_fight_tick++;
         orig_UpdateBattle(GameState, DeltaTime);
     }
     if (game_state.checkModeTraining())
@@ -615,6 +729,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
         recolor_test::afterBattleUpdate();
         box_editor::tick();
     }
+    else if (game_state.checkModeReplay()) recolor_test::replayCamera();
     {
         perf::Scope timed(perf::REPLAY);
         ReplayManager::instance().onBattleFrameProcessed();
@@ -636,6 +751,7 @@ void hook_UpdateBattle(AREDGameState_Battle* GameState, float DeltaTime)
 
 void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 {
+    if (!modReady()) { orig_UpdateBattleInput(Analyzer, recFlag); return; }
     handshake::onBattleInput(Analyzer, static_cast<uint32_t>(recFlag));
     if (game_state.checkModeTraining() && recolor_test::setupRunning()) recFlag = static_cast<RECFLG_ENUM>(0);  // The editor's first-time setup holds the pad too
     // Menu open: swallow pad/keyboard so the D-pad drives the menu, not the character.
@@ -686,11 +802,31 @@ void hook_UpdateBattleInput(asw_inputs* Analyzer, RECFLG_ENUM recFlag)
 
     if (!game_state.checkModeReplay() || !ReplayManager::instance().isTakeoverInput(Analyzer))
     {
+        if (game_state.checkModeTraining())
+        {
+            const int frames = ModMenu::instance().inputDelay();
+            auto* engine = frames > 0 ? asw_engine::get() : nullptr;
+            if (frames <= 0 || input_delay::forget_wanted) g_input_delay.forget();
+            input_delay::forget_wanted = false;
+            if (frames > 0 && engine && Analyzer == &engine->inputs[combo_trials::localSide() * 3])
+                recFlag = static_cast<RECFLG_ENUM>(g_input_delay.step(static_cast<uint16_t>(recFlag), frames, g_fight_tick));
+        }
         orig_UpdateBattleInput(Analyzer, recFlag);
         return;
     }
 
     orig_UpdateBattleInput(Analyzer, ReplayManager::instance().takeoverInput(recFlag, ModMenu::instance().takesInput()));
+}
+
+static bool hideHudPadPressed()
+{
+    static WORD prev = 0;
+    const WORD m = binds::pad[binds::HIDE_HUD];
+    if (!m || binds::capturing >= 0) { prev = 0; return false; }
+    const WORD now = binds::heldPadMask() & m;
+    const bool edge = now == m && prev != m;
+    prev = now;
+    return edge;
 }
 
 // Keys are only read during fights; drop the ones pressed outside one (character
@@ -715,6 +851,11 @@ static void dropKeysOutsideFight()
         }
         else if (keybindings.takeAction(binds::ONLINE_VERSION))  // in an online fight it opens the recolor sharing panel, and the version stays put
             imgui_overlay::setOnlinePicker(!imgui_overlay::onlinePickerOpen());
+        if (g_any_fight && (keybindings.takeAction(binds::HIDE_HUD) | hideHudPadPressed()))
+        {
+            if (!combo_trials::onlineFight() || hud_hide::hidden()) hud_hide::toggle(game_state.currentMode());
+            else COMBO_LOG("hide all HUD: not used in online matches");
+        }
         keybindings.resetButtons();
         // Only when the overlay draws out here (an online fight, the online version
         // window): never while the game is still starting up.
@@ -726,6 +867,7 @@ static void dropKeysOutsideFight()
 void hook_UpdateSystem(uintptr_t System)
 {
     orig_UpdateSystem(System);
+    if (!modReady()) return;
     {  // The overlay's Present hook comes 5 s after the game's first update, on its own thread.
        // It makes a throwaway DirectX device, so never while the game starts up, which OBS or a playing video
        // already makes slow.
@@ -750,7 +892,15 @@ void hook_UpdateSystem(uintptr_t System)
       g_mode_fight = mode_gap < 250 || (g_no_mode_battle_updates < 2 && mode_gap < 1000);
     }
     const bool battle_running = g_mode_fight;
+    hud_hide::keepEditors(ModMenu::instance().hudKeepsEditors());
+    hud_hide::tick(g_any_fight);
+    ModMenu::instance().savePending();
+    perf::memoryTick(g_any_fight);
     combo_trials::latchVersion(battle_running);
+    combo_trials::nativeTick();
+    combo_trials::setOldRiscDamage(ModMenu::instance().oldRiscDamage());
+    combo_trials::setKeepToday(ModMenu::instance().editsKeepToday());
+    box_editor::setOldHurtboxes(ModMenu::instance().oldHurtboxes());
     combo_trials::updateOnline(g_any_fight);
     recolor_share::update(g_any_fight);
     if (!battle_running) {
@@ -766,7 +916,7 @@ void hook_UpdateSystem(uintptr_t System)
       was_fight = g_any_fight;
     }
     if (!g_any_fight) recolor_test::battleGone();  // effect colors go back once there's no fight of any kind
-    if (const int mode = game_state.currentMode(); mode >= 0 && mode != 8) { box_editor::outsideTraining(); recolor_test::soloCameraOff(); recolor_test::outsideTraining(); recordings::streamStop(); combo_trials::streamRestore(false); }  // (the menus too: never a Script & boxes edit while the next fight loads; 8 is training)
+    if (const int mode = game_state.currentMode(); mode >= 0 && mode != 8) { box_editor::outsideTraining(); recolor_test::outsideTraining(); if (mode != 0x17) recolor_test::soloCameraOff(); recordings::streamStop(); combo_trials::streamRestore(false); }  // (the menus too: never a Script & boxes edit while the next fight loads; 8 is training)
     // Saved recolors on the menus' models (character select), only with no fight at all.
     if (!g_any_fight) recolor_test::menuUpdate(false);
     else if (!game_state.checkModeTraining()) recolor_test::menuUpdate(true);  // (any other fight: the saved recolors show by their bakes)
@@ -787,6 +937,7 @@ void hook_UpdateSystem(uintptr_t System)
 
 void hook_UpdateReplay(BattleReplayManager* Manager)
 {
+    if (!modReady()) { orig_UpdateReplay(Manager); return; }
     if (!Timeline::instance().canAdvanceFrame()) return;  // timeline pause: the replay waits too
     if (ReplayManager::instance().playbackEnabled())
     {
@@ -947,6 +1098,7 @@ void installExperiments(const std::filesystem::path& dir)
 
 void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
 {
+    if (!modReady()) { orig_UpdateOnPreTick(pThis, DeltaSeconds); return; }
     {  // After a blocking load the last system update's flags are old, so a long gap is no fight here
       const ULONGLONG now = GetTickCount64();
       if (now - g_last_battle_update >= 1000) g_mode_fight = false;
@@ -954,6 +1106,7 @@ void hook_UpdateOnPreTick(AREDGameState_Battle* pThis, float DeltaSeconds)
     }
     dropKeysOutsideFight();  // first tick after a load: what was pressed during it
     keybindings.checkBinds(false);
+    if (g_mode_fight && game_state.checkMode()) pollGamepad();
     // Rewind needs the queued Timeline hotkeys and can request Pause/Step.
     // Run it between input processing and the final decision for this tick.
     Timeline::instance().onPreTick([] {
@@ -1002,6 +1155,34 @@ public:
     auto on_unreal_init() -> void override
     {
         Program = &UE4SSProgram::get_program();
+        std::string failed;
+        try
+        {
+            start();
+            g_mod_ready.store(true, std::memory_order_release);
+            return;
+        }
+        catch (const std::exception& e)
+        {
+            failed = e.what();
+        }
+        catch (...)
+        {
+            failed = "unknown error";
+        }
+        if (!log_started)
+        {
+            try { ComboLog::instance().init(UE4SSProgram::get_program().get_working_directory()); }
+            catch (...) {}
+        }
+        COMBO_LOG("StriveLabs off: its start-up stopped (" + failed + "). The game runs without the mod.");
+        Output::send<LogLevel::Error>(STR("StriveLabs off: its start-up stopped. See combo_log.txt.\n"));
+    }
+
+    bool log_started = false;
+
+    void start()
+    {
         const uint64_t UpdateBattle_Addr = sigscan::get().scan(
             "\x40\x53\x57\x41\x54\x41\x55\x48\x81\xEC\x88\x00\x00\x00", "xxxxxxxxxxxxxx");
         UpdateBattle_Detour = new PLH::x64Detour(UpdateBattle_Addr, reinterpret_cast<uint64_t>(&hook_UpdateBattle),
@@ -1069,6 +1250,7 @@ public:
         // Initialize logging
         auto working_dir = UE4SSProgram::get_program().get_working_directory();
         ComboLog::instance().init(working_dir);
+        log_started = true;
         COMBO_LOG("StriveLabs loaded");
         if (!training_hook) COMBO_LOG("training binds: button config lookup not found");
         COMBO_LOG(bbscript::scriptReaderAvailable() ? "countdown: script reader ready" : "countdown: script reader not found, recovery countdown off");

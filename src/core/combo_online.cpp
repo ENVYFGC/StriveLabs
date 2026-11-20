@@ -144,7 +144,7 @@ namespace {
         const size_t end = s.find(L';', i);
         if (end != std::wstring::npos && end - i < 24) {
           std::wstring code = s.substr(i + 2, end - i - 2);
-          if (code.rfind(L"Atk", 0) == 0) code = code.substr(3);
+          if (code.rfind(L"Atk", 0) == 0 || code.rfind(L"Btn", 0) == 0) code = code.substr(3);
           out += code;
           i = end + 1;
           continue;
@@ -290,6 +290,15 @@ bool available() {
 bool busy() { return g_job != Job::None; }
 const std::vector<Result>& results() { return g_results; }
 
+bool searching() { return busy() && g_job == Job::Search; }
+
+std::wstring tagName(int tag) {
+  static std::wstring names[12];
+  if (tag < 1 || tag > 11) return {};
+  if (names[tag].empty()) names[tag] = tagTexts({tag});
+  return names[tag];
+}
+
 std::wstring search(const Filter& f, int sort, int page) {
   if (!available()) return L"The online search isn't available in this game version";
   if (busy()) return L"Still waiting...";
@@ -299,16 +308,20 @@ std::wstring search(const Filter& f, int sort, int page) {
   // filter: player, user ids (empty), character, vs character, cleared, version, type,
   // number, tags (empty), and the platform (6: every platform, like the game sends).
   alignas(8) uint8_t p[0x70] = {};
-  static const int kSort[4] = {4, 3, 1, 5};  // downloads, likes, date, clear rate
+  static const int kSort[7][2] = {{4, 2}, {3, 2}, {1, 2}, {1, 1}, {5, 2}, {5, 1}, {2, 2}};
+  const int* const so = kSort[sort < 0 || sort > 6 ? 0 : sort];
   at<int>(reinterpret_cast<uintptr_t>(p) + 0x08) = page;
-  at<int>(reinterpret_cast<uintptr_t>(p) + 0x0C) = kSort[sort < 0 || sort > 3 ? 0 : sort];
-  at<int>(reinterpret_cast<uintptr_t>(p) + 0x10) = 2;  // descending
+  at<int>(reinterpret_cast<uintptr_t>(p) + 0x0C) = so[0];
+  at<int>(reinterpret_cast<uintptr_t>(p) + 0x10) = so[1];
   at<int>(reinterpret_cast<uintptr_t>(p) + 0x14) = kPerPage;
-  at<int>(reinterpret_cast<uintptr_t>(p) + 0x18) = -1;
+  at<int>(reinterpret_cast<uintptr_t>(p) + 0x18) = f.player >= 0 && f.player <= 3 ? f.player : -1;
   at<int>(reinterpret_cast<uintptr_t>(p) + 0x38) = f.chara;
   for (uintptr_t o : {0x3C, 0x40, 0x44, 0x48, 0x4C}) at<int>(reinterpret_cast<uintptr_t>(p) + o) = -1;
   at<int>(reinterpret_cast<uintptr_t>(p) + 0x3C) = f.vs;
+  if (f.not_cleared) at<int>(reinterpret_cast<uintptr_t>(p) + 0x40) = 2;
   if (f.current) at<int>(reinterpret_cast<uintptr_t>(p) + 0x44) = 39;
+  if (f.type == 1 || f.type == 2) at<int>(reinterpret_cast<uintptr_t>(p) + 0x48) = f.type;
+  if (f.number > 0) at<int>(reinterpret_cast<uintptr_t>(p) + 0x4C) = f.number;
   // Tags: a std::vector<int> (first, last, end of storage); the game copies it.
   static int tags[8];
   const size_t n = (std::min)(f.tags.size(), std::size(tags));
@@ -325,13 +338,15 @@ std::wstring search(const Filter& f, int sort, int page) {
     at<std::string*>(reinterpret_cast<uintptr_t>(p) + 0x28) = &creator + 1;
     at<std::string*>(reinterpret_cast<uintptr_t>(p) + 0x30) = &creator + 1;
   }
-  at<int>(reinterpret_cast<uintptr_t>(p) + 0x68) = 6;
+  at<int>(reinterpret_cast<uintptr_t>(p) + 0x68) = f.own_platform ? 3 : 6;
   alignas(8) uint8_t delegate[16] = {};  // no callback: the reply is polled
   if (!g_get_combo(mgr, p, delegate)) return L"Request failed, try again.";
   g_job = Job::Search;
   g_started = GetTickCount64();
   COMBO_LOG("combo online: search, character " + std::to_string(f.chara) + " vs " + std::to_string(f.vs) + ", " +
-            std::to_string(n) + " tags" + (creator.empty() ? "" : ", one creator") + ", sort " + std::to_string(sort) +
+            std::to_string(n) + " tags" + (creator.empty() ? "" : ", one creator") + ", player type " + std::to_string(f.player) +
+            ", type " + std::to_string(f.type) + ", number " + std::to_string(f.number) + (f.not_cleared ? ", not cleared" : "") +
+            (f.own_platform ? ", own platform" : "") + ", sort " + std::to_string(sort) +
             ", page " + std::to_string(page));
   return {};
 }
@@ -454,13 +469,15 @@ bool update(std::wstring& message) {
     return true;
   }
   if (job == Job::Try) {  // decode it ourselves and load it into training, nothing kept
-    if (!combo_trials::inTraining() || combo_trials::playerChara() != g_downloading.chara) {
-      message = combo_trials::inTraining() ? L"That combo is for another character" : L"Open this in training mode";
+    const bool fight = combo_trials::inTraining() || combo_trials::nativeFight();
+    if (!fight || combo_trials::playerChara() != g_downloading.chara) {
+      message = fight ? L"That combo is for another character" : L"Open this in training mode";
       return true;
     }
     const std::vector<uint8_t> block = unbase64url(gameString(resp + 0xB0, 1 << 20));
-    message = combo_trials::loadData(block.data(), block.size());
-    if (message.empty()) message = L"Trying No." + std::to_wstring(g_downloading.number) + L" (not saved).";
+    bool reloading = false;
+    message = combo_trials::startData(block.data(), block.size(), reloading);
+    if (message.empty()) message = (reloading ? L"Loading the fight for No." : L"Trying No.") + std::to_wstring(g_downloading.number) + L" (not saved).";
     COMBO_LOG("combo online: try, " + std::to_string(block.size()) + " bytes");
     return true;
   }

@@ -18,6 +18,7 @@
 
 namespace {
   std::atomic<int> g_logged{0};
+  std::atomic<bool> g_closing{false};
   std::filesystem::path g_dump_path;
 
   std::string where(uintptr_t addr) {
@@ -69,7 +70,10 @@ namespace {
            code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_IN_PAGE_ERROR;
   }
 
+  thread_local bool t_quiet = false;
+
   LONG CALLBACK handler(EXCEPTION_POINTERS* ep) {
+    if (t_quiet) return EXCEPTION_CONTINUE_SEARCH;
     const DWORD code = ep->ExceptionRecord->ExceptionCode;
     if (!fatal(code)) return EXCEPTION_CONTINUE_SEARCH;
     const auto rip = reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
@@ -86,6 +90,25 @@ namespace {
     if (!mine) {  // another module's fault gets the one line only
       COMBO_LOG(line + "  (in another module, no dump)");
       return EXCEPTION_CONTINUE_SEARCH;
+    }
+    {
+      static const char* const kNames[4] = {"GGST", "GGST", "UE4SS.dll", "main.dll"};
+      const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+      const auto lo = reinterpret_cast<uintptr_t>(tib->StackLimit), hi = reinterpret_cast<uintptr_t>(tib->StackBase);
+      int n = 0;
+      for (int i = 0; i < 96 && n < 8; i++) {
+        const uintptr_t at = ep->ContextRecord->Rsp + i * sizeof(uintptr_t);
+        if (at < lo || at + sizeof(uintptr_t) > hi) break;
+        const uintptr_t v = *reinterpret_cast<const uintptr_t*>(at);
+        for (int m = 0; m < 4; m++)
+          if (g_ours[m].lo && v >= g_ours[m].lo && v < g_ours[m].hi) {
+            snprintf(buf, sizeof(buf), "%s %s+0x%llx", n ? "" : "  on the stack:", kNames[m], static_cast<unsigned long long>(v - g_ours[m].lo));
+            line += buf;
+            n++;
+            break;
+          }
+      }
+      if (g_closing) line += "  (while the game was closing)";
     }
     COMBO_LOG(line);
     // Likely callers: code addresses found on the stack
@@ -124,6 +147,8 @@ namespace {
 }
 
 namespace crash_log {
+  void quiet(bool on) { t_quiet = on; }
+  void closing() { g_closing = true; }
   void install(const std::filesystem::path& dir) {
     g_dump_path = dir / "StriveLabs_crash.dmp";
     HMODULE self = nullptr;

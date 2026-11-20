@@ -11,6 +11,7 @@ namespace recolor_test {
   // Turns "Color05" into "Color 5" for display only. Files, keys and calls keep "Color05".
   inline std::string slotLabel(const std::string& s) {
     if (s.size() > 5 && s.compare(0, 5, "Color") == 0 && s[5] >= '0' && s[5] <= '9') return "Color " + std::to_string(std::atoi(s.c_str() + 5));
+    if (s == "ColorAll") return "All colors";
     return s;
   }
   inline constexpr const char* kCamHelp = "WASD move, Q/E up/down, arrows turn, Shift faster, R shows the whole fighter. Left drag orbits, right drag pans, wheel zooms.";
@@ -19,6 +20,7 @@ namespace recolor_test {
     uint32_t orig_lit = 0, orig_shadow = 0;  // the worn color's own colors
     float share = 0;                         // share of the texture, 0..1
     bool edited = false;
+    bool own_shadow = false;
     bool unseen = false;                     // the mapping never saw it, so the camera can't find it
     bool detail = false;                     // a small region (a thin line, a small mark), listed in its own closed group
     std::string name;                        // the user's own name for it, "" if none
@@ -26,6 +28,8 @@ namespace recolor_test {
     int twins = 1;                           // for a leading row, how many regions it stands for
     bool undrawn = false;                    // the model never draws it (from the mesh's UVs, when known)
     bool listed = true;                      // has its own row (not a twin, not off the model)
+    bool off_model = false;
+    std::string piece;
     int parent = -1;                         // for a small region, the row of the big region it sits on, -1 if none
     std::string only_on;                     // drawn only by a model the game keeps hidden, and this is that part's name ("DI")
   };
@@ -38,7 +42,19 @@ namespace recolor_test {
     bool neutral = false;  // low saturation in most colors (metal, white cloth, grey)
   };
   // A color the part's materials draw with besides their textures (Sol's Dragon Install glow).
-  struct MaterialColor { std::string label; float rgba[4] = {}; bool edited = false; };
+  struct MaterialColor {
+    std::string label;
+    float rgba[4] = {};
+    bool edited = false;
+    bool number = false;
+    float base = 0.0f;
+    bool picture = false;
+    int pic_now = 0, pic_own = 0;
+    std::vector<int> pic_colors;
+    std::vector<std::vector<int>> pic_members;
+    std::vector<std::string> pic_labels, pic_tips;
+    std::string tip, pic_note, pic_file;
+  };
   // An effect color of the worn color slot (Sol's fire). Only its hue is set, the game's brightness is kept.
   struct EffectUse { std::string effect, says; float rgb[3] = {}; bool edited = false; };  // one effect that takes it. says is what it is, "" if not known
   struct EffectColor { std::string label, uses, used_by; float rgb[3] = {}; bool edited = false; std::vector<EffectUse> per; };  // used_by lists the effects that take it by name
@@ -62,11 +78,15 @@ namespace recolor_test {
     bool decal_lines = false;          // the shown part has decal lines (the texture view can show them)
     int tex_w = 0, tex_h = 0;          // the shown part's texture size (texels)
     bool painted = false;              // the shown part has paint on it
+    bool region_changes = false;
     bool exporting = false;            // Export textures is running, so what it reads can't change (Reload colors, Remap, imports, loads)
     std::vector<int> part_ids;       // each part's id, for showPart
     std::vector<char> part_hidden;   // a model the game keeps hidden (Sol's Dragon Install), shown in its place so it can be edited
     std::string drawn_from;          // for a hidden part, another part whose texture colors some of this model ("Body"), "" if none
+    std::filesystem::path pick_file;
     int part = -1;                   // the part shown
+    bool powered = false;
+    int look = 0;
     bool shadow_follows = true;
     bool blackout = true;       // selecting turns the fighter black and the selection blinks white
     bool free_cam = false;      // our camera orbits the fighter
@@ -113,11 +133,19 @@ namespace recolor_test {
   // Mode 2: the twins take exactly the same color (chroma keys). Mode 0: each region alone (auto colors).
   void setPairs(const std::vector<Pick>& picks, int mode = 1);
   void reset(int region);   // -1 = everything on the shown part
+  void relinkShadow(int region);
+  void clearEffectList();
   void resetColor();        // the whole color slot: every part, paint and effect color
   void nextTarget();        // the other fighter
   void showPart(int id);    // one of View::part_ids
+  void showLook(int look);
   void remap();             // map where the regions are again
+  void moveTexels(const std::vector<float>& points, float size, int region, bool only_loose);
+  void resetRegionChanges();
   std::string partName(const std::string& kind);  // "MAIN" -> "Body", "DI_FLARE_UNIQUEC" -> "DI wing" (the UI's and the export's file names)
+  std::string partLabel(const std::string& chr, const std::string& kind);
+  std::string lookName(const std::string& chr);
+  std::string lookWhen(const std::string& chr);
   void exportTextures();  // exports every part of the shown slot into export/<CHR>/<ColorNN>/<date_time>/ (worker, progress in the status)
   std::wstring textureDir();  // where Import's window opens (the slot's newest export, else the export folder)
   std::wstring exportsDir();  // the export folder
@@ -127,6 +155,7 @@ namespace recolor_test {
   void renameRegion(int region, const std::string& name);  // "" clears it. Kept per character and part
   void setMaterialColor(int i, const float rgba[4]);
   void resetMaterialColor(int i);  // -1: all
+  void setMaterialPicture(int i, const std::wstring& file);
   void setEffectColor(int i, const float rgb[3], const std::string& slot);  // slot is View::fx_slot, the list's slot
   void resetEffectColor(int i, const std::string& slot);
   void setEffectColorFor(int i, const std::string& effect, const float rgb[3], const std::string& slot);  // (one effect's own color)
@@ -140,7 +169,7 @@ namespace recolor_test {
   void saveRecolor();                           // writes the changes to disk (nothing is saved until this)
   void bakeRecolor();                           // the shown slot's saved recolor written into a pak and mounted (training)
   // A bake's result, for the window that shows it until the user clicks OK (UI thread)
-  struct BakeResult { bool ok = false; std::string title; std::vector<std::string> baked, not_baked; };
+  struct BakeResult { bool ok = false; std::string title; std::vector<std::string> baked, not_baked; std::string notice; };
   bool bakeResult(BakeResult& out);  // true while one waits to be seen
   // The saved slots that could be baked (UI thread, read when asked): what each holds and what can't be baked yet
   struct BakeCandidate { std::string chr, color, parts, missing; bool effects = false; };
@@ -155,6 +184,10 @@ namespace recolor_test {
   void cancelClose();
   void restoreRecovery(bool restore);           // brings the kept unsaved changes back (still unsaved), or throws them away
   void pickAt(float x, float y);  // selects the region under this point of the screen (0..1) when one is found
+  void probeAt(float x, float y);
+  bool probeWanted(int& id, int& frame, float& x, float& y);
+  void probeGrabbed(int id, int frame, const uint8_t* px);
+  void probeFailed(int id, const std::string& why);
   // The flat texture view shows the shown part's texture with edits on, the selection lit and the rest dimmed.
   // It's made on the game thread while the view is open, and the UI takes it when its serial moves on. box is
   // the selection's bounds (0..1), or all 0.
@@ -203,6 +236,8 @@ namespace recolor_test {
   void cameraPan(float dx, float dy);  // right drag moves what the camera looks at
   bool freeCameraKeys();               // the free camera owns WASD, Q/E, R and the arrows
   void toggleCamera();                 // the Free camera bind (game thread): the editor's camera, or with it closed one of its own
+  bool gameCameraPov(float out[7], const void** manager);
+  void gameCameraPutBack();
   bool soloCamera();                   // the free camera is on without the editor
   void soloCameraOff();                // (game thread) left training, a new fight...
   void overlayFrame(bool typing, int screen_w, int screen_h);  // called each frame with typing (the camera's keys are off) and the frame's size

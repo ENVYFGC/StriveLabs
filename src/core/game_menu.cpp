@@ -2,6 +2,7 @@
 #include "combo_log.h"
 #include "object_scan.h"
 #include "imgui_overlay.h"
+#include "hud_hide.h"
 
 #include <Unreal/UFunction.hpp>
 #include <Unreal/UObject.hpp>
@@ -52,7 +53,7 @@ void update() {
     if (--g_retry > 0) return;
     bind();
     g_retry = 120;
-    if (!g_bound) { imgui_overlay::setGameMenuOpen(false); return; }
+    if (!g_bound) { imgui_overlay::setGameMenuOpen(false); hud_hide::gameMenu(false); return; }
   }
   int state = 0;
   for (size_t i = 0; i < g_menus.size() && i < 16; i++) {
@@ -72,6 +73,7 @@ void update() {
   for (size_t i = 0; i < g_menus.size() && i < 16; i++)
     if (((state >> (2 * i)) & 3) == 3) open = true;
   imgui_overlay::setGameMenuOpen(open);
+  hud_hide::gameMenu(open);
 }
 
 void release() {
@@ -80,5 +82,6 @@ void release() {
   g_in_viewport = g_is_visible = nullptr;
   g_retry = 0;
   imgui_overlay::setGameMenuOpen(false);
+  hud_hide::gameMenu(false);
 }
 }  // namespace game_menu

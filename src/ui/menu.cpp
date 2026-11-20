@@ -12,6 +12,7 @@
 #include "combo_trials.h"
 #include "combo_online.h"
 #include "update_check.h"
+#include "hud_hide.h"
 #include <cctype>
 #include <cstring>
 #include <mutex>
@@ -19,6 +20,7 @@
 #include <thread>
 #include <commdlg.h>
 
+#include <set>
 #include <vector>
 #include <string>
 #include <filesystem>
@@ -115,10 +117,27 @@ namespace Settings {
   SettingsEntry VERSION_SHOWN = SettingsEntry{
       OptionData{L"Show Battle Version:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "battle_version_shown", 1};
+  SettingsEntry OLD_HURTBOXES = SettingsEntry{
+      OptionData{L"Hurtboxes When Hit Or Blocking:", 2, {L"<   Current   >", L"<  Ver. 4.09  >"}},
+      "old_hurtboxes", 0};
+  SettingsEntry OLD_RISC_DAMAGE = SettingsEntry{
+      OptionData{L"R.I.S.C. Rules:", 3, {L"<   Current   >", L"<  Ver. 4.09  >", L"<  Ver. 4.06  >"}},
+      "old_risc_damage", 0};
+  SettingsEntry EDITS_KEEP_TODAY = SettingsEntry{
+      OptionData{L"Fighters With Edits Keep Today's Script:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "edits_keep_today", 1};
+  SettingsEntry HUD_KEEPS_EDITORS = SettingsEntry{
+      OptionData{L"Editor Panels While The HUD Is Hidden:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "hide_hud_keeps_editors", 0};
   SettingsEntry DELAY_AMOUNT = SettingsEntry{
       OptionData{L"Delay Frames: ", 4,
                  {L"<     0ms     >", L"<     20ms    >", L"<     30ms    >", L"<     60ms    >"}},
       "delay_amount", 0};
+  SettingsEntry INPUT_DELAY = SettingsEntry{
+      OptionData{L"Input Delay: ", 8,
+                 {L"<  0 frames  >", L"<   1 frame   >", L"<  2 frames  >", L"<  3 frames  >", L"<  4 frames  >", L"<  5 frames  >", L"<  6 frames  >",
+                  L"<  7 frames  >"}},
+      "input_delay_frames", 0};
   SettingsEntry INPUT_BAR = SettingsEntry{
       OptionData{L"Input Bar:", 4, {L"<  Disabled  >", L"<    Both    >", L"<  P1 only   >", L"<  P2 only   >"}},
       "input_bar", 0};
@@ -154,6 +173,9 @@ namespace Settings {
   SettingsEntry BAR_COUNTDOWN = SettingsEntry{
       OptionData{L"Count Down Stun And Recovery:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "framebar_countdown", 0};
+  SettingsEntry BAR_KNOCKDOWN = SettingsEntry{
+      OptionData{L"Knockdown Colors:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
+      "framebar_knockdown", 1};
   // Frame bar's own look while the menu is closed. 0 follows "Hide decorations".
   SettingsEntry BAR_TITLE = SettingsEntry{
       OptionData{L"Frame Bar Title:", 4, {L"<   Default   >", L"<     Shown     >", L"<   Line only   >", L"<    Hidden     >"}},
@@ -249,12 +271,12 @@ namespace Settings {
   SettingsEntry UI_HIDE_WINDOW_DECORATIONS = SettingsEntry{
       OptionData{L"Hide Decorations When Menu Is Closed:", 2, {L"<  Disabled  >", L"<  Enabled   >"}},
       "ui_hide_window_decorations", 0};
-  std::array<SettingsEntry *, 50> settings = {
+  std::array<SettingsEntry *, 56> settings = {
       &FRAMEBAR, &HITBOXES, &FADE, &DELIM, &COLOR_SCHEME,
       &SHOW_DASH_FRAMES, &CROSSUP_ENABLED, &PAUSE_TYPE, &DELAY_AMOUNT,
       &TENSION_ENABLED, &TENSION_GAIN, &TENSION_ADVANTAGE,
       &TENSION_ADV_CHANGE, &TENSION_BURST, &TENSION_PULSE, &TENSION_PENALTY, &TENSION_CURRENT, &WALL_DAMAGE, &TENSION_SIDE, &METERS_DECIMALS, &METERS_SNAP, &UI_ACCENT, &TIMELINE_ON, &TIMELINE_REPLAY,
-      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE, &BAR_TITLE, &BAR_PANEL, &BAR_ROWS, &BAR_FOLD_AFTER, &BAR_UNFOLD, &BAR_COMPACT, &BAR_UNFOLD_REC, &VERSION_SHOWN, &METERS_TITLE, &DAMAGE_TITLE, &DAMAGE_BG, &VERSION_TITLE, &VERSION_BG, &BAR_BLOCKS, &BAR_PERFECT, &BAR_HITS, &BAR_GAPS, &BAR_COUNTDOWN, &METERS_PANEL, &METERS_SPLIT, &DAMAGE_PANEL, &DAMAGE_HIDE_GAME, &DAMAGE_AT_GAME,
+      &UI_HIDE_WINDOW_DECORATIONS, &INPUT_BAR, &STATUS_LINE, &BAR_TITLE, &BAR_PANEL, &BAR_ROWS, &BAR_FOLD_AFTER, &BAR_UNFOLD, &BAR_COMPACT, &BAR_UNFOLD_REC, &VERSION_SHOWN, &METERS_TITLE, &DAMAGE_TITLE, &DAMAGE_BG, &VERSION_TITLE, &VERSION_BG, &BAR_BLOCKS, &BAR_PERFECT, &BAR_HITS, &BAR_GAPS, &BAR_COUNTDOWN, &METERS_PANEL, &METERS_SPLIT, &DAMAGE_PANEL, &DAMAGE_HIDE_GAME, &DAMAGE_AT_GAME, &BAR_KNOCKDOWN, &OLD_HURTBOXES, &OLD_RISC_DAMAGE, &EDITS_KEEP_TODAY, &INPUT_DELAY, &HUD_KEEPS_EDITORS
   };
 
   // Layout float settings
@@ -307,8 +329,12 @@ namespace Settings {
   FloatSetting UI_OVERLAY_BG = {"ui_overlay_bg", 0.84, 0.84, 0.0, 1.0, 0.05};
   FloatSetting UI_VERSION_BG = {"ui_version_bg", 0.84, 0.84, 0.0, 1.0, 0.05};
   FloatSetting UI_BAR_BG = {"ui_bar_bg", 0.84, 0.84, 0.0, 1.0, 0.05};
+  FloatSetting UI_BAR_TEXT = {"ui_bar_text", 1.00, 1.00, 0.50, 1.50, 0.05};
+  FloatSetting UI_DAMAGE_BG = {"ui_damage_bg", 0.84, 0.84, 0.0, 1.0, 0.05};
+  FloatSetting UI_NOTE_BG = {"ui_note_bg", 0.84, 0.84, 0.0, 1.0, 0.05};
+  bool g_saw_damage_bg = false;
 
-  std::array<FloatSetting *, 25> float_settings = {
+  std::array<FloatSetting *, 28> float_settings = {
       &BAR_CENTER_X_RATIO,    // 0
       &BAR_CENTER_Y_RATIO,    // 1
       &TENSION_LEFT_OFFSET,   // 2
@@ -334,6 +360,9 @@ namespace Settings {
       &UI_OVERLAY_BG,         // 22
       &UI_VERSION_BG,         // 23
       &UI_BAR_BG,             // 24
+      &UI_BAR_TEXT,           // 25
+      &UI_DAMAGE_BG,          // 26
+      &UI_NOTE_BG,            // 27
   };
 
   const std::filesystem::path WORKING_DIRECTORY = UE4SSProgram::get_program().get_working_directory();
@@ -412,6 +441,7 @@ namespace Settings {
             double v = std::stod(val_str);
             auto *f = float_settings[index];
             f->value = std::max(f->min_value, std::min(f->max_value, v));
+            if (f == &UI_DAMAGE_BG) g_saw_damage_bg = true;
           } catch (...) {}
           continue;
         }
@@ -420,6 +450,7 @@ namespace Settings {
     }
 
     configFile.close();
+    if (!g_saw_damage_bg) UI_DAMAGE_BG.value = UI_OVERLAY_BG.value;
   }
 
   void saveConfig() {
@@ -527,14 +558,37 @@ namespace {
   // account only goes to the game's request, never shown or logged).
   int g_online_by = 0;
   std::string g_online_by_id, g_online_by_name;
-  constexpr size_t kOnlineRows = 8;  // search, sort, page, opponent, version, position, gauge, creator
+  int g_online_number = -1, g_online_type = 0, g_online_sit = 0, g_online_official = 0, g_online_cleared = 0, g_online_platform = 0;
+  constexpr int kOnlineSorts = 7;
+  constexpr int kSituationTags[] = {0, 8, 9, 10, 7, 11};
+  constexpr size_t kOnlineFirstFilter = 3;
+  constexpr size_t kOnlineFilters = 10;
+  bool onlinePageRow() { return !combo_online::results().empty() || g_online_page > 0; }
+  size_t onlineHead() { return kOnlineFirstFilter + kOnlineFilters + (onlinePageRow() ? 1 : 0); }
   const char* const kCharaNames[] = {"Sol", "Ky", "May", "Axl", "Chipp", "Potemkin", "Faust", "Millia", "Zato-1", "Ramlethal",
                                      "Leo", "Nagoriyuki", "Giovanna", "Anji", "I-No", "Goldlewis", "Jack-O'", "Happy Chaos",
                                      "Baiken", "Testament", "Bridget", "Sin", "Bedman?", "Asuka", "Johnny", "Elphelt", "A.B.A",
                                      "Slayer", "Dizzy", "Venom", "Unika", "Lucy", "Jam", "Robo-Ky"};
   constexpr int kCharaCount = static_cast<int>(sizeof(kCharaNames) / sizeof(kCharaNames[0]));
+  struct OnlineFilterRow { int* value; int count; };
+  std::vector<OnlineFilterRow> onlineFilterRows() {
+    return {{&g_online_vs, kCharaCount + 1}, {&g_online_ver, 2}, {&g_online_type, 3},
+            {&g_online_pos, 3}, {&g_online_gauge, 4}, {&g_online_sit, 6}, {&g_online_official, 2},
+            {&g_online_by, g_online_by_id.empty() ? 5 : 6}, {&g_online_cleared, 2}, {&g_online_platform, 2}};
+  }
   std::wstring g_search_status;
   int g_detail = -1;  // the result shown in full, -1 = the list
+  bool g_search_again = false;
+  std::string clipName(const std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) return s;
+    size_t n = max_bytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) n--;
+    return s.substr(0, n) + "...";
+  }
+  bool detailShown() {
+    if (g_detail >= 0 && g_detail >= static_cast<int>(combo_online::results().size())) g_detail = -1;
+    return g_detail >= 0;
+  }
   std::wstring versionName(int index);
   std::string utf8(const std::wstring& w);
   // A result in full: what it is, then each step, as the game words them.
@@ -552,14 +606,23 @@ namespace {
   constexpr size_t kDetailActions = 4;  // back, try, keep, this player's combos
   void searchOnline() {
     const int chara = combo_trials::playerChara();
-    if (!ReplayManager::instance().status().training || chara < 0) { g_search_status = L"Open this in training mode"; return; }
+    if ((!ReplayManager::instance().status().training && !combo_trials::nativeFight()) || chara < 0) { g_search_status = L"Open this in training mode"; return; }
+    if (combo_online::searching()) { g_search_again = true; g_search_status = L"Searching Combo Maker..."; return; }
+    g_search_again = false;
     combo_online::Filter f;
     f.chara = chara;
     f.vs = g_online_vs - 1;
     f.current = g_online_ver == 1;
     if (g_online_pos) f.tags.push_back(g_online_pos == 1 ? 2 : 3);
     if (g_online_gauge) f.tags.push_back(3 + g_online_gauge);
-    if (g_online_by && !g_online_by_id.empty()) f.creator_id = g_online_by_id;
+    if (g_online_sit > 0 && g_online_sit < 6) f.tags.push_back(kSituationTags[g_online_sit]);
+    if (g_online_official) f.tags.push_back(1);
+    if (g_online_by >= 1 && g_online_by <= 4) f.player = g_online_by - 1;
+    if (g_online_by == 5 && !g_online_by_id.empty()) f.creator_id = g_online_by_id;
+    f.type = g_online_type;
+    f.number = g_online_number;
+    f.not_cleared = g_online_cleared == 1;
+    f.own_platform = g_online_platform == 1;
     const std::wstring why = combo_online::search(f, g_online_sort, g_online_page);
     g_search_status = why.empty() ? L"Searching Combo Maker..." : why;
     if (why.empty()) g_detail = -1;
@@ -582,20 +645,21 @@ namespace {
   }
   void pickOnline(int version) {
     combo_trials::setOnlineVersion(version);
-    g_trials_status = version
+    g_trials_status = combo_trials::onlineVersion()
         ? L"Online: " + versionName(version) + L". Park and rooms only; opponent must match. Resets at main menu."
-        : L"Online version off.";
+        : version ? L"Online version unavailable in this game version (see the log)."
+                  : L"Online version off.";
   }
   std::wstring versionName(int index);
   constexpr int kNewestVersion = 39;
   void refreshTrials() {
     if (!combo_trials::available()) { g_trials.clear(); g_trials_status = L"Not available in this game version"; return; }
-    if (!ReplayManager::instance().status().training) { g_trials.clear(); g_trials_status = L"Open this in training mode"; return; }
+    if (!ReplayManager::instance().status().training && !combo_trials::nativeFight()) { g_trials.clear(); g_trials_status = L"Open this in training mode"; return; }
     g_trials = combo_trials::list();
-    // Grouped by battle version, oldest first; by number within a version (your own unsent
+    // Grouped by battle version, newest first; by number within a version (your own unsent
     // ones, numbered 0, first). A combo in both lists (yours and kept) shows once.
     std::stable_sort(g_trials.begin(), g_trials.end(), [](const combo_trials::Entry& a, const combo_trials::Entry& b) {
-      return a.version != b.version ? a.version < b.version : a.number < b.number;
+      return a.version != b.version ? a.version > b.version : a.number < b.number;
     });
     g_trials.erase(std::unique(g_trials.begin(), g_trials.end(), [](const combo_trials::Entry& a, const combo_trials::Entry& b) {
       return a.number && a.number == b.number;
@@ -619,6 +683,7 @@ namespace {
   // Plays the loaded combo's recording on your character, or stops it.
   void watchTrial() {
     if (combo_trials::watching()) { combo_trials::stopWatching(); g_trials_status = L"Your turn."; return; }
+    if (combo_trials::nativeFight()) { g_trials_status = L"This is the game's own Combo Recipe fight: its demo is in the game's pause menu."; return; }
     if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
     if (!combo_trials::active()) { g_trials_status = L"Load a combo first."; return; }
     g_trials_status = combo_trials::watch()
@@ -644,23 +709,36 @@ namespace {
   }
   // The page's rows in order: the loaded combo's actions (always there, so the rows never
   // move under the mouse or a held key), the two version pickers, then the combos.
-  enum class TrialRow { Stop, Watch, Practice, Version, Online, Combo };
-  struct TrialRowRef { TrialRow kind; size_t combo = 0; };
+  enum class TrialRow { Stop, Watch, Practice, Version, Record, Online, Group, Combo };
+  struct TrialRowRef { TrialRow kind; size_t combo = 0; int version = 0; int count = 0; };
+  std::set<int> g_trials_open = {kNewestVersion};
   std::vector<TrialRowRef> trialRows() {
     std::vector<TrialRowRef> r;
     r.push_back({TrialRow::Stop});
     r.push_back({TrialRow::Watch});
     r.push_back({TrialRow::Practice});
     r.push_back({TrialRow::Version});
+    r.push_back({TrialRow::Record});
     r.push_back({TrialRow::Online});
-    for (size_t i = 0; i < g_trials.size(); i++) r.push_back({TrialRow::Combo, i});
+    for (size_t i = 0; i < g_trials.size();) {
+      size_t j = i;
+      while (j < g_trials.size() && g_trials[j].version == g_trials[i].version) j++;
+      r.push_back({TrialRow::Group, i, g_trials[i].version, static_cast<int>(j - i)});
+      if (g_trials_open.count(g_trials[i].version))
+        for (size_t k = i; k < j; k++) r.push_back({TrialRow::Combo, k});
+      i = j;
+    }
     return r;
   }
   void loadTrial(size_t i) {
     if (i >= g_trials.size()) return;
-    if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
-    const std::wstring err = combo_trials::load(g_trials[i]);
-    g_trials_status = err.empty() ? L"Combo loaded." : err;
+    if (!ReplayManager::instance().status().training && !combo_trials::nativeFight()) { g_trials_status = L"Open this in training mode"; return; }
+    bool reloading = false;
+    const std::wstring err = combo_trials::start(g_trials[i], reloading);
+    g_trials_version = combo_trials::trainingVersion();
+    const int opp = g_trials[i].opponent;
+    const std::wstring vs = opp >= 0 && opp < kCharaCount ? std::wstring(kCharaNames[opp], kCharaNames[opp] + std::strlen(kCharaNames[opp])) : std::wstring(L"its dummy");
+    g_trials_status = !err.empty() ? err : reloading ? L"Loading the fight against " + vs + L" for this combo." : L"Combo loaded.";
   }
   // A combo's battle version counts the game's versions in order from 1: 1.00..1.09,
   // 2.00..2.06, 3.00..3.07, 4.00..4.09, 5.00..5.03 (35 is 4.09, 39 is 5.03; both seen
@@ -684,6 +762,7 @@ namespace {
     std::wstring s = e.number ? L"No." + std::to_wstring(e.number) : std::wstring(L"Your combo");
     if (!e.title.empty()) s += L"  \u00B7  " + e.title;
     s += L"  \u00B7  " + std::to_wstring(e.steps) + L" steps";
+    if (e.opponent >= 0 && e.opponent < kCharaCount) s += L"  \u00B7  vs " + std::wstring(kCharaNames[e.opponent], kCharaNames[e.opponent] + std::strlen(kCharaNames[e.opponent]));
     if (!e.creator.empty()) s += L"  \u00B7  by " + e.creator;
     return s;
   }
@@ -914,7 +993,7 @@ namespace {
     }
     const auto& path = g_rec_files[g_rec_file_idx];
     snprintf(dbg, sizeof(dbg), "LOAD: file=%s slot=%d side=%d slots=%llx",
-             path.filename().string().c_str(), g_rec_slot + 1, (int)g_rec_side,
+             utf8(path.filename().wstring()).c_str(), g_rec_slot + 1, (int)g_rec_side,
              (unsigned long long)(uintptr_t)recordings::findSlots());
     COMBO_LOG(dbg);
 
@@ -1084,26 +1163,30 @@ namespace {
               {convSRGB(26, 26, 26, 255), convSRGB(253, 177, 46, 255),
                convSRGB(253, 245, 46, 255), convSRGB(1, 182, 149, 255),
                convSRGB(205, 43, 103, 255), convSRGB(1, 111, 188, 255),
-               convSRGB(1, 111, 188, 255), convSRGB(26, 26, 26, 255)}},
+               convSRGB(1, 111, 188, 255), convSRGB(26, 26, 26, 255),
+               convSRGB(241, 241, 240, 255), convSRGB(190, 120, 240, 255), convSRGB(110, 20, 215, 255)}},
       Palette{// CLASSIC
               FLinearColor{.8f, .1f, .1f, 1.f},
               FLinearColor{0.05f, 0.05f, 0.05f, 0.7f},
               {FLinearColor{.2f, .2f, .2f, .9f}, FLinearColor{.1f, .1f, .8f, .9f},
                FLinearColor{.1f, .6f, .1f, .9f}, FLinearColor{.7f, .7f, .1f, .9f},
                FLinearColor{.8f, .1f, .1f, .9f}, FLinearColor{.8f, .4f, .1f, .9f},
-               FLinearColor{.8f, .4f, .1f, .9f}, FLinearColor{.2f, .2f, .2f, .9f}}},
+               FLinearColor{.8f, .4f, .1f, .9f}, FLinearColor{.2f, .2f, .2f, .9f},
+               FLinearColor{.82f, .82f, .82f, .9f}, FLinearColor{.6f, .3f, .8f, .9f}, FLinearColor{.35f, .0f, .95f, .9f}}},
       Palette{// DUSTLOOP
               convSRGB(255, 0, 0, 255), convSRGB(23, 28, 38, 255),
               {convSRGB(128, 128, 128, 255), convSRGB(233, 172, 4, 255),
                convSRGB(233, 215, 4, 255), convSRGB(54, 179, 126, 255),
                convSRGB(255, 93, 93, 255), convSRGB(0, 105, 182, 255),
-               convSRGB(0, 105, 182, 255), convSRGB(128, 128, 128, 255)}},
+               convSRGB(0, 105, 182, 255), convSRGB(128, 128, 128, 255),
+               convSRGB(213, 216, 222, 255), convSRGB(190, 130, 235, 255), convSRGB(104, 0, 204, 255)}},
       Palette{// COLORBLIND
               convSRGB(0, 114, 178, 255), convSRGB(23, 28, 38, 255),
               {convSRGB(100, 100, 100, 255), convSRGB(230, 159, 0, 255),
                convSRGB(240, 228, 66, 255), convSRGB(0, 158, 115, 255),
                convSRGB(0, 114, 178, 255), convSRGB(86, 180, 233, 255),
-               convSRGB(86, 180, 233, 255), convSRGB(100, 100, 100, 255)}},
+               convSRGB(86, 180, 233, 255), convSRGB(100, 100, 100, 255),
+               convSRGB(225, 225, 225, 255), convSRGB(204, 121, 167, 255), convSRGB(213, 94, 0, 255)}},
   };
 
   const wchar_t* pageLabel(MenuPage page) {
@@ -1130,7 +1213,7 @@ namespace {
 
   // Row order, section headings and actions share one definition for mouse,
   // keyboard/controller navigation and both menu renderers. Config IDs stay put.
-  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont, TakeoverToggle, CopyDiagnostics, Notice };
+  enum class SettingsAction { None, ResetWindows, PickColor, PickFont, ResetFont, TakeoverToggle, CopyDiagnostics, Notice, TrainingVersion };
   ULONGLONG g_diag_copied_at = 0;
   ULONGLONG g_diag_failed_at = 0;
 
@@ -1334,6 +1417,7 @@ namespace {
                                        SettingsRowDef{L"", L"Hit marks", &BAR_HITS},
                                        SettingsRowDef{L"", L"Gap counts", &BAR_GAPS},
                                        SettingsRowDef{L"", L"Stun countdown", &BAR_COUNTDOWN},
+                                       SettingsRowDef{L"", L"Knockdown colors", &BAR_KNOCKDOWN},
                                        SettingsRowDef{L"", L"Input bar", &INPUT_BAR}});
         for (size_t i = 0; i < rows.size(); i++)
           if (rows[i].setting == &BAR_UNFOLD) {
@@ -1344,9 +1428,10 @@ namespace {
         rows.push_back({L"", L"Background", &BAR_PANEL});
         rows.push_back({L"", L"Opacity", nullptr, &UI_BAR_BG});
       }
-      if (imgui_overlay::running())
+      if (imgui_overlay::running()) {
         rows.push_back({L"", L"Size", nullptr, &UI_SCALE_BAR});
-      else {
+        rows.push_back({L"", L"Text size", nullptr, &UI_BAR_TEXT});
+      } else {
         rows.push_back({L"", L"X position (screen ratio)", nullptr, &BAR_CENTER_X_RATIO});
         rows.push_back({L"", L"Y position (screen ratio)", nullptr, &BAR_CENTER_Y_RATIO});
       }
@@ -1355,9 +1440,14 @@ namespace {
     if (page == MenuPage::Hitboxes)
       return {{L"", L"Hitboxes", &HITBOXES}};
     if (page == MenuPage::TimingInput) {
-      std::vector<SettingsRowDef> rows = {{L"", L"Input delay", &DELAY_AMOUNT}};
+      std::vector<SettingsRowDef> rows = {{L"", L"Input delay", &INPUT_DELAY},
+                                          {L"", L"Slow motion", &DELAY_AMOUNT},
+                                          {L"Battle version", L"Training runs on", nullptr, nullptr, SettingsAction::TrainingVersion},
+                                          {L"", L"Fighters with edits keep today's script", &EDITS_KEEP_TODAY},
+                                          {L"Rules from older versions", L"Hurtboxes when hit or blocking", &OLD_HURTBOXES},
+                                          {L"", L"R.I.S.C. rules", &OLD_RISC_DAMAGE}};
       if (imgui_overlay::running()) {
-        rows.push_back({L"Battle version", L"Show", &VERSION_SHOWN});
+        rows.push_back({L"Battle version window", L"Show window", &VERSION_SHOWN});
         rows.push_back({L"", L"Title", &VERSION_TITLE});
         rows.push_back({L"", L"Background", &VERSION_BG});
         rows.push_back({L"", L"Opacity", nullptr, &UI_VERSION_BG});
@@ -1390,6 +1480,7 @@ namespace {
         rows.push_back({L"", L"Position", &DAMAGE_AT_GAME});
         rows.push_back({L"", L"Title", &DAMAGE_TITLE});
         rows.push_back({L"", L"Background", &DAMAGE_BG});
+        rows.push_back({L"", L"Opacity", nullptr, &UI_DAMAGE_BG});
       }
       return rows;
     }
@@ -1411,13 +1502,13 @@ namespace {
       if (page == MenuPage::Keybinds) {
         static const struct { const wchar_t* section; int action; } CONTROLS[] = {
           {L"Menu", binds::MENU}, {L"", binds::UP}, {L"", binds::DOWN}, {L"", binds::LEFT}, {L"", binds::RIGHT},
-          {L"Show and hide", binds::FRAMEBAR}, {L"", binds::HITBOXES}, {L"", binds::ONLINE_VERSION},
+          {L"Show and hide", binds::FRAMEBAR}, {L"", binds::HITBOXES}, {L"", binds::ONLINE_VERSION}, {L"", binds::HIDE_HUD},
           {L"Pause the whole game", binds::PAUSE}, {L"", binds::ADVANCE},
           {L"Timeline (replays)", binds::TICK_BACK}, {L"", binds::TICK_FORWARD},
           {L"Hold the fight (training and replays)", binds::BOX_PAUSE}, {L"", binds::BOX_STEP}, {L"", binds::STEP_BACK},
           {L"Rewind and takeover", binds::SAVE}, {L"", binds::LOAD}, {L"", binds::TAKEOVER_P1}, {L"", binds::TAKEOVER_P2},
           {L"Training", binds::TRAINING_RECORD}, {L"", binds::TRAINING_PLAYBACK}, {L"", binds::TRAINING_RESET},
-          {L"", binds::FREE_CAMERA}, {L"", binds::COLOR_EDITOR}, {L"", binds::BOX_EDITOR},
+          {L"", binds::FREE_CAMERA}, {L"", binds::COLOR_EDITOR}, {L"", binds::BOX_EDITOR}, {L"", binds::RELOAD_SCRIPT},
         };
         const wchar_t* section = L"";
         for (const auto& c : CONTROLS) {
@@ -1435,6 +1526,7 @@ namespace {
           rows.push_back({L"", L"Status line", &STATUS_LINE});
           rows.push_back({L"", L"Status opacity", nullptr, &STATUS_BG_OPACITY});
           rows.push_back({L"", L"Status text size", nullptr, &STATUS_TEXT_SIZE});
+          rows.push_back({L"On-screen messages", L"Opacity", nullptr, &UI_NOTE_BG});
         }
         const auto hotkeysBegin = rows.size();
         for (int action : TAKEOVER_HOTKEYS) hotkey(action);
@@ -1456,6 +1548,7 @@ namespace {
         {L"", L"Reset font", nullptr, nullptr, SettingsAction::ResetFont},
         {L"Windows", L"Menu size", nullptr, &UI_SCALE},
         {L"", L"Hide window frames", &UI_HIDE_WINDOW_DECORATIONS},
+        {L"", L"Editor panels while the HUD is hidden", &HUD_KEEPS_EDITORS},
         {L"", L"Reset window positions", nullptr, nullptr, SettingsAction::ResetWindows},
         {L"Report a problem", L"Copy diagnostics", nullptr, nullptr, SettingsAction::CopyDiagnostics},
       };
@@ -1479,7 +1572,7 @@ namespace {
       case MenuPage::Recordings:  return "Save training slots as .txt files, load them back, or feed a file straight to the dummy.";
       case MenuPage::Takeover:    return "Replay takeover: jump into either side of a replay, with a rewind point to go back to.";
       case MenuPage::Timeline:    return "A small window with rewind, pause, frame step and record.";
-      case MenuPage::TimingInput: return "A delay on every fight frame, in training and replays, and the battle version window.";
+      case MenuPage::TimingInput: return "Input delay for training, slow motion for training and replays, and the battle version window.";
       case MenuPage::ComboTrials: return "Try a combo you saved or downloaded in Combo Maker. Training starts where the combo starts.";
       case MenuPage::ComboSearch: return "Find Combo Maker combos online for the character you're playing and keep them for Combo Trials.";
       default: return "";
@@ -1490,8 +1583,8 @@ namespace {
     switch (action) {
       case binds::FRAMEBAR:          return "Shows or hides the frame bar.";
       case binds::HITBOXES:          return "Shows or hides hitboxes and hurtboxes.";
-      case binds::PAUSE:             return "Freezes the whole game, drawing included. With the color editor or free camera on, only the fight. Press again to go on.";
-      case binds::ADVANCE:           return "While frozen with Pause, goes one frame forward. Hold it to keep stepping.";
+      case binds::PAUSE:             return "In training, with the fight held or Script & boxes or the color editor open, it holds the fight or lets it go, like Hold fight. Otherwise it freezes the whole game, drawing included. With the free camera on in training, only the fight stops. Press again to go on.";
+      case binds::ADVANCE:           return "While frozen with Pause, goes one frame forward. In training, with the fight held or Script & boxes or the color editor open, it steps the held fight one frame, like Step forward one frame. Hold it to keep stepping.";
       case binds::MENU:              return "Opens and closes this menu.";
       case binds::SAVE:              return "Sets the rewind point at this frame, in training or a replay.";
       case binds::TAKEOVER_P1:       return "In a replay, asks to take over P1. Press again for yes. Later it asks to stop and goes back to the rewind point.";
@@ -1510,9 +1603,11 @@ namespace {
       case binds::STEP_BACK:         return "Replays: goes one frame back and holds the fight there. Hold it to keep stepping back.";
       case binds::TICK_BACK:         return "Replays: jumps back to the previous mark on the Timeline (the marks are one second apart) and holds the fight there.";
       case binds::TICK_FORWARD:      return "Replays: jumps forward to the next mark on the Timeline (the marks are one second apart) and holds the fight there.";
-      case binds::FREE_CAMERA:       return "Training: a camera you move yourself, with or without the color editor.";
+      case binds::FREE_CAMERA:       return "Training and replays: a camera you move yourself. In training it works with or without the color editor.";
       case binds::COLOR_EDITOR:      return "Training: opens and closes the color editor.";
       case binds::BOX_EDITOR:        return "Training: opens and closes Script & boxes (each fighter's move, boxes and script).";
+      case binds::RELOAD_SCRIPT:     return "Script & boxes: loads every move and shared routine that came from a .bbs file again, after you changed the files outside the game.";
+      case binds::HIDE_HUD:          return "Hides the game's own HUD and every StriveLabs window and overlay, for screenshots and recording. Press it again to bring them back. Hitboxes keep their own key.\nAn option on the Appearance page keeps the editor panels usable while it is on.";
       default: return "";
     }
   }
@@ -1538,9 +1633,16 @@ namespace {
       {"delim", "Draws a line where one state ends and the next begins."},
       {"ui_bar_bg", "How dark the frame bar's background is."},
       {"ui_scale_bar", "The size of the frame bar window."},
+      {"ui_bar_text", "The size of the numbers on the frame bar, without changing the bar itself."},
+      {"framebar_knockdown", "Marks a knockdown on the bar: a line under the frames where a hit on the ground still connects (OTG), and a pale block while the fighter can't be hit."},
       {"hitboxes", "Draws hitboxes and hurtboxes on the fighters in training and replays."},
       {"delay_amount", "Holds every fight frame this long before it runs, in training and replays. The fight plays slower."},
+      {"input_delay_frames", "Your own inputs reach your fighter this many frames late, in training. For practicing with online delay."},
       {"battle_version_shown", "A small window naming the battle version the fight is running on."},
+      {"edits_keep_today", "On an older battle version, a fighter you have Script & boxes edits loaded for keeps today's script and box files, so every edit fits. Rules, the shared script and the other fighter are the old version's. Load the edits, then reload training."},
+      {"hide_hud_keeps_editors", "With the Hide all HUD key on, the Color editor and Script & boxes stay usable (with every window they open), so you can edit on a clean screen. Open them with their own keys. The frame bar, meters, damage window, timeline and this menu stay hidden. Disabled: the key hides every StriveLabs window too."},
+      {"old_hurtboxes", "Ver. 4.09 gives every character its own hurtboxes back while it is hit or blocks, as before 5.00. Training only, on the current battle version. Dashes keep today's."},
+      {"old_risc_damage", "Ver. 4.09 brings back the damage bonus on the counter hit itself: 10%, or 20% when it lands on a full R.I.S.C. gauge, as before 5.00. Ver. 4.06 also brings back R.I.S.C. as before 4.07: the gauge is the combo scaling itself, each hit burns a quarter of it, and attacks build it at the old rate. Training only, on the current battle version."},
       {"ui_version_bg", "How dark the battle version window's background is."},
       {"tension_enabled", "Shows the meters window."},
       {"tension_current", "A line with the tension each side has."},
@@ -1556,7 +1658,9 @@ namespace {
       {"meters_snap", "Free to drag, kept on top of the frame bar, or kept under the damage panel."},
       {"meters_decimals", "How many decimals the meter numbers show."},
       {"ui_scale_meters", "The size of the meters, damage and battle version windows."},
-      {"ui_overlay_bg", "How dark the meters and damage windows' background is."},
+      {"ui_overlay_bg", "How dark the meters window's background is."},
+      {"ui_damage_bg", "How dark the damage window's background is."},
+      {"ui_note_bg", "How dark the box behind on-screen messages is (reloads, rewind points, prompts)."},
       {"damage_panel", "The game's training damage panel in a window of its own, for P1, P2 or both."},
       {"damage_hide_game", "Hides the game's damage panel for the sides shown above. Only with Position on Free."},
       {"damage_position", "Free: the mod's own window. Game's spot: no extra window, the game's panel stays and Meters can sit under it."},
@@ -1581,6 +1685,7 @@ namespace {
       case SettingsAction::PickFont:       return "The font of the overlay windows. Opens a file picker for a .ttf or .otf.";
       case SettingsAction::ResetFont:      return "Back to the Barlow font.";
       case SettingsAction::TakeoverToggle: return "During takeover, play with the buttons below. Off, the game's own button setup is used.";
+      case SettingsAction::TrainingVersion: return "The battle version training runs on, from the next time it loads. Only versions both characters were in.";
       case SettingsAction::CopyDiagnostics: return "Copies the version, settings and parts of the log to paste into a report. File, folder and mod names are left out.";
       default: break;
     }
@@ -1615,7 +1720,7 @@ namespace {
       case MenuPage::ComboSearch:
         if (g_detail >= 0 && g_detail < static_cast<int>(combo_online::results().size()))
           return 1 + kDetailActions + detailLines(combo_online::results()[static_cast<size_t>(g_detail)]).size();
-        return combo_online::results().size() + 1 + kOnlineRows;
+        return combo_online::results().size() + 1 + onlineHead();
     }
     return ROOT_PAGE_COUNT;
   }
@@ -1701,6 +1806,7 @@ void ModMenu::changeSetting(size_t idx, bool right) {
 }
 
 int g_picker_seq = 0;  // bumped to open the custom color picker
+unsigned long long g_number_unsaved = 0;
 
 void changeLayoutFloat(size_t float_idx, bool right) {
   auto *f = Settings::float_settings[float_idx];
@@ -1731,7 +1837,7 @@ namespace {
   std::atomic<bool> g_menu_minimized{false}, g_menu_restore{false};
 }
 
-bool ModMenu::takesInput() const { return is_showing && (!g_menu_minimized || binds::capturing >= 0); }
+bool ModMenu::takesInput() const { return is_showing && (!g_menu_minimized || binds::capturing >= 0) && !hud_hide::hidden(); }
 void ModMenu::setMinimized(bool minimized) { g_menu_minimized = minimized; }
 void ModMenu::replayStarted() { g_timeline_closed = false; }
 bool ModMenu::takeRestore() { return g_menu_restore.exchange(false); }
@@ -1754,16 +1860,17 @@ void ModMenu::update(PressedKeys data) {
     std::lock_guard<std::mutex> lock(g_view_mutex);
     clicks.swap(g_clicks);
   }
+  for (const auto& c : clicks)
+    if (c.type == MenuClick::Type::Move || (c.type >= MenuClick::Type::TlRewind && c.type != MenuClick::Type::SetNumber) ||
+        (binds::capturing < 0 && (is_showing || c.page >= 0))) applyClick(c);
   {
     std::wstring msg;
     if (combo_online::update(msg)) {
       refreshTrials();  // a download is in the kept list now
       g_search_status = msg;
+      if (g_search_again) searchOnline();
     }
   }
-  for (const auto& c : clicks)
-    if (c.type == MenuClick::Type::Move || c.type >= MenuClick::Type::TlRewind ||
-        (binds::capturing < 0 && (is_showing || c.page >= 0))) applyClick(c);
   applyBrowsePick();
   if (ReplayManager::instance().captureFull()) finishCapture();
   updateInner(data);
@@ -1843,6 +1950,13 @@ void ModMenu::updateInner(PressedKeys data) {
       case SettingsAction::PickFont: startBrowse(true); break;
       case SettingsAction::ResetFont: Settings::setOverlayFont(""); Settings::saveConfig(); break;
       case SettingsAction::TakeoverToggle: binds::use_mod_binds = !binds::use_mod_binds; Settings::saveConfig(); break;
+      case SettingsAction::TrainingVersion: {
+        const auto it = std::find(g_version_choices.begin(), g_version_choices.end(), g_trials_version);
+        const size_t idx = it == g_version_choices.end() ? 0 : static_cast<size_t>(it - g_version_choices.begin());
+        g_trials_version = g_version_choices[rotateVal(idx, data.rotate_right, g_version_choices.size())];
+        combo_trials::setTrainingVersion(g_trials_version);
+        break;
+      }
       case SettingsAction::CopyDiagnostics: {
         const bool copied = copyDiagnostics();
         g_diag_copied_at = copied ? GetTickCount64() : 0;
@@ -1911,10 +2025,17 @@ void ModMenu::updateInner(PressedKeys data) {
       const size_t idx = it == c.end() ? 0 : static_cast<size_t>(it - c.begin());
       pickOnline(c[rotateVal(idx, data.rotate_right, c.size())]);
     } else if (was.kind == TrialRow::Stop) {
-      if (!ReplayManager::instance().status().training) { g_trials_status = L"Open this in training mode"; return; }
+      if (!ReplayManager::instance().status().training && !combo_trials::nativeFight()) { g_trials_status = L"Open this in training mode"; return; }
       if (!combo_trials::active()) { g_trials_status = L"No combo is loaded."; return; }
+      const bool native = combo_trials::nativeFight();
       combo_trials::stop();
-      g_trials_status = L"Trial stopped.";
+      g_trials_status = native ? L"Trial stopped. Going back to training." : L"Trial stopped.";
+    } else if (was.kind == TrialRow::Group) {
+      if (!g_trials_open.erase(was.version)) g_trials_open.insert(was.version);
+    } else if (was.kind == TrialRow::Record) {
+      int v = 0;
+      const std::wstring err = combo_trials::record(v);
+      g_trials_status = !err.empty() ? err : L"Loading the game's Combo Maker recording on " + versionName(v) + L".";
     } else if (was.kind == TrialRow::Watch) watchTrial();
     else if (was.kind == TrialRow::Practice) practiceOnItsVersion();
     else loadTrial(was.combo);
@@ -1931,10 +2052,10 @@ void ModMenu::updateInner(PressedKeys data) {
     if (g_detail >= 0 && g_detail < static_cast<int>(res.size())) {  // one combo in full
       const auto& r = res[static_cast<size_t>(g_detail)];
       if (local_idx == 0) {
-        cursor_position = static_cast<int>(1 + kOnlineRows + static_cast<size_t>(g_detail));
+        cursor_position = static_cast<int>(1 + onlineHead() + static_cast<size_t>(g_detail));
         g_detail = -1;
       } else if (local_idx == 1) {
-        if (!ReplayManager::instance().status().training) { g_search_status = L"Open this in training mode"; return; }
+        if (!ReplayManager::instance().status().training && !combo_trials::nativeFight()) { g_search_status = L"Open this in training mode"; return; }
         const std::wstring why = combo_online::tryIt(r);
         g_search_status = why.empty() ? L"Getting the combo..." : why;
       } else if (local_idx == 2) {
@@ -1943,7 +2064,7 @@ void ModMenu::updateInner(PressedKeys data) {
       } else if (local_idx == 3 && !r.creator_id.empty()) {
         g_online_by_id = r.creator_id;
         g_online_by_name = r.author;
-        g_online_by = 1;
+        g_online_by = 5;
         g_online_page = 0;
         cursor_position = 1;
         searchOnline();
@@ -1953,21 +2074,26 @@ void ModMenu::updateInner(PressedKeys data) {
     if (local_idx == 0) {
       searchOnline();
     } else if (local_idx == 1) {
-      g_online_sort = static_cast<int>(rotateVal(static_cast<size_t>(g_online_sort), data.rotate_right, 4));
+      g_online_sort = static_cast<int>(rotateVal(static_cast<size_t>(g_online_sort), data.rotate_right, kOnlineSorts));
       g_online_page = 0;
       if (!combo_online::results().empty()) searchOnline();
     } else if (local_idx == 2) {
-      g_online_page = static_cast<int>(rotateVal(static_cast<size_t>(g_online_page), data.rotate_right, 20));
-      searchOnline();
-    } else if (local_idx >= 3 && local_idx <= 7) {
-      int* const field[] = {&g_online_vs, &g_online_ver, &g_online_pos, &g_online_gauge, &g_online_by};
-      const size_t count[] = {static_cast<size_t>(kCharaCount) + 1, 2, 3, 4, g_online_by_id.empty() ? 1u : 2u};
-      int& v = *field[local_idx - 3];
-      v = static_cast<int>(rotateVal(static_cast<size_t>(v), data.rotate_right, count[local_idx - 3]));
+      if (g_online_number > 0) {
+        g_online_number = -1;
+        g_online_page = 0;
+        searchOnline();
+      }
+    } else if (local_idx >= kOnlineFirstFilter && local_idx < kOnlineFirstFilter + kOnlineFilters) {
+      const auto rows = onlineFilterRows();
+      const OnlineFilterRow& fr = rows[local_idx - kOnlineFirstFilter];
+      *fr.value = static_cast<int>(rotateVal(static_cast<size_t>(*fr.value), data.rotate_right, static_cast<size_t>(fr.count)));
       g_online_page = 0;
       searchOnline();
-    } else if (local_idx < kOnlineRows + res.size()) {
-      g_detail = static_cast<int>(local_idx - kOnlineRows);
+    } else if (onlinePageRow() && local_idx == kOnlineFirstFilter + kOnlineFilters) {
+      g_online_page = static_cast<int>(rotateVal(static_cast<size_t>(g_online_page), data.rotate_right, 20));
+      searchOnline();
+    } else if (local_idx >= onlineHead() && local_idx < onlineHead() + res.size()) {
+      g_detail = static_cast<int>(local_idx - onlineHead());
       cursor_position = 2;  // on Try
     }
     return;
@@ -2222,6 +2348,8 @@ void ModMenu::draw() {
       else if (row.number) value = formatMenuNumber(*row.number);
       else if (row.action == SettingsAction::TakeoverToggle)
         value = binds::use_mod_binds ? L"<  Enabled   >" : L"<  Disabled  >";
+      else if (row.action == SettingsAction::TrainingVersion)
+        value = g_trials_version ? versionName(g_trials_version) : std::wstring(L"Current");
       tool.drawOutlinedText(label_left, cy + 8.0, FString(row.label), LABEL_SCALE);
       tool.drawOutlinedText(value_left, cy + 8.0, FString(value.c_str()), VALUE_SCALE);
       cy += OPTION_HEIGHT + OPTION_SPACING;
@@ -2353,6 +2481,7 @@ namespace {
 
 std::filesystem::path ModMenu::dataDir() { return Settings::WORKING_DIRECTORY; }
 std::string ModMenu::overlayFont() { return Settings::overlayFont(); }
+float ModMenu::barTextScale() { return static_cast<float>(Settings::UI_BAR_TEXT.value); }
 float ModMenu::uiScale(int which) {
   const FloatSetting* sizes[] = {&Settings::UI_SCALE, &Settings::UI_SCALE_METERS,
                                            &Settings::UI_SCALE_BAR, &Settings::UI_SCALE_TIMELINE};
@@ -2441,10 +2570,11 @@ void ModMenu::applyClick(const MenuClick& c) {
   }
   // A click in a popped-out window acts on that window's page, then the main
   // menu goes back to where it was.
-  if (c.page >= 0 && (c.type == MenuClick::Type::Row || c.type == MenuClick::Type::SetChoice)) {
+  if (c.page >= 0 && (c.type == MenuClick::Type::Row || c.type == MenuClick::Type::SetChoice || c.type == MenuClick::Type::SetNumber)) {
     const size_t saved_page = current_page;
     const int saved_cursor = cursor_position;
     const bool saved_showing = is_showing;
+    const bool saved_minimized = g_menu_minimized.exchange(false);
     current_page = static_cast<size_t>(c.page);
     is_showing = true;  // the timeline works with the F5 menu closed
     MenuClick inner = c;
@@ -2453,6 +2583,7 @@ void ModMenu::applyClick(const MenuClick& c) {
     current_page = saved_page;
     cursor_position = saved_cursor;
     is_showing = saved_showing;
+    g_menu_minimized = saved_minimized;
     return;
   }
   auto page = static_cast<MenuPage>(current_page);
@@ -2472,6 +2603,27 @@ void ModMenu::applyClick(const MenuClick& c) {
   if (page == MenuPage::Root) return;
   if (c.a < 0 || static_cast<size_t>(c.a) >= rowCountForPage(page)) return;
   cursor_position = c.a;
+  if (c.type == MenuClick::Type::SetNumber && page == MenuPage::ComboSearch) {
+    if (detailShown() || c.a != 3) return;
+    const int to = c.b > 0 ? c.b : -1;
+    if (to == g_online_number) return;
+    g_online_number = to;
+    g_online_page = 0;
+    searchOnline();
+    return;
+  }
+  if (c.type == MenuClick::Type::SetNumber) {
+    if (!isSettingsPage(page) || c.a < 1) return;
+    const auto defs = settingsRowsForPage(page);
+    const size_t k = static_cast<size_t>(c.a) - 1;
+    if (k >= defs.size() || !defs[k].number) return;
+    const int fi = Settings::floatIndexById(defs[k].number->id_);
+    if (fi < 0) return;
+    auto* f = Settings::float_settings[static_cast<size_t>(fi)];
+    const double to = std::clamp(f->min_value + c.b * f->step, f->min_value, f->max_value);
+    if (to != f->value) { f->value = to; g_number_unsaved = GetTickCount64(); }
+    return;
+  }
   if (c.type == MenuClick::Type::Row) {
     updateInner(PressedKeys{false, false, false, false, false, c.b == 1, c.b == 0});
     return;
@@ -2491,20 +2643,20 @@ void ModMenu::applyClick(const MenuClick& c) {
     return;
   }
   if (page == MenuPage::ComboSearch) {
-    if (g_detail >= 0) return;  // no choices in a combo's details
+    if (detailShown()) return;  // no choices in a combo's details
     if (c.a == 2) {
-      g_online_sort = std::clamp(c.b, 0, 3);
+      g_online_sort = std::clamp(c.b, 0, kOnlineSorts - 1);
       g_online_page = 0;
       if (!combo_online::results().empty()) searchOnline();
     }
-    if (c.a == 3) {
+    if (onlinePageRow() && c.a == static_cast<int>(kOnlineFirstFilter + kOnlineFilters) + 1) {
       g_online_page = std::clamp(c.b, 0, 19);
       searchOnline();
     }
-    if (c.a >= 4 && c.a <= 8) {
-      int* const field[] = {&g_online_vs, &g_online_ver, &g_online_pos, &g_online_gauge, &g_online_by};
-      const int count[] = {kCharaCount + 1, 2, 3, 4, g_online_by_id.empty() ? 1 : 2};
-      *field[c.a - 4] = std::clamp(c.b, 0, count[c.a - 4] - 1);
+    if (c.a >= static_cast<int>(kOnlineFirstFilter) + 1 && c.a <= static_cast<int>(kOnlineFirstFilter + kOnlineFilters)) {
+      const auto rows = onlineFilterRows();
+      const OnlineFilterRow& fr = rows[static_cast<size_t>(c.a) - 1 - kOnlineFirstFilter];
+      *fr.value = std::clamp(c.b, 0, fr.count - 1);
       g_online_page = 0;
       searchOnline();
     }
@@ -2524,6 +2676,11 @@ void ModMenu::applyClick(const MenuClick& c) {
       Settings::saveConfig();
       return;
     }
+    if (row.action == SettingsAction::TrainingVersion) {
+      g_trials_version = g_version_choices[static_cast<size_t>(std::clamp(c.b, 0, static_cast<int>(g_version_choices.size()) - 1))];
+      combo_trials::setTrainingVersion(g_trials_version);
+      return;
+    }
     auto* setting = row.setting;
     if (setting && c.b >= 0 && static_cast<size_t>(c.b) < setting->display.count) {
       setting->value = static_cast<size_t>(c.b);
@@ -2532,7 +2689,15 @@ void ModMenu::applyClick(const MenuClick& c) {
   }
 }
 
+void ModMenu::savePending(bool now) {
+  if (g_number_unsaved && (now || GetTickCount64() - g_number_unsaved > 400)) {
+    g_number_unsaved = 0;
+    Settings::saveConfig();
+  }
+}
+
 void ModMenu::buildView() {
+  savePending();
   MenuView v;
   v.showing = is_showing;
   const auto page = static_cast<MenuPage>(current_page);
@@ -2573,12 +2738,22 @@ void ModMenu::buildView() {
       } else if (def.action == SettingsAction::TakeoverToggle) {
         r.kind = MenuRowView::Kind::Choice;
         r.choices = {"Disabled", "Enabled"}; r.choice = binds::use_mod_binds ? 1 : 0;
+      } else if (def.action == SettingsAction::TrainingVersion) {
+        r.kind = MenuRowView::Kind::Choice;
+        r.choice = 0;
+        for (size_t k = 0; k < g_version_choices.size(); k++) {
+          r.choices.push_back(k == 0 ? std::string("Current") : utf8(versionName(g_version_choices[k])));
+          if (g_version_choices[k] == g_trials_version) r.choice = static_cast<int>(k);
+        }
       } else if (const auto* s = def.setting) {
         r.kind = MenuRowView::Kind::Choice;
         for (size_t c = 0; c < s->display.count; c++) r.choices.push_back(clean(s->display.values[c]));
         r.choice = static_cast<int>(s->value);
       } else if (const auto* f = def.number) {
         r.kind = MenuRowView::Kind::Number;
+        r.ranged = f->max_value > f->min_value && f->step > 0;
+        r.num = f->value; r.lo = f->min_value; r.hi = f->max_value; r.step = f->step;
+        r.live = f->id_.find("scale") == std::string::npos && f->id_.find("text") == std::string::npos;
         if (f->id_.rfind("ui_", 0) == 0) {
           r.value = std::to_string(static_cast<int>(std::lround(f->value * 100))) + "%";
         } else r.value = utf8(formatMenuNumber(*f));
@@ -2622,11 +2797,11 @@ void ModMenu::buildView() {
         "In a replay, records that player's inputs into a .txt, up to 40 seconds.");
     status = utf8(g_rec_status);
   } else if (shown == MenuPage::ComboTrials) {
-    int last_version = -1;
     for (const TrialRowRef& t : trialRows()) {
       switch (t.kind) {
         case TrialRow::Stop:
-          row(MenuRowView::Kind::Action, "Stop trial", "Stop", "Ends the trial.");
+          if (combo_trials::nativeFight()) row(MenuRowView::Kind::Action, "Stop trial", "Back to training", "Ends the trial and loads training again with the opponent, stage and colors you had.");
+          else row(MenuRowView::Kind::Action, "Stop trial", "Stop", "Ends the trial.");
           out.back().section = combo_trials::active() ? utf8(combo_trials::trialName()) : std::string("No combo loaded");
           break;
         case TrialRow::Watch:
@@ -2648,6 +2823,10 @@ void ModMenu::buildView() {
           r.choice = sel; out.push_back(r);
           break;
         }
+        case TrialRow::Record:
+          row(MenuRowView::Kind::Action, "Record a combo", "Record",
+              "Opens the game's own Combo Maker recording with your character and this dummy, on the battle version picked above. Save and upload it from the game's menu there.");
+          break;
         case TrialRow::Online: {
           MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Online version"; r.tip = "The battle version for Park and room matches, until the main menu. Your opponent needs StriveLabs on the same version.";
           const auto c = onlineChoices();
@@ -2661,11 +2840,17 @@ void ModMenu::buildView() {
         case TrialRow::Combo: {
           const auto& e = g_trials[t.combo];
           row(MenuRowView::Kind::Action, utf8(trialLabel(e)), "Try", "Starts this combo as a trial. Each move lights up as it lands.");
-          if (e.version != last_version) {
-            last_version = e.version;
-            const std::wstring v = versionName(e.version);
-            out.back().section = v.empty() ? std::string("Unknown version") : utf8(v) + (e.version == kNewestVersion ? " (current)" : "");
-          }
+          break;
+        }
+        case TrialRow::Group: {
+          const std::wstring v = versionName(t.version);
+          MenuRowView r;
+          r.kind = MenuRowView::Kind::Fold;
+          r.label = v.empty() ? std::string("Unknown version") : utf8(v) + (t.version == kNewestVersion ? " (current)" : "");
+          r.value = std::to_string(t.count) + (t.count == 1 ? " combo" : " combos");
+          r.choice = g_trials_open.count(t.version) ? 1 : 0;
+          r.tip = "Shows or hides this version's combos.";
+          out.push_back(r);
           break;
         }
       }
@@ -2693,25 +2878,46 @@ void ModMenu::buildView() {
   } else if (shown == MenuPage::ComboSearch) {
     row(MenuRowView::Kind::Action, "Search Combo Maker", combo_online::busy() ? "Waiting..." : "Search", "Looks up combos for the character you're playing, with the sort and filters below.");
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Sort by"; r.tip = "The order of the results.";
-      r.choices = {"Downloads", "Likes", "Newest", "Clear rate"}; r.choice = g_online_sort; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Page"; r.tip = "Which page of results to fetch.";
-      for (int k = 1; k <= 20; k++) r.choices.push_back(std::to_string(k));
-      r.choice = g_online_page; out.push_back(r); }
+      r.choices = {"Most downloads", "Most likes", "Newest", "Oldest", "Highest clear rate", "Lowest clear rate", "Highest combo number"};
+      r.arrows = true; r.choice = g_online_sort; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Field; r.label = "Combo number"; r.tip = "Finds one combo by its number. Leave it empty to search with the filters below.";
+      r.value = g_online_number > 0 ? std::to_string(g_online_number) : std::string(); out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Opponent"; r.section = "Filters"; r.tip = "Only combos made against this character.";
       r.choices.push_back("Anyone");
       for (int k = 0; k < kCharaCount; k++) r.choices.push_back(kCharaNames[k]);
       r.choice = g_online_vs; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Version"; r.tip = "Any battle version, or only combos made on the current one.";
       r.choices = {"Any", "Current only"}; r.choice = g_online_ver; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Type"; r.tip = "Only combos, or only setplay recipes.";
+      r.choices = {"Any", "Combo", "Setplay"}; r.choice = g_online_type; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Position"; r.tip = "Only combos tagged corner or midscreen.";
       r.choices = {"Any", "Corner", "Midscreen"}; r.choice = g_online_pos; out.push_back(r); }
     { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Gauge"; r.tip = "Only combos tagged with this tension.";
       r.choices = {"Any", "0%", "50%", "100%"}; r.choice = g_online_gauge; out.push_back(r); }
-    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Creator"; r.tip = "Anyone, or only the player picked with More by this player.";
-      r.choices = {"Anyone"};
-      if (!g_online_by_id.empty()) r.choices.push_back(g_online_by_name.empty() ? std::string("That player") : g_online_by_name);
-      r.choice = g_online_by; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Situation"; r.tip = "Only combos with this tag from Combo Maker.";
+      static const char* const kFallback[] = {"", "Counter hit", "Crouching opponent", "Opponent in the air", "R.I.S.C. max", "Random"};
+      r.choices = {"Any"};
+      for (int k = 1; k < 6; k++) {
+        const std::string name = utf8(combo_online::tagName(kSituationTags[k]));
+        r.choices.push_back(name.empty() ? std::string(kFallback[k]) : name);
+      }
+      r.arrows = true; r.choice = g_online_sit; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Official"; r.tip = "Only combos tagged Official.";
+      r.choices = {"Any", "Official only"}; r.choice = g_online_official; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Made by"; r.tip = "Anyone, yourself, your follow, rival or friend lists, or the player picked with More by this player.";
+      r.choices = {"Anyone", "Me", "Players I follow", "My rivals", "My friends"};
+      if (!g_online_by_id.empty()) r.choices.push_back(g_online_by_name.empty() ? std::string("That player") : clipName(g_online_by_name, 24));
+      r.arrows = true; r.choice = g_online_by; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Cleared"; r.tip = "Leaves out the combos you already cleared.";
+      r.choices = {"Any", "Not cleared by me"}; r.choice = g_online_cleared; out.push_back(r); }
+    { MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Platform"; r.tip = "Combos from every platform, or only from Steam players.";
+      r.choices = {"All", "Steam only"}; r.choice = g_online_platform; out.push_back(r); }
     const size_t first_result = out.size();
+    if (onlinePageRow()) {
+      MenuRowView r; r.kind = MenuRowView::Kind::Choice; r.label = "Page"; r.tip = "The page of results shown below. Each page holds 20 combos.";
+      for (int k = 1; k <= 20; k++) r.choices.push_back(std::to_string(k));
+      r.arrows = true; r.choice = g_online_page; out.push_back(r);
+    }
     for (const auto& o : combo_online::results()) row(MenuRowView::Kind::Action, onlineLabel(o), "Details", "Opens the combo: its steps, and Try or Save.");
     if (out.size() > first_result) out[first_result].section = "Results";
     status = utf8(g_search_status);
@@ -2728,7 +2934,7 @@ void ModMenu::buildView() {
   };
   // The list is read when the page comes up (mouse or keys), not every frame.
   if (!is_showing) g_trials_last_shown = MenuPage::Root;  // reopening the menu reads the list again
-  if (is_showing && shown == MenuPage::ComboTrials && g_trials_last_shown != MenuPage::ComboTrials) refreshTrials();
+  if (is_showing && (shown == MenuPage::ComboTrials || shown == MenuPage::TimingInput) && g_trials_last_shown != shown) refreshTrials();
   g_trials_last_shown = is_showing ? shown : MenuPage::Root;
   if (is_showing) buildRows(shown, v.rows, v.status);
   // The damage panel's frame rows (Total Action, Attack Startup...) come from the game,
@@ -2754,7 +2960,8 @@ void ModMenu::buildView() {
   v.version_title = Settings::VERSION_TITLE.value;
   v.version_panel = Settings::VERSION_BG.value;
   v.version_bg = static_cast<float>(Settings::UI_VERSION_BG.value);
-  for (int i = 0; i < 8; i++) v.bar_colors[i] = packColor(getScheme().palette.state_colors[i]);
+  for (int i = 0; i < 11; i++) v.bar_colors[i] = packColor(getScheme().palette.state_colors[i]);
+  v.bar_knockdown = Settings::BAR_KNOCKDOWN.value != 0;
   v.meters_under_damage = Settings::METERS_SNAP.value == 2;
   v.damage_at_game = Settings::DAMAGE_AT_GAME.value != 0;
   v.hide_window_decorations = Settings::UI_HIDE_WINDOW_DECORATIONS.value != 0;
@@ -2770,6 +2977,8 @@ void ModMenu::buildView() {
     v.accent_rgb = Settings::UI_ACCENT.value < 6 ? kAccents[Settings::UI_ACCENT.value] : v.custom_rgb;
     v.opacity = static_cast<float>(Settings::UI_OPACITY.value);
     v.overlay_bg = static_cast<float>(Settings::UI_OVERLAY_BG.value);
+    v.damage_bg = static_cast<float>(Settings::UI_DAMAGE_BG.value);
+    v.note_bg = static_cast<float>(Settings::UI_NOTE_BG.value);
     v.bar_bg = static_cast<float>(Settings::UI_BAR_BG.value);
     v.picker_seq = g_picker_seq;
   }
@@ -2835,6 +3044,7 @@ bool ModMenu::markGaps() const { return Settings::BAR_GAPS.value != 0; }
 int ModMenu::damagePanel() const { return imgui_overlay::running() ? static_cast<int>(Settings::DAMAGE_PANEL.value) & 3 : 0; }
 bool ModMenu::hideGameDamagePanel() const { return Settings::DAMAGE_HIDE_GAME.value != 0 && Settings::DAMAGE_AT_GAME.value == 0; }
 bool ModMenu::countdown() const { return Settings::BAR_COUNTDOWN.value != 0; }
+bool ModMenu::markKnockdown() const { return Settings::BAR_KNOCKDOWN.value != 0; }
 bool ModMenu::statusLineEnabled() const { return Settings::STATUS_LINE.value != 0; }
 float ModMenu::statusLineOpacity() const { return static_cast<float>(Settings::STATUS_BG_OPACITY.value); }
 float ModMenu::statusLineSize() const { return static_cast<float>(Settings::STATUS_TEXT_SIZE.value); }
@@ -2844,6 +3054,10 @@ bool ModMenu::fadeEnabled() const { return Settings::FADE.value; }
 bool ModMenu::delimEnabled() const { return Settings::DELIM.value; }
 bool ModMenu::cancelEnabled() const { return false; }
 bool ModMenu::dashEnabled() const { return Settings::SHOW_DASH_FRAMES.value; }
+bool ModMenu::oldHurtboxes() const { return Settings::OLD_HURTBOXES.value != 0; }
+bool ModMenu::editsKeepToday() const { return Settings::EDITS_KEEP_TODAY.value != 0; }
+bool ModMenu::hudKeepsEditors() const { return Settings::HUD_KEEPS_EDITORS.value != 0; }
+int ModMenu::oldRiscDamage() const { return Settings::OLD_RISC_DAMAGE.value; }
 bool ModMenu::crossupEnabled() const { return Settings::CROSSUP_ENABLED.value; }
 double ModMenu::rewindDelaySeconds() const { return Settings::REWIND_DELAY_SECONDS.value; }
 double ModMenu::replayAssistSeconds() const { return Settings::REPLAY_ASSIST_SECONDS.value; }
@@ -2880,6 +3094,7 @@ LayoutPositions ModMenu::getLayoutPositions() const {
 
 constexpr int delayAmounts[4] = {0, 20, 30, 60};
 int ModMenu::delayAmount() const { return delayAmounts[Settings::DELAY_AMOUNT.value]; }
+int ModMenu::inputDelay() const { return Settings::INPUT_DELAY.value; }
 
 CurrentOptions ModMenu::getScheme() const {
   return CurrentOptions{color_palettes[Settings::COLOR_SCHEME.value],

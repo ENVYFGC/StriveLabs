@@ -30,13 +30,20 @@ namespace combo_online {
     bool current = false;  // made on the current version only
     std::vector<int> tags;  // all of these (2 corner, 3 outside of corner, 4/5/6 0/50/100% gauge)
     std::string creator_id;  // only this player's combos, empty = anyone's
+    int type = -1;
+    int number = -1;
+    int player = -1;
+    bool not_cleared = false;
+    bool own_platform = false;
   };
-  // Sort: 0 downloads, 1 likes, 2 newest, 3 clear rate. Page from 0.
+  std::wstring tagName(int tag);
+  // Sort: 0 downloads, 1 likes, 2 newest, 3 oldest, 4 higher clear rate, 5 lower clear rate, 6 number. Page from 0.
   // Empty on start, else why not.
   std::wstring search(const Filter& f, int sort, int page);
   std::wstring download(const Result& r);  // into the kept list
   std::wstring tryIt(const Result& r);     // into training only, not kept
   bool busy();
+  bool searching();
   // Every system update: finishes requests. Returns true once when something finished,
   // with what to tell the player in `message`.
   bool update(std::wstring& message);

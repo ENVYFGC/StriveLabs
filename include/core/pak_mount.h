@@ -19,6 +19,7 @@ namespace pak_mount {
   // Reads a whole file the way the game does (from whichever pak holds it, decrypted and unpacked), e.g.
   // L"../../../RED/Content/Chara/SOL/Costume01/Material/Color02/SOL_base.uexp". Game thread.
   bool readFile(const std::wstring& path, std::vector<uint8_t>& out);
+  bool readGameFile(const std::wstring& path, std::vector<uint8_t>& out);
   // The files under a folder, as the game sees them (every pak), e.g.
   // L"../../../RED/Content/Chara/SOL/Costume01/Material/Color02". Game thread.
   bool listDir(const std::wstring& dir, std::vector<std::wstring>& files);

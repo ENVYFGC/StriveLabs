@@ -187,6 +187,107 @@ namespace pak_mount {
   }
 
   namespace {
+    using OpenFn = void* (*)(PakManager*, const wchar_t*, bool);
+    void* guardedOpen(OpenFn fn, PakManager* m, const wchar_t* path) {
+      __try { return fn(m, path, false); } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    }
+    int64_t guardedSize(void* h) {
+      __try { return reinterpret_cast<int64_t (*)(void*)>((*static_cast<void* const* const*>(h))[kHSize])(h); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    }
+    bool guardedRead(void* h, uint8_t* to, int64_t n) {
+      __try { return reinterpret_cast<bool (*)(void*, uint8_t*, int64_t)>((*static_cast<void* const* const*>(h))[kHRead])(h, to, n); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    void guardedClose(void* h) {
+      __try { reinterpret_cast<void (*)(void*, unsigned)>((*static_cast<void* const* const*>(h))[kHDestroy])(h, 1); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    constexpr size_t kManagerCopy = 0x200;
+    int g_lock_at = -2;
+    bool g_own_failed = false;
+    int findLock(const PakManager* m) {
+      const auto* b = reinterpret_cast<const uint8_t*>(m);
+      for (size_t at = 0x28; at + 0x28 <= kManagerCopy; at += 8) {
+        int64_t debug;
+        int32_t lock_count, recursion;
+        uint64_t owner;
+        std::memcpy(&debug, b + at, 8);
+        std::memcpy(&lock_count, b + at + 8, 4);
+        std::memcpy(&recursion, b + at + 12, 4);
+        std::memcpy(&owner, b + at + 16, 8);
+        uint64_t spin;
+        std::memcpy(&spin, b + at + 32, 8);
+        const uint64_t spin_low = spin & 0xFFFFFF;
+        if (debug == -1 && lock_count == -1 && recursion == 0 && owner == 0 && spin_low >= 3900 && spin_low <= 4100 && (spin >> 32) == 0) return static_cast<int>(at);
+      }
+      for (size_t at = 0x28; at + 0x28 <= kManagerCopy; at += 8) {
+        int64_t debug;
+        int32_t lock_count, recursion;
+        uint64_t owner, spin;
+        std::memcpy(&debug, b + at, 8);
+        std::memcpy(&lock_count, b + at + 8, 4);
+        std::memcpy(&recursion, b + at + 12, 4);
+        std::memcpy(&owner, b + at + 16, 8);
+        std::memcpy(&spin, b + at + 32, 8);
+        const uint64_t spins = spin & 0xFFFFFF;
+        if ((debug == -1 || debug > 0x10000) && lock_count < 0 && lock_count > -256 && recursion >= 0 && recursion < 64 && owner < 0x1000000 && spins >= 3900 && spins <= 4100 && (spin >> 32) == 0) return static_cast<int>(at);
+      }
+      return -1;
+    }
+    bool modPak(const PakEntry& e) {
+      FStr name;
+      std::memcpy(&name, e.file + 8, sizeof name);
+      std::string n = narrow(name.data, name.num);
+      for (char& c : n) c = c == '\\' ? '/' : static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      return n.find("/~mods/") != std::string::npos || n.find("strivelabs") != std::string::npos;
+    }
+  }
+
+  bool readGameFile(const std::wstring& path, std::vector<uint8_t>& out) {
+    out.clear();
+    if (!g_reader) return false;
+    PakManager* m = g_mount->pak;
+    if (paks(m).empty() || !readable(m, kManagerCopy)) return false;
+    std::vector<PakEntry> own;
+    for (int i = 0; i < m->num; i++)
+      if (!modPak(m->data[i])) own.push_back(m->data[i]);
+    if (own.empty()) return false;
+    if (static_cast<int>(own.size()) == m->num) return readFile(path, out);
+    if (g_lock_at < 0) g_lock_at = findLock(m);
+    if (g_lock_at < 0) return false;
+    alignas(16) uint8_t copy[kManagerCopy];
+    std::memcpy(copy, m, kManagerCopy);
+    auto* fake = reinterpret_cast<PakManager*>(copy);
+    fake->data = own.data();
+    fake->num = fake->max = static_cast<int32_t>(own.size());
+    const int32_t free_count = -1, none = 0;
+    const uint64_t nobody = 0;
+    std::memcpy(copy + g_lock_at + 8, &free_count, 4);
+    std::memcpy(copy + g_lock_at + 12, &none, 4);
+    std::memcpy(copy + g_lock_at + 16, &nobody, 8);
+    if (g_own_failed) return false;
+    void* h = guardedOpen(slot<OpenFn>(fake, kOpenRead), fake, path.c_str());
+    if (!readable(h, 8)) {
+      if (h) {
+        g_own_failed = true;
+        COMBO_LOG("pak read: opening a file from the game's own paks failed, so reading the game's own copy of a file is off until the game restarts");
+      }
+      return false;
+    }
+    const int64_t n = guardedSize(h);
+    bool ok = n >= 0 && n < (int64_t{1} << 31);
+    if (ok) {
+      out.resize(static_cast<size_t>(n));
+      ok = n == 0 || guardedRead(h, out.data(), n);
+    }
+    guardedClose(h);
+    if (!ok) {
+      out.clear();
+      g_own_failed = true;
+      COMBO_LOG("pak read: reading a file from the game's own paks failed, so reading the game's own copy of a file is off until the game restarts");
+    }
+    return ok;
+  }
+
+  namespace {
     // (a check: exists and size on a known file and a made-up one, then reading the known file whole: its size, and
     // a package's tag at its start)
     void readProbe(PakManager* m) {

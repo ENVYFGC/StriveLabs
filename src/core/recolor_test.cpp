@@ -21,6 +21,7 @@
 #include <compressapi.h>
 #pragma comment(lib, "cabinet.lib")  // the Compression API, for recolor sharing
 #include "paint_layer.h"
+#include "part_preview.h"
 #include "arcsys.h"
 #include "combo_log.h"
 #include "combo_trials.h"
@@ -28,10 +29,15 @@
 #include "sigscan.h"
 #include "bake_core.h"
 #include "bake_pkg.h"
+#include "tex_upload.h"
+namespace crash_log { void quiet(bool on); }
+#include "matpics.h"
 #include "pak_mount.h"
 #include "perf_log.h"
 #include "object_scan.h"
 
+#include <Unreal/FProperty.hpp>
+#include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/FString.hpp>
 #include <Unreal/Hooks.hpp>
 #include <Unreal/NameTypes.hpp>
@@ -141,6 +147,19 @@ namespace {
   }
   // Gets the kind from any color material's name.
   // "MI_DI_FLARE_UNIQUEC" -> "DI_FLARE_UNIQUEC", "MI_WEP_BASE2" -> "WEP2".
+  std::string equipTail(const std::string& path) {
+    const size_t at = path.find("/Common/Equip/Equip");
+    if (at == std::string::npos || path.size() < at + 22 || path[at + 21] != '/') return {};
+    const char a = path[at + 19], b = path[at + 20];
+    if (!std::isdigit(static_cast<unsigned char>(a)) || !std::isdigit(static_cast<unsigned char>(b))) return {};
+    return std::string("_E") + a + b;
+  }
+  std::string equipOf(const std::string& kind) {
+    const size_t n = kind.size();
+    return n > 4 && kind[n - 4] == '_' && kind[n - 3] == 'E' && std::isdigit(static_cast<unsigned char>(kind[n - 2])) &&
+           std::isdigit(static_cast<unsigned char>(kind[n - 1])) ? kind.substr(n - 2) : std::string();
+  }
+  std::string unequipped(const std::string& kind) { return equipOf(kind).empty() ? kind : kind.substr(0, kind.size() - 4); }
   bool kindOfName(const std::string& full, std::string& kind) {
     const size_t dot = full.rfind(".MI_");
     if (dot == std::string::npos) return false;
@@ -167,6 +186,7 @@ namespace {
       if (dot == std::string::npos || name.size() < dot + 10 || _stricmp(name.c_str() + name.size() - 5, "_BASE") != 0) continue;
       kind = name.substr(dot + 4, name.size() - 5 - (dot + 4));
       for (auto& ch : kind) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));  // So the files always use one spelling.
+      kind += equipTail(name);
       if (!kind.empty() && kind.size() <= 24 &&
           std::all_of(kind.begin(), kind.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }))
         return m;  // The kind is what the cache files are named after.
@@ -344,6 +364,7 @@ namespace {
 
   // ---- images -----------------------------------------------------------------------
   struct Image { int w = 0, h = 0; std::vector<uint8_t> px; };  // RGBA8
+  constexpr UINT kImageMax = 8192;
   bool decodePng(const std::filesystem::path& file, Image& out) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     IWICImagingFactory* wic = nullptr;
@@ -355,13 +376,25 @@ namespace {
               SUCCEEDED(wic->CreateDecoderFromFilename(file.wstring().c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
               SUCCEEDED(dec->GetFrame(0, &frame)) && SUCCEEDED(wic->CreateFormatConverter(&conv)) &&
               SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom)) &&
-              SUCCEEDED(conv->GetSize(&w, &h)) && w > 0 && h > 0 && w <= 8192 && h <= 8192;
+              SUCCEEDED(conv->GetSize(&w, &h)) && w > 0 && h > 0 && w <= kImageMax && h <= kImageMax;
     if (ok) {
       out.w = static_cast<int>(w); out.h = static_cast<int>(h);
       out.px.resize(static_cast<size_t>(w) * h * 4);
       ok = SUCCEEDED(conv->CopyPixels(nullptr, w * 4, static_cast<UINT>(out.px.size()), out.px.data()));
     }
     for (IUnknown* u : {static_cast<IUnknown*>(conv), static_cast<IUnknown*>(frame), static_cast<IUnknown*>(dec), static_cast<IUnknown*>(wic)})
+      if (u) u->Release();
+    return ok;
+  }
+  bool imageSize(const std::filesystem::path& file, UINT& w, UINT& h) {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IWICImagingFactory* wic = nullptr;
+    IWICBitmapDecoder* dec = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    const bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+                    SUCCEEDED(wic->CreateDecoderFromFilename(file.wstring().c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
+                    SUCCEEDED(dec->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&w, &h));
+    for (IUnknown* u : {static_cast<IUnknown*>(frame), static_cast<IUnknown*>(dec), static_cast<IUnknown*>(wic)})
       if (u) u->Release();
     return ok;
   }
@@ -394,7 +427,7 @@ namespace {
     }();
     return lut[v];
   }
-  std::vector<uint8_t> encodePng(const Image& im, bool for_import = true) {
+  std::vector<uint8_t> encodePng(const Image& im, bool for_import = true, bool pack = false) {
     std::vector<uint8_t> raw;  // Filter byte 0, then the row. For import the colors are sRGB encoded and alpha is left as is.
     const size_t row = static_cast<size_t>(im.w) * 4;
     raw.reserve((row + 1) * im.h);
@@ -406,24 +439,29 @@ namespace {
         raw[i] = toSrgb(raw[i]); raw[i + 1] = toSrgb(raw[i + 1]); raw[i + 2] = toSrgb(raw[i + 2]);
       }
     }
-    std::vector<uint8_t> z{0x78, 0x01};
-    for (size_t at = 0; at < raw.size();) {
-      const size_t n = (std::min)(raw.size() - at, static_cast<size_t>(65535));
-      const bool last = at + n == raw.size();
-      z.push_back(last ? 1 : 0);
-      z.push_back(n & 0xFF); z.push_back(n >> 8);
-      z.push_back(~n & 0xFF); z.push_back((~n >> 8) & 0xFF);
-      z.insert(z.end(), raw.begin() + at, raw.begin() + at + n);
-      at += n;
+    std::vector<uint8_t> z;
+    if (pack) z = bake::zlibPack(raw);
+    const bool stored = z.empty();
+    if (stored) {
+      z = {0x78, 0x01};
+      for (size_t at = 0; at < raw.size();) {
+        const size_t n = (std::min)(raw.size() - at, static_cast<size_t>(65535));
+        const bool last = at + n == raw.size();
+        z.push_back(last ? 1 : 0);
+        z.push_back(n & 0xFF); z.push_back(n >> 8);
+        z.push_back(~n & 0xFF); z.push_back((~n >> 8) & 0xFF);
+        z.insert(z.end(), raw.begin() + at, raw.begin() + at + n);
+        at += n;
+      }
+      uint32_t a = 1, b = 0;
+      for (size_t i = 0; i < raw.size();) {  // adler32, in chunks so the sums can't overflow
+        const size_t end = (std::min)(raw.size(), i + 5552);
+        for (; i < end; i++) { a += raw[i]; b += a; }
+        a %= 65521; b %= 65521;
+      }
+      const uint32_t adler = (b << 16) | a;
+      for (int s = 24; s >= 0; s -= 8) z.push_back((adler >> s) & 0xFF);
     }
-    uint32_t a = 1, b = 0;
-    for (size_t i = 0; i < raw.size();) {  // adler32, in chunks so the sums can't overflow
-      const size_t end = (std::min)(raw.size(), i + 5552);
-      for (; i < end; i++) { a += raw[i]; b += a; }
-      a %= 65521; b %= 65521;
-    }
-    const uint32_t adler = (b << 16) | a;
-    for (int s = 24; s >= 0; s -= 8) z.push_back((adler >> s) & 0xFF);
     std::vector<uint8_t> out{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
     auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
       const uint32_t n = static_cast<uint32_t>(data.size());
@@ -457,7 +495,195 @@ namespace {
     std::vector<float> share;
     std::vector<GroupView> groups;  // the outfit's parts, from how the official colors paint them
     std::vector<std::string> prefixes;  // the colors it was made from ("Color01", ...)
+    std::vector<uint32_t> held;
+    std::vector<uint16_t> piece;
+    std::vector<std::string> piece_names;
+    std::string piece_stamp;
   };
+  struct PieceLabels { int w = 0, h = 0; std::vector<uint16_t> at; std::vector<std::string> names; };
+  std::filesystem::path pickFile(const std::string& chr) { return g_dir / "atlas" / (chr + "_pick.bin"); }
+  bool piecesFor(const std::string& kind) { return kind.rfind("MAIN", 0) != 0; }
+  std::string pieceStamp(const std::string& chr, const std::string& kind) {
+    if (!piecesFor(kind)) return "pieces none";
+    std::error_code ec;
+    const auto f = pickFile(chr);
+    const auto size = std::filesystem::file_size(f, ec);
+    if (ec || size < 64) return "pieces none";
+    const auto when = std::filesystem::last_write_time(f, ec);
+    return "pieces 1 " + std::to_string(size) + " " + std::to_string(ec ? 0 : static_cast<long long>(when.time_since_epoch().count()));
+  }
+  struct PieceSlot { std::string mesh; std::vector<float> uv; std::vector<uint32_t> tris; };
+  bool readPieceSlots(const std::vector<uint8_t>& b, const std::string& kind, std::vector<PieceSlot>& out) {
+    size_t o = 0;
+    auto take = [&](void* d, size_t n) { if (n > b.size() - o) return false; std::memcpy(d, b.data() + o, n); o += n; return true; };
+    auto skip = [&](size_t n) { if (n > b.size() - o) return false; o += n; return true; };
+    auto str = [&](std::string& s) {
+      uint16_t n = 0;
+      if (!take(&n, 2) || n > b.size() - o) return false;
+      s.assign(reinterpret_cast<const char*>(b.data() + o), n);
+      o += n;
+      return true;
+    };
+    uint32_t magic = 0, ver = 0, meshes = 0;
+    if (!take(&magic, 4) || magic != 0x4B504C53 || !take(&ver, 4) || ver != 2 || !take(&meshes, 4) || meshes > 4096) return false;
+    for (uint32_t m = 0; m < meshes; m++) {
+      std::string name, bone;
+      uint16_t nb = 0;
+      uint32_t ns = 0;
+      if (!str(name) || !take(&nb, 2)) return false;
+      for (uint16_t i = 0; i < nb; i++) if (!str(bone) || !skip(28)) return false;
+      if (!take(&ns, 4) || ns > 256) return false;
+      for (uint32_t s = 0; s < ns; s++) {
+        std::string slot, k;
+        float lo[2], span[2];
+        uint32_t nv = 0, nt = 0, ni = 0;
+        uint8_t wide = 0;
+        if (!str(slot) || !str(k) || !take(lo, 8) || !take(span, 8) || !skip(24) || !take(&nv, 4) || !take(&nt, 4) || !take(&wide, 1) || !take(&ni, 4)) return false;
+        if (nv > (b.size() - o) / 12) return false;
+        const size_t verts = o;
+        o += static_cast<size_t>(nv) * 12;
+        if (ni > (b.size() - o) / 4) return false;
+        o += static_cast<size_t>(ni) * 4;
+        const size_t isz = wide ? 4 : 2;
+        if (nt > (b.size() - o) / (3 * isz)) return false;
+        const size_t tris = o;
+        o += static_cast<size_t>(nt) * 3 * isz;
+        if (k != kind) continue;
+        PieceSlot ps;
+        ps.mesh = name;
+        ps.uv.resize(static_cast<size_t>(nv) * 2);
+        for (uint32_t i = 0; i < nv; i++) {
+          uint16_t q[2];
+          std::memcpy(q, b.data() + verts + static_cast<size_t>(i) * 12 + 6, 4);
+          ps.uv[static_cast<size_t>(i) * 2] = lo[0] + q[0] / 65535.0f * span[0];
+          ps.uv[static_cast<size_t>(i) * 2 + 1] = lo[1] + q[1] / 65535.0f * span[1];
+        }
+        ps.tris.resize(static_cast<size_t>(nt) * 3);
+        for (size_t i = 0; i < ps.tris.size(); i++) {
+          uint32_t v = 0;
+          std::memcpy(&v, b.data() + tris + i * isz, isz);
+          if (v >= nv) return false;
+          ps.tris[i] = v;
+        }
+        out.push_back(std::move(ps));
+      }
+    }
+    return true;
+  }
+  void coverTriangle(std::vector<uint64_t>& mask, int W, int H, uint64_t bit, const double a[2], const double b[2], const double c[2]) {
+    const double reach = 0.75;
+    const int x0 = (std::max)(0, static_cast<int>(std::floor((std::min)({a[0], b[0], c[0]}) - reach))), x1 = (std::min)(W - 1, static_cast<int>(std::floor((std::max)({a[0], b[0], c[0]}) + reach)));
+    const int y0 = (std::max)(0, static_cast<int>(std::floor((std::min)({a[1], b[1], c[1]}) - reach))), y1 = (std::min)(H - 1, static_cast<int>(std::floor((std::max)({a[1], b[1], c[1]}) + reach)));
+    const double area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    auto seg2 = [](double px, double py, const double u[2], const double v[2]) {
+      const double dx = v[0] - u[0], dy = v[1] - u[1], len = dx * dx + dy * dy;
+      const double t = len > 0 ? std::clamp(((px - u[0]) * dx + (py - u[1]) * dy) / len, 0.0, 1.0) : 0.0;
+      const double ex = px - (u[0] + t * dx), ey = py - (u[1] + t * dy);
+      return ex * ex + ey * ey;
+    };
+    for (int y = y0; y <= y1; y++)
+      for (int x = x0; x <= x1; x++) {
+        const double px = x + 0.5, py = y + 0.5;
+        bool in = false;
+        if (std::fabs(area) > 1e-12) {
+          const double w0 = ((b[0] - px) * (c[1] - py) - (c[0] - px) * (b[1] - py)) / area, w1 = ((c[0] - px) * (a[1] - py) - (a[0] - px) * (c[1] - py)) / area;
+          in = w0 >= 0 && w1 >= 0 && w0 + w1 <= 1;
+        }
+        if (!in) in = (std::min)({seg2(px, py, a, b), seg2(px, py, b, c), seg2(px, py, c, a)}) <= reach * reach;
+        if (in) mask[static_cast<size_t>(y) * W + x] |= bit;
+      }
+  }
+  std::shared_ptr<PieceLabels> labelPieces(const std::vector<PieceSlot>& slots, const std::string& chr, int W, int H) {
+    std::vector<std::string> meshes;
+    for (const PieceSlot& s : slots) if (std::find(meshes.begin(), meshes.end(), s.mesh) == meshes.end()) meshes.push_back(s.mesh);
+    std::sort(meshes.begin(), meshes.end());
+    if (meshes.empty() || W <= 0 || H <= 0) return nullptr;
+    const size_t N = static_cast<size_t>(W) * H, M = (std::min)(meshes.size(), static_cast<size_t>(64));
+    std::vector<uint64_t> mask(N, 0);
+    for (const PieceSlot& s : slots) {
+      const size_t mi = (std::min)(static_cast<size_t>(std::find(meshes.begin(), meshes.end(), s.mesh) - meshes.begin()), M - 1);
+      for (size_t k = 0; k + 2 < s.tris.size(); k += 3) {
+        double p[3][2];
+        bool ok = true;
+        for (int j = 0; j < 3; j++) {
+          p[j][0] = s.uv[static_cast<size_t>(s.tris[k + j]) * 2];
+          p[j][1] = s.uv[static_cast<size_t>(s.tris[k + j]) * 2 + 1];
+          ok = ok && std::isfinite(p[j][0]) && std::isfinite(p[j][1]) && std::fabs(p[j][0]) < 64 && std::fabs(p[j][1]) < 64;
+        }
+        if (!ok) continue;
+        const double bx = std::floor((std::min)({p[0][0], p[1][0], p[2][0]})), by = std::floor((std::min)({p[0][1], p[1][1], p[2][1]}));
+        for (int j = 0; j < 3; j++) { p[j][0] = (p[j][0] - bx) * W; p[j][1] = (p[j][1] - by) * H; }
+        coverTriangle(mask, W, H, 1ull << mi, p[0], p[1], p[2]);
+      }
+    }
+    std::vector<uint64_t> size(M, 0), both(M * M, 0);
+    for (uint64_t v : mask) {
+      if (!v) continue;
+      for (size_t i = 0; i < M; i++) {
+        if (!(v >> i & 1)) continue;
+        size[i]++;
+        for (size_t j = i + 1; j < M; j++) if (v >> j & 1) both[i * M + j]++;
+      }
+    }
+    std::vector<size_t> up(M);
+    for (size_t i = 0; i < M; i++) up[i] = i;
+    auto root = [&](size_t i) { while (up[i] != i) i = up[i] = up[up[i]]; return i; };
+    for (size_t i = 0; i < M; i++)
+      for (size_t j = i + 1; j < M; j++)
+        if (size[i] && size[j] && both[i * M + j] * 2 >= (std::min)(size[i], size[j])) { const size_t a = root(i), b = root(j); if (a != b) up[(std::max)(a, b)] = (std::min)(a, b); }
+    auto out = std::make_shared<PieceLabels>();
+    out->w = W; out->h = H;
+    out->names.push_back(std::string());
+    std::vector<uint16_t> id(M, 0);
+    std::string pre = chr;
+    for (char& ch : pre) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    pre += "_";
+    for (size_t i = 0; i < M; i++) {
+      if (!size[i] || root(i) != i) continue;
+      std::string best;
+      for (size_t j = i; j < M; j++) {
+        if (root(j) != i) continue;
+        std::string n = meshes[j];
+        if (n.rfind(pre, 0) == 0 && n.size() > pre.size()) n = n.substr(pre.size());
+        if (best.empty() || n.size() < best.size()) best = n;
+      }
+      if (best.empty() || std::find(out->names.begin(), out->names.end(), best) != out->names.end()) best = meshes[i];
+      id[i] = static_cast<uint16_t>(out->names.size());
+      out->names.push_back(best);
+    }
+    if (out->names.size() < 2) return nullptr;
+    std::vector<uint64_t> group(M, 0);
+    for (size_t i = 0; i < M; i++) group[i] = 1ull << root(i);
+    out->at.assign(N, 0);
+    for (size_t p = 0; p < N; p++) {
+      const uint64_t v = mask[p];
+      if (!v) continue;
+      uint64_t g = 0;
+      for (size_t i = 0; i < M; i++) if (v >> i & 1) g |= group[i];
+      if (g & (g - 1)) continue;
+      size_t r = 0;
+      while (!(g >> r & 1)) r++;
+      out->at[p] = id[r];
+    }
+    std::vector<uint32_t> texels(out->names.size(), 0);
+    for (uint16_t v : out->at) texels[v]++;
+    int real = 0;
+    for (size_t i = 1; i < texels.size(); i++) real += texels[i] >= 256;
+    if (real < 2) return nullptr;
+    for (uint16_t& v : out->at) if (v && texels[v] < 256) v = 0;
+    return out;
+  }
+  std::vector<uint8_t> readBytes(const std::filesystem::path& f);
+  std::shared_ptr<PieceLabels> pieceLabels(const std::string& chr, const std::string& kind, int W, int H) {
+    try {
+      const std::vector<uint8_t> b = readBytes(pickFile(chr));
+      std::vector<PieceSlot> slots;
+      if (!piecesFor(kind) || b.size() < 64 || !readPieceSlots(b, kind, slots) || slots.empty()) return nullptr;
+      return labelPieces(slots, chr, W, H);
+    } catch (...) {
+      return nullptr;
+    }
+  }
   float hueOf(uint32_t c, float& s, float& v) {
     const float r = (c >> 16 & 0xFF) / 255.0f, g = (c >> 8 & 0xFF) / 255.0f, b = (c & 0xFF) / 255.0f;
     const float mx = (std::max)({r, g, b}), mn = (std::min)({r, g, b}), d = mx - mn;
@@ -509,7 +735,7 @@ namespace {
   std::mutex g_pin_m;  // Guards the pinned textures in cache/<CHR>/pinned (see syncPinned). Taken after buildMap's own lock, never before it.
   // own is the slot whose current textures go in (its own map). Every other slot uses its pinned textures (as first
   // read), if kept.
-  std::shared_ptr<CharMap> buildMap(std::filesystem::path dir, std::vector<std::string> prefixes, std::string own = {}) {
+  std::shared_ptr<CharMap> buildMap(std::filesystem::path dir, std::vector<std::string> prefixes, std::string own = {}, const std::string* pieces_kind = nullptr) {
     static std::mutex one;  // One at a time, since a 4K map holds a few hundred MB while it's being made.
     std::lock_guard<std::mutex> only(one);
     std::lock_guard<std::mutex> pins(g_pin_m);  // So the pins don't change underneath, since they're read two or three times.
@@ -537,6 +763,28 @@ namespace {
     }
     if (h.empty()) return m;
     const size_t N = h.size();
+    std::shared_ptr<PieceLabels> pl = pieces_kind ? pieceLabels(dir.filename().string(), *pieces_kind, m->w, m->h) : nullptr;
+    if (pl && pl->at.size() != N) pl = nullptr;
+    const uint16_t* lab = pl ? pl->at.data() : nullptr;
+    if (lab) for (size_t p = 0; p < N; p++) if (lab[p]) h[p] = (h[p] ^ (0x9E3779B97F4A7C15ull * lab[p])) * 1099511628211ull;
+    uint64_t unmul = 1099511628211ull;
+    for (int i = 0; i < 6; i++) unmul *= 2 - 1099511628211ull * unmul;
+    auto byPlain = [&](std::vector<std::pair<uint32_t, uint64_t>>& v) {
+      if (!lab) { std::sort(v.begin(), v.end(), std::greater<>()); return; }
+      std::unordered_map<uint64_t, std::pair<uint64_t, uint16_t>> was;
+      for (const auto& e : v) was[e.second] = {e.second, 0};
+      for (size_t p = 0; p < N; p++) {
+        if (!lab[p]) continue;
+        auto it = was.find(h[p]);
+        if (it != was.end()) it->second = {(h[p] * unmul) ^ (0x9E3779B97F4A7C15ull * lab[p]), lab[p]};
+      }
+      std::sort(v.begin(), v.end(), [&](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first > b.first;
+        const auto& x = was[a.second];
+        const auto& y = was[b.second];
+        return x.first != y.first ? x.first > y.first : x.second > y.second;
+      });
+    };
     std::vector<std::pair<uint32_t, uint64_t>> big;
     {
       std::unordered_map<uint64_t, uint32_t> count;
@@ -545,7 +793,7 @@ namespace {
       const uint32_t min = (std::max)(64u, static_cast<uint32_t>(N / 2000));  // 0.05% of the texture
       for (const auto& [k, n] : count) if (n >= min) big.push_back({n, k});
     }  // Freed here, since a noisy 4K texture gives millions of entries.
-    std::sort(big.begin(), big.end(), std::greater<>());
+    byPlain(big);
     if (big.size() > 2000) big.resize(2000);
     std::vector<size_t> rep;  // One texel per region, which has the region's exact color in every color.
     {
@@ -604,7 +852,7 @@ namespace {
           int best = T2 + 1;
           uint16_t pick = 0xFFFF;
           near4(p, [&](size_t q) {
-            if (cand[q] == 0xFFFF) return;
+            if (cand[q] == 0xFFFF || (lab && lab[q] != lab[p])) return;
             const int d = dist2(c, lit0[cand[q]]);
             if (d < best) { best = d; pick = cand[q]; }
           });
@@ -627,8 +875,8 @@ namespace {
     std::vector<uint8_t> close_to(loose.size(), 0);  // Bit 0 is the right neighbour, bit 1 the one below.
     for (size_t i = 0; i < loose.size(); i++) {
       const size_t p = loose[i];
-      if (static_cast<int>(p % W) + 1 < W && m->owner[p + 1] == 0xFFFF) close_to[i] |= 1;
-      if (p + W < N && m->owner[p + W] == 0xFFFF) close_to[i] |= 2;
+      if (static_cast<int>(p % W) + 1 < W && m->owner[p + 1] == 0xFFFF && (!lab || lab[p] == lab[p + 1])) close_to[i] |= 1;
+      if (p + W < N && m->owner[p + W] == 0xFFFF && (!lab || lab[p] == lab[p + W])) close_to[i] |= 2;
     }
     constexpr int kNear2 = 20 * 20;
     std::vector<std::vector<uint32_t>> lit(static_cast<size_t>(m->regions));
@@ -660,7 +908,7 @@ namespace {
       for (size_t p = 0; p < N; p++) if (m->owner[p] == 0xFFFF && piece_rep.count(h[p])) left[h[p]]++;
       std::vector<std::pair<uint32_t, uint64_t>> pieces;
       for (const auto& [k, n] : left) if (n >= 64) pieces.push_back({n, k});
-      std::sort(pieces.begin(), pieces.end(), std::greater<>());
+      byPlain(pieces);
       if (pieces.size() > static_cast<size_t>(2000 - m->regions)) pieces.resize(static_cast<size_t>(2000 - m->regions));
       std::unordered_map<uint64_t, uint16_t> sid;
       for (size_t i = 0; i < pieces.size(); i++) {
@@ -723,6 +971,11 @@ namespace {
       }
     }
     findParts(*m, lit);
+    if (lab) {
+      m->piece.assign(static_cast<size_t>(m->regions), 0);
+      for (size_t p = 0; p < N; p++) if (m->owner[p] != 0xFFFF) m->piece[m->owner[p]] = lab[p];
+      m->piece_names = pl->names;
+    }
     return m;
   }
 
@@ -762,6 +1015,22 @@ namespace {
         if (ok) {
           std::stringstream ss(s2);
           for (std::string c; std::getline(ss, c, ';');) m->prefixes.push_back(c);
+          uint32_t pmagic = 0, slen = 0, names = 0, count = 0;
+          if (rd(&pmagic, 4) && pmagic == 0x31534350 && rd(&slen, 4) && slen < 256) {
+            std::string st(slen, '\0');
+            std::vector<std::string> nm;
+            std::vector<uint16_t> pc;
+            bool pok = rd(st.data(), slen) && rd(&names, 4) && names <= 4096;
+            for (uint32_t i = 0; pok && i < names; i++) {
+              uint16_t n = 0;
+              pok = rd(&n, 2) && n < 256;
+              if (pok) { nm.emplace_back(n, '\0'); pok = rd(nm.back().data(), n); }
+            }
+            pok = pok && rd(&count, 4) && (count == 0 || count == static_cast<uint32_t>(m->regions));
+            if (pok && count) { pc.resize(count); pok = rd(pc.data(), static_cast<size_t>(count) * 2); }
+            for (uint16_t v : pc) pok = pok && v < names;
+            if (pok) { m->piece_stamp = st; m->piece = std::move(pc); if (count) m->piece_names = std::move(nm); }
+          }
           return m;
         }
       }
@@ -786,6 +1055,18 @@ namespace {
         const uint32_t nr = static_cast<uint32_t>(gv.regions.size());
         const uint8_t flags = (gv.line ? 1 : 0) | (gv.skin ? 2 : 0) | (gv.neutral ? 4 : 0);
         wr(&nr, 4); wr(gv.regions.data(), nr * sizeof(int)); wr(&gv.share, 4); wr(&flags, 1);
+      }
+      if (!m.piece_stamp.empty()) {
+        const bool has = !m.piece.empty() && m.piece.size() == static_cast<size_t>(m.regions);
+        const uint32_t pmagic = 0x31534350, slen = static_cast<uint32_t>(m.piece_stamp.size()), names = has ? static_cast<uint32_t>(m.piece_names.size()) : 0,
+                       count = has ? static_cast<uint32_t>(m.piece.size()) : 0;
+        wr(&pmagic, 4); wr(&slen, 4); wr(m.piece_stamp.data(), slen); wr(&names, 4);
+        for (uint32_t i = 0; i < names; i++) {
+          const uint16_t n = static_cast<uint16_t>((std::min)(m.piece_names[i].size(), static_cast<size_t>(255)));
+          wr(&n, 2); wr(m.piece_names[i].data(), n);
+        }
+        wr(&count, 4);
+        if (count) wr(m.piece.data(), static_cast<size_t>(count) * 2);
       }
       f.flush();
       ok = f.good();
@@ -824,24 +1105,214 @@ namespace {
     return m.second;
   }
 
+  struct RegionFix { uint32_t at = 0; uint16_t orig = 0xFFFF, now = 0xFFFF; };
+  static_assert(sizeof(RegionFix) == 8);
+  constexpr uint16_t kHeldOut = 0xFFFE;
+  constexpr uint32_t kFixMagic = 0x31584652;
+  constexpr size_t kFixMax = 3000000;
+  std::mutex g_fix_m;
+  std::set<std::string> g_fix_changed;
+  std::set<std::string> g_fix_stale_said;
+  std::string g_fix_note;
+  uint64_t fixStamp(const CharMap& m) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint64_t v : {static_cast<uint64_t>(m.w), static_cast<uint64_t>(m.h), static_cast<uint64_t>(m.regions), static_cast<uint64_t>(m.major), static_cast<uint64_t>(m.pieces)})
+      h = (h ^ v) * 1099511628211ull;
+    for (float sh : m.share) h = (h ^ static_cast<uint64_t>(std::llround(sh * 1e7))) * 1099511628211ull;
+    return h;
+  }
+  std::filesystem::path fixesFile(const std::string& chr, const std::string& kind, const std::string& own) {
+    return g_dir / "saved" / chr / ("regions_" + kind + (own.empty() ? std::string() : "_" + own) + ".bin");
+  }
+  bool readFixes(const std::filesystem::path& file, const CharMap& m, std::vector<RegionFix>& out) {
+    out.clear();
+    std::ifstream f(file, std::ios::binary);
+    uint32_t magic = 0, n = 0;
+    uint64_t stamp = 0;
+    if (!f || !f.read(reinterpret_cast<char*>(&magic), 4) || magic != kFixMagic || !f.read(reinterpret_cast<char*>(&stamp), 8) || stamp != fixStamp(m) ||
+        !f.read(reinterpret_cast<char*>(&n), 4) || n > kFixMax)
+      return false;
+    out.resize(n);
+    if (n && !f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(n * sizeof(RegionFix)))) { out.clear(); return false; }
+    return true;
+  }
+  bool writeFixes(const std::filesystem::path& file, const CharMap& m, const std::vector<RegionFix>& fx) {
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    std::filesystem::path tmp = file;
+    tmp += ".new";
+    bool ok;
+    {
+      std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      const uint32_t n = static_cast<uint32_t>(fx.size());
+      const uint64_t stamp = fixStamp(m);
+      f.write(reinterpret_cast<const char*>(&kFixMagic), 4);
+      f.write(reinterpret_cast<const char*>(&stamp), 8);
+      f.write(reinterpret_cast<const char*>(&n), 4);
+      if (n) f.write(reinterpret_cast<const char*>(fx.data()), static_cast<std::streamsize>(n * sizeof(RegionFix)));
+      f.flush();
+      ok = f.good();
+    }
+    if (ok) { std::filesystem::rename(tmp, file, ec); ok = !ec; }
+    if (!ok) std::filesystem::remove(tmp, ec);
+    return ok;
+  }
+  void putFixes(CharMap& m, const std::vector<RegionFix>& fx) {
+    const size_t N = m.owner.size();
+    for (const RegionFix& x : fx) {
+      if (x.at >= N || m.owner[x.at] != x.orig || (x.now != kHeldOut && x.now >= m.regions)) continue;
+      m.owner[x.at] = x.now == kHeldOut ? static_cast<uint16_t>(0xFFFF) : x.now;
+      if (x.now == kHeldOut) m.held.push_back(x.at);
+    }
+    std::sort(m.held.begin(), m.held.end());
+  }
+  std::filesystem::path carriedFile(const std::filesystem::path& file) { std::filesystem::path p = file; p += ".carried"; return p; }
+  bool carryFixes(const std::filesystem::path& dir, const std::string& kind, const std::filesystem::path& file, const CharMap& m, std::vector<RegionFix>& out, bool& kept) {
+    out.clear();
+    kept = false;
+    std::vector<RegionFix> old;
+    uint64_t stamp = 0;
+    {
+      std::ifstream f(file, std::ios::binary);
+      uint32_t magic = 0, n = 0;
+      if (!f || !f.read(reinterpret_cast<char*>(&magic), 4) || magic != kFixMagic || !f.read(reinterpret_cast<char*>(&stamp), 8) || stamp == fixStamp(m) ||
+          !f.read(reinterpret_cast<char*>(&n), 4) || n == 0 || n > kFixMax)
+        return false;
+      old.resize(n);
+      if (!f.read(reinterpret_cast<char*>(old.data()), static_cast<std::streamsize>(n * sizeof(RegionFix)))) return false;
+    }
+    std::error_code ec;
+    const std::string pre = "map_" + kind + "_";
+    const uint64_t now_stamp = fixStamp(m);
+    std::shared_ptr<CharMap> om;
+    for (const auto& e : std::filesystem::directory_iterator(dir / "maps_old", ec)) {
+      if (kept && om) break;
+      const std::string nm = e.path().filename().string();
+      if (nm.size() <= pre.size() + 4 || nm.rfind(pre, 0) != 0 || nm.compare(nm.size() - 4, 4, ".bin") != 0 ||
+          !std::all_of(nm.begin() + static_cast<std::ptrdiff_t>(pre.size()), nm.end() - 4, [](char c) { return std::isdigit(static_cast<unsigned char>(c)); }))
+        continue;
+      auto c = readMapFile(e.path(), m.w, m.h);
+      if (!c || c->owner.size() != m.owner.size()) continue;
+      const uint64_t s = fixStamp(*c);
+      if (s == now_stamp) kept = true;
+      if (s == stamp && !om) om = c;
+    }
+    if (!kept || !om) return false;
+    std::set<uint16_t> want;
+    for (const RegionFix& x : old) if (x.now != kHeldOut) want.insert(x.now);
+    std::map<uint16_t, std::map<uint16_t, uint32_t>> votes;
+    for (size_t i = 0; i < m.owner.size(); i++) {
+      const uint16_t o = om->owner[i];
+      if (m.owner[i] != 0xFFFF && want.count(o)) votes[o][m.owner[i]]++;
+    }
+    std::map<uint16_t, uint16_t> to;
+    for (const auto& [o, c] : votes) {
+      uint16_t best = 0xFFFF;
+      uint32_t most = 0, all = 0;
+      for (const auto& [r, k] : c) { all += k; if (k > most) { most = k; best = r; } }
+      if (best != 0xFFFF && most * 2 >= all) to[o] = best;
+    }
+    if (to.size() * 2 < want.size()) return false;
+    for (const RegionFix& x : old) {
+      if (x.at >= m.owner.size()) continue;
+      const uint16_t orig = m.owner[x.at];
+      uint16_t now = kHeldOut;
+      if (x.now != kHeldOut) {
+        const auto t = to.find(x.now);
+        if (t == to.end()) continue;
+        now = t->second;
+      } else if (orig == 0xFFFF) {
+        continue;
+      }
+      if (now == orig || (now != kHeldOut && now >= m.regions)) continue;
+      out.push_back({x.at, orig, now});
+    }
+    return true;
+  }
+  void withFixes(const std::filesystem::path& dir, const std::string& kind, const std::string& own, CharMap& m, bool may_carry = true) {
+    try {
+      const std::string chr = dir.filename().string();
+      std::vector<RegionFix> fx;
+      const bool main_ok = readFixes(fixesFile(chr, kind, own), m, fx);
+      bool got = main_ok && !fx.empty();
+      if (got) putFixes(m, fx);
+      bool carried = false;
+      if (!main_ok) {
+        const std::filesystem::path file = fixesFile(chr, kind, own), side = carriedFile(file);
+        std::vector<RegionFix> moved;
+        if (readFixes(side, m, moved)) {
+          carried = true;
+          if (!moved.empty()) { putFixes(m, moved); got = true; }
+        } else {
+          bool kept = false;
+          size_t had = 0;
+          {
+            std::ifstream f(file, std::ios::binary);
+            uint32_t magic = 0, n = 0;
+            uint64_t s = 0;
+            if (f && f.read(reinterpret_cast<char*>(&magic), 4) && f.read(reinterpret_cast<char*>(&s), 8) && f.read(reinterpret_cast<char*>(&n), 4)) had = n;
+          }
+          if (may_carry && carryFixes(dir, kind, file, m, moved, kept) && writeFixes(side, m, moved)) {
+            carried = true;
+            if (!moved.empty()) { putFixes(m, moved); got = true; }
+            COMBO_LOG("color editor: " + chr + "/" + kind + ": " + std::to_string(moved.size()) + " of " + std::to_string(had) + " region moves carried onto the new map of its regions, kept in " +
+                      side.filename().string() + " (" + file.filename().string() + " itself is left as it was)");
+            if (moved.size() < had) {
+              std::lock_guard<std::mutex> lk(g_fix_m);
+              g_fix_note = std::to_string(moved.size()) + " of the " + std::to_string(had) + " region moves on " + chr + " " + kind +
+                           " found a place on its new map of regions. The others are kept in " + file.filename().string() + ".";
+            }
+          }
+        }
+      }
+      bool stale = false;
+      if (!got && !carried) {
+        std::ifstream f(fixesFile(chr, kind, own), std::ios::binary);
+        uint32_t magic = 0;
+        uint64_t stamp = 0;
+        stale = f && f.read(reinterpret_cast<char*>(&magic), 4) && magic == kFixMagic && f.read(reinterpret_cast<char*>(&stamp), 8) && stamp != fixStamp(m);
+      }
+      const std::string key = chr + "/" + kind + "/" + (own.empty() ? std::string("P") : own);
+      std::lock_guard<std::mutex> lk(g_fix_m);
+      if (got) g_fix_changed.insert(key); else g_fix_changed.erase(key);
+      if (stale && g_fix_stale_said.insert(key).second) {
+        g_fix_note = "The region moves saved for " + chr + " " + kind + " were made on an earlier map of its regions, so they aren't applied (the file is kept).";
+        COMBO_LOG("color editor: " + key + ": the saved region moves are for an earlier map of the regions, not applied (" + fixesFile(chr, kind, own).filename().string() + " kept)");
+      }
+    } catch (...) {
+    }
+  }
   // The map is saved next to the colors it came from (map_<kind>.bin), with the list of those colors, and built
   // again only if the list differs. Saves decoding every color's textures each session.
   // own picks a slot's own map (own/map_<prefix>.bin, made again when the slot's textures are newer than it).
   std::shared_ptr<CharMap> mapFor(std::filesystem::path dir, std::string kind, std::vector<std::string> prefixes, std::string own = {}) {
     const auto file = own.empty() ? dir / ("map_" + kind + ".bin") : dir / "own" / ("map_" + own + ".bin");
+    const std::string want = pieceStamp(dir.filename().string(), kind);
     auto old = readMapFile(file);
+    const std::string have = old ? old->piece_stamp : std::string();
+    const bool pieces_fresh = have == want || (have.empty() && want == "pieces none");
     std::error_code ec;
     const bool fresh = own.empty() || (old && std::filesystem::last_write_time(file, ec) >= std::filesystem::last_write_time(dir / (own + "_BaseMap.png"), ec) &&
                                        std::filesystem::last_write_time(file, ec) >= std::filesystem::last_write_time(dir / (own + "_SssMap.png"), ec) && !ec);
-    if (old && old->prefixes == prefixes && fresh) { archiveMap(dir, kind, *old); return old; }  // Kept too, so a save made on it can move onto another.
-    auto m = buildMap(dir, prefixes, own);
-    if (m) m->prefixes = prefixes;
+    if (old && old->prefixes == prefixes && fresh && pieces_fresh) { archiveMap(dir, kind, *old); return old; }  // Kept too, so a save made on it can move onto another.
+    auto m = buildMap(dir, prefixes, own, want == "pieces none" ? nullptr : &kind);
+    if (m) { m->prefixes = prefixes; m->piece_stamp = want; }
     bool whole = false;
     const bool all = cachedPrefixesIn(dir, kind, &whole) == prefixes && whole;  // A map of only some of the colors never replaces the file.
     if (m && m->regions > 0 && all) {
       if (old) archiveMap(dir, kind, *old);  // Keep the map it replaces, so saves made on it can still be moved.
+      else if (!m->piece.empty()) {
+        auto plain = buildMap(dir, prefixes, own);
+        if (plain && plain->regions > 0) { plain->prefixes = prefixes; archiveMap(dir, kind, *plain); }
+      }
       std::filesystem::create_directories(file.parent_path(), ec);
-      writeMapFile(file, *m);
+      if (writeMapFile(file, *m)) {
+        if (!m->piece.empty()) {
+          std::string l;
+          for (size_t i = 1; i < m->piece_names.size(); i++) l += " " + m->piece_names[i];
+          COMBO_LOG("color editor: " + dir.filename().string() + "/" + kind + ": regions cut by model piece (" + std::to_string(m->regions) + " regions, " + std::to_string(m->major) + " big):" + l);
+        }
+      }
       archiveMap(dir, kind, *m);
     }
     return m;
@@ -852,50 +1323,72 @@ namespace {
     Image base, sss;
     std::vector<uint16_t> owner;         // The map's owners, plus edge pixels next to a region in its color
     std::vector<uint32_t> lit, shadow;   // The worn color's own, per region
+    std::vector<uint32_t> texels;
   };
-  std::shared_ptr<Worn> prepareWorn(std::shared_ptr<CharMap> map, std::filesystem::path base, std::filesystem::path sss) {
-    auto w = std::make_shared<Worn>();
-    if (!decodePng(base, w->base) || !decodePng(sss, w->sss)) return nullptr;
-    if (w->base.w != map->w || w->base.h != map->h || w->sss.w != map->w || w->sss.h != map->h) return nullptr;
-    const int R = map->regions;
-    const size_t N = map->owner.size();
+  void wornColors(Worn& w, const CharMap& map) {
+    const int R = map.regions;
+    const size_t N = map.owner.size();
     std::vector<std::unordered_map<uint32_t, uint32_t>> lc(R), sc(R);
     for (size_t p = 0; p < N; p += 3) {
-      const uint16_t r = map->owner[p];
+      const uint16_t r = map.owner[p];
       if (r == 0xFFFF) continue;
-      lc[r][rgbAt(w->base, p)]++;
-      sc[r][rgbAt(w->sss, p)]++;
+      lc[r][rgbAt(w.base, p)]++;
+      sc[r][rgbAt(w.sss, p)]++;
     }
     auto mode = [](const std::unordered_map<uint32_t, uint32_t>& m) {
       uint32_t best = 0, n = 0;
       for (const auto& [k, v] : m) if (v > n) { n = v; best = k; }
       return best;
     };
-    w->lit.resize(R); w->shadow.resize(R);
-    for (int r = 0; r < R; r++) { w->lit[r] = mode(lc[r]); w->shadow[r] = mode(sc[r]); }
-    // Edge pixels (blends between regions). Up to 3 px out, a pixel joins a neighbour's region when its color is
-    // close to that region's.
-    w->owner = map->owner;
-    const int W = map->w, H = map->h;
+    w.lit.resize(R); w.shadow.resize(R);
+    for (int r = 0; r < R; r++) { w.lit[r] = mode(lc[r]); w.shadow[r] = mode(sc[r]); }
+  }
+  void growEdges(Worn& w, const CharMap& map) {
+    w.owner = map.owner;
+    const int W = map.w, H = map.h;
+    std::vector<uint8_t> held;
+    if (!map.held.empty()) {
+      held.assign(w.owner.size(), 0);
+      for (uint32_t p : map.held) if (p < held.size()) held[p] = 1;
+    }
     for (int pass = 0; pass < 3; pass++) {
-      std::vector<uint16_t> next = w->owner;
+      std::vector<uint16_t> next = w.owner;
       for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
           const size_t p = static_cast<size_t>(y) * W + x;
-          if (w->owner[p] != 0xFFFF) continue;
-          const uint32_t c = rgbAt(w->base, p);
+          if (w.owner[p] != 0xFFFF || (!held.empty() && held[p])) continue;
+          const uint32_t c = rgbAt(w.base, p);
           int best = 70 * 70 + 1;
           for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
             const int nx = x + dx, ny = y + dy;
             if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-            const uint16_t r = w->owner[static_cast<size_t>(ny) * W + nx];
+            const uint16_t r = w.owner[static_cast<size_t>(ny) * W + nx];
             if (r == 0xFFFF) continue;
-            const int d = dist2(c, w->lit[r]);
+            const int d = dist2(c, w.lit[r]);
             if (d < best) { best = d; next[p] = r; }
           }
         }
-      w->owner.swap(next);
+      w.owner.swap(next);
     }
+    w.texels.assign(static_cast<size_t>((std::max)(0, map.regions)), 0);
+    for (uint16_t r : w.owner) if (r < w.texels.size()) w.texels[r]++;
+  }
+  std::shared_ptr<Worn> prepareWorn(std::shared_ptr<CharMap> map, std::filesystem::path base, std::filesystem::path sss) {
+    auto w = std::make_shared<Worn>();
+    if (!decodePng(base, w->base) || !decodePng(sss, w->sss)) return nullptr;
+    if (w->base.w != map->w || w->base.h != map->h || w->sss.w != map->w || w->sss.h != map->h) return nullptr;
+    wornColors(*w, *map);
+    growEdges(*w, *map);
+    return w;
+  }
+
+  std::shared_ptr<Worn> reownWorn(std::shared_ptr<Worn> old, std::shared_ptr<CharMap> map) {
+    if (!old || !map || old->base.w != map->w || old->base.h != map->h || old->sss.w != map->w || old->sss.h != map->h) return nullptr;
+    auto w = std::make_shared<Worn>();
+    w->base = old->base;
+    w->sss = old->sss;
+    wornColors(*w, *map);
+    growEdges(*w, *map);
     return w;
   }
 
@@ -911,9 +1404,17 @@ namespace {
     std::vector<UObject*> comps;                      // the meshes wearing it (their bones name the parts)
     bool kept_hidden = false;                         // a model the game only shows during a move (Sol's Dragon Install)
     std::vector<const uint8_t*> items;                // Object slot of each mid, then each comp, when found (for alive checks, as in Kept)
+    bool powered = false;
+    std::vector<std::pair<UObject*, UObject*>> orig_p;
+    bool look_p = false;
+    bool no_part = false;
   };
+  const char* const kSkinParams[2] = {"GIO_Skin_Base", "GIO_Skin_Sss"};
+  const TCHAR* const kSkinParamsW[2] = {STR("GIO_Skin_Base"), STR("GIO_Skin_Sss")};
+  const std::string kPoweredTail = "_P";
   struct Reading {
     std::string chr, kind;
+    bool p = false;
     int next = 1;
     std::vector<std::string> found;
     int stuck = 0;                           // Frames a color has waited for its files
@@ -939,8 +1440,8 @@ namespace {
   std::mutex g_m;  // guards g_view and g_reqs
   View g_view;
   struct Req { int kind; int region; uint32_t rgb; std::vector<Pick> picks = {}; std::vector<int> regions = {}; std::string text = {}; float f[4] = {};
-               std::vector<float> nums = {}; };
-  enum { kToggle, kLit, kShadow, kSelect, kReset, kNext, kFollow, kPairs, kBlackout, kCamera, kFollowSel, kPart, kRemap, kExport, kVec, kVecReset, kRename, kLogDrawn, kFx, kFxReset, kCapture, kCap, kCapReset, kLists, kExportRecolor, kImportRecolor, kCopySlot, kReread, kSave, kDiscardClose, kCancelClose, kUndo, kRedo, kRecovery, kPickAt, kPaintBegin, kPaintTo, kPaintEnd, kPaintFill, kPaintClear, kImportTex, kGroupSame, kPaletteSave, kPaletteLoad, kPaletteEdit, kPaletteDelete, kListEffects, kMat, kMatReset, kHide, kOnScreen, kPaintShape, kResetColor, kFxOne, kFxOneReset, kBake, kBakeAll, kUnbake };
+               std::vector<float> nums = {}; std::wstring wtext = {}; };
+  enum { kToggle, kLit, kShadow, kSelect, kReset, kNext, kFollow, kPairs, kBlackout, kCamera, kFollowSel, kPart, kRemap, kExport, kVec, kVecReset, kRename, kLogDrawn, kFx, kFxReset, kCapture, kCap, kCapReset, kLists, kExportRecolor, kImportRecolor, kCopySlot, kReread, kSave, kDiscardClose, kCancelClose, kUndo, kRedo, kRecovery, kPickAt, kProbeAt, kPaintBegin, kPaintTo, kPaintEnd, kPaintFill, kPaintClear, kImportTex, kGroupSame, kPaletteSave, kPaletteLoad, kPaletteEdit, kPaletteDelete, kListEffects, kMat, kMatReset, kHide, kOnScreen, kPaintShape, kResetColor, kFxOne, kFxOneReset, kBake, kBakeAll, kUnbake, kLook, kRelink, kCapClear, kRegionMove, kRegionReset, kPicFile };
   std::vector<Req> g_reqs;
 
   bool g_open = false;
@@ -952,6 +1453,8 @@ namespace {
   std::future<std::shared_ptr<CharMap>> g_map_job;
   std::string g_map_job_key;
   std::shared_ptr<Worn> g_worn;
+  std::string g_reown;
+  bool g_worn_job_reown = false;
   int g_worn_serial = 0;  // New each time g_worn is replaced. Frames made from it record which one.
   std::string g_worn_key;  // the target g_worn is for
   std::set<std::string> g_remapped;  // Map keys rebuilt this session for a new color (only once each)
@@ -978,6 +1481,41 @@ namespace {
   std::string g_pick_frames;           // The part whose pick the current scan frames are for ("" for none), so they can be used again
   Clock::time_point g_pick_frames_until;
   std::future<std::shared_ptr<Worn>> g_worn_job;
+  struct RefLook { std::vector<uint32_t> lit, shadow; };
+  struct EquipRefs {
+    const CharMap* map = nullptr;
+    bool asked = false;
+    int next = 1;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> files;
+    std::future<std::vector<RefLook>> job;
+    std::vector<RefLook> looks;
+  };
+  std::map<std::string, EquipRefs> g_equip_refs;
+  std::vector<RefLook> refLooks(std::shared_ptr<CharMap> map, std::vector<std::pair<std::filesystem::path, std::filesystem::path>> files) {
+    std::vector<RefLook> out;
+    for (const auto& [base, sss] : files) {
+      Image b, d;
+      if (!decodePng(base, b) || !decodePng(sss, d) || b.w != map->w || b.h != map->h || d.w != map->w || d.h != map->h) continue;
+      const int R = map->regions;
+      std::vector<std::unordered_map<uint32_t, uint32_t>> lc(R), sc(R);
+      for (size_t p = 0; p < map->owner.size(); p += 3) {
+        const uint16_t r = map->owner[p];
+        if (r == 0xFFFF) continue;
+        lc[r][rgbAt(b, p)]++;
+        sc[r][rgbAt(d, p)]++;
+      }
+      auto mode = [](const std::unordered_map<uint32_t, uint32_t>& m) {
+        uint32_t best = 0, n = 0;
+        for (const auto& [k, v] : m) if (v > n) { n = v; best = k; }
+        return best;
+      };
+      RefLook l;
+      l.lit.resize(R); l.shadow.resize(R);
+      for (int r = 0; r < R; r++) { l.lit[r] = mode(lc[r]); l.shadow[r] = mode(sc[r]); }
+      out.push_back(std::move(l));
+    }
+    return out;
+  }
   std::string g_worn_job_key;
   std::set<std::string> g_worn_failed;  // Targets whose worn color couldn't be made (a texture was missing). Not retried until remapped.
   std::map<std::string, std::vector<Edit>> g_edits;  // by target
@@ -1000,7 +1538,17 @@ namespace {
   std::string g_setup_home;  // the part the first-time setup started on, shown again when the fighter's other parts are mapped
   std::vector<UObject*> g_pawns;  // the fighters on stage when they were found (sorted)
 
-  std::string keyOf(const Target& t) { return t.chr + "/" + t.color + "/" + t.kind; }
+  std::string partKey(const Target& t) { return t.chr + "/" + t.color + "/" + t.kind; }
+  std::string kindOf(const Target& t) { return t.look_p ? t.kind + kPoweredTail : t.kind; }
+  std::string keyOf(const Target& t) { return t.look_p ? partKey(t) + kPoweredTail : partKey(t); }
+  bool poweredKind(const std::string& k) {
+    return k.size() > kPoweredTail.size() && k.compare(k.size() - kPoweredTail.size(), kPoweredTail.size(), kPoweredTail) == 0;
+  }
+  std::string partOfKey(const std::string& k) {
+    const size_t slash = k.rfind('/');
+    return slash != std::string::npos && poweredKind(k.substr(slash + 1)) ? k.substr(0, k.size() - kPoweredTail.size()) : k;
+  }
+  const char* lookParam(const Target& t, int m) { return t.look_p ? kSkinParams[m] : m ? "SssMap" : "BaseMap"; }
   // The cache's files: "Color01_BaseMap.png" for the body, "Color01_WEP_BaseMap.png" for the weapon.
   std::string prefixOf(const std::string& color, const std::string& kind) { return kind == "MAIN" ? color : color + "_" + kind; }
   const std::string& srcOf(const Target& t) { return t.src.empty() ? t.color : t.src; }
@@ -1023,7 +1571,7 @@ namespace {
     return it->second.count(prefix) ? prefix : std::string("P");
   }
   void forgetOwn(const std::string& chr, const std::string& kind) { std::lock_guard<std::mutex> lk(g_own_m); g_own.erase(chr + "/" + kind); }
-  std::string mapKey(const Target& t) { return t.chr + "/" + t.kind + "/" + mapIdOf(t.chr, t.kind, prefixOf(srcOf(t), t.kind)); }
+  std::string mapKey(const Target& t) { const std::string k = kindOf(t); return t.chr + "/" + k + "/" + mapIdOf(t.chr, k, prefixOf(srcOf(t), k)); }
   // A texture's id is its LightingGuid, made with the asset (a skin mod's textures have their own). "" if none.
   std::string texId(UObject* tex) {
     auto* id = tex ? tex->GetValuePtrByPropertyNameInChain<uint32_t>(STR("LightingGuid")) : nullptr;
@@ -1053,10 +1601,10 @@ namespace {
     std::string n, k;
     UObject* mic = colorSource(t.mids.front(), n, k);
     if (!mic) return 0;
-    const std::string a = texId(micTexture(mic, "BaseMap")), b = texId(micTexture(mic, "SssMap"));
+    const std::string a = texId(micTexture(mic, lookParam(t, 0))), b = texId(micTexture(mic, lookParam(t, 1)));
     if (a.empty() || b.empty()) return 0;
-    const auto& ids = texIds(t.chr, t.kind);
-    auto it = ids.find(prefixOf(srcOf(t), t.kind));
+    const auto& ids = texIds(t.chr, kindOf(t));
+    auto it = ids.find(prefixOf(srcOf(t), kindOf(t)));
     return it == ids.end() ? 2 : it->second == a + " " + b ? 0 : 1;
   }
   std::set<std::string> g_reread_tried;  // "<chr>/<kind>/<prefix>" read again this session. Only once, so never in a loop
@@ -1078,9 +1626,16 @@ namespace {
     return true;
   }
   std::string codeOf(const std::string& chr) { return chr.substr(0, 3); }  // "ANJ_C02" -> "ANJ"
+  std::wstring equipDir(const std::string& chr, const std::string& equip, const std::string& color);
   std::wstring materialDir(const std::string& chr, const std::string& color) {  // "/Game/Chara/ANJ/Costume02/Material/Color01"
+    if (chr.size() == 7 && chr[3] == '_' && chr[4] == 'E') return equipDir(chr, chr.substr(5), color);
     const std::string costume = chr.size() > 5 ? "Costume" + chr.substr(5) : "Costume01", code = codeOf(chr);
     return L"/Game/Chara/" + std::wstring(code.begin(), code.end()) + L"/" + std::wstring(costume.begin(), costume.end()) + L"/Material/" +
+           std::wstring(color.begin(), color.end());
+  }
+  std::wstring equipDir(const std::string& chr, const std::string& equip, const std::string& color) {
+    const std::string code = codeOf(chr);
+    return L"/Game/Chara/" + std::wstring(code.begin(), code.end()) + L"/Common/Equip/Equip" + std::wstring(equip.begin(), equip.end()) + L"/Material/" +
            std::wstring(color.begin(), color.end());
   }
   // A mesh's color material, as found. groupParts builds the parts from them.
@@ -1164,13 +1719,30 @@ namespace {
     return found;
   }
   Shown& edited(const Target& t) { return g_shown[keyOf(t)]; }
-  Target* target() { return g_target >= 0 && g_target < static_cast<int>(g_targets.size()) ? &g_targets[g_target] : nullptr; }
+  Target* shownPart() { return g_target >= 0 && g_target < static_cast<int>(g_targets.size()) ? &g_targets[g_target] : nullptr; }
+  bool g_powered_look = false;
+  Target g_look_view;
+  uint64_t g_targets_gen = 0, g_look_view_gen = ~0ull;
+  int g_look_view_of = -1;
+  Target* target() {
+    Target* t = shownPart();
+    if (!t || !g_powered_look || !t->powered) return t;
+    if (g_look_view_gen != g_targets_gen || g_look_view_of != g_target) {
+      g_look_view = *t;
+      g_look_view.look_p = true;
+      g_look_view_gen = g_targets_gen;
+      g_look_view_of = g_target;
+    }
+    return &g_look_view;
+  }
   // Kept from garbage collection while we hold them. This goes through the object item because the installed
   // UE4SS exports that, not UObject::SetRootSet's inline helper.
   void root(UObject* o) { if (o && o->GetObjectItem()) o->GetObjectItem()->SetRootSet(); }
   void unroot(Shown& s) {
-    for (UObject* t : {s.base, s.sss})
+    for (UObject* t : {s.base, s.sss}) {
+      tex_upload::forget(t);
       if (t && t->GetObjectItem()) t->GetObjectItem()->UnsetRootSet();
+    }
     s = Shown{};
   }
   // The pair shown for a region now. That's an edit, or the worn color's own (the shadow follows the lit color by
@@ -1243,7 +1815,35 @@ namespace {
       }
     }
   }
-  struct Pngs { std::vector<uint8_t> base, sss; };
+  struct Pngs {
+    std::vector<uint8_t> base, sss;
+    int w = 0, h = 0;
+    std::shared_ptr<const std::vector<uint8_t>> raw_base, raw_sss;
+    tex_upload::Sample sample_base, sample_sss;
+  };
+  tex_upload::Sample sampleOf(const Image& im) {
+    tex_upload::Sample s;
+    s.w = (std::min)(32, im.w);
+    s.h = (std::min)(32, im.h);
+    s.x = (im.w - s.w) / 2;
+    s.y = (im.h - s.h) / 2;
+    s.rgba.resize(static_cast<size_t>(s.w) * s.h * 4);
+    for (int y = 0; y < s.h; y++)
+      std::memcpy(&s.rgba[static_cast<size_t>(y) * s.w * 4], &im.px[(static_cast<size_t>(s.y + y) * im.w + s.x) * 4], static_cast<size_t>(s.w) * 4);
+    for (size_t i = 0; i + 3 < s.rgba.size(); i += 4) {
+      s.rgba[i] = toSrgb(s.rgba[i]); s.rgba[i + 1] = toSrgb(s.rgba[i + 1]); s.rgba[i + 2] = toSrgb(s.rgba[i + 2]);
+    }
+    return s;
+  }
+  std::shared_ptr<const std::vector<uint8_t>> rawOf(Image& im, int order) {
+    for (size_t i = 0; i + 3 < im.px.size(); i += 4) {
+      const uint8_t r = toSrgb(im.px[i]), g = toSrgb(im.px[i + 1]), b = toSrgb(im.px[i + 2]);
+      im.px[i] = order == 1 ? b : r;
+      im.px[i + 1] = g;
+      im.px[i + 2] = order == 1 ? r : b;
+    }
+    return std::make_shared<const std::vector<uint8_t>>(std::move(im.px));
+  }
   using PaintBytes = std::shared_ptr<const std::vector<uint8_t>>;
   void paintOver(const PaintBytes& paint, Image& ob, Image& os) {  // Worker. Composes the paint's layers over the region colors.
     if (!paint || paint->empty()) return;
@@ -1254,18 +1854,39 @@ namespace {
       if (c.compose(map, base, out)) im->px = std::move(out.px); else im->px = std::move(base.px);
     }
   }
-  Pngs encodeEdited(std::shared_ptr<Worn> w, std::vector<Edit> ed, bool follow, PaintBytes paint) {  // Worker. Reads only what it's given.
+  Pngs encodeEdited(std::shared_ptr<Worn> w, std::vector<Edit> ed, bool follow, PaintBytes paint, int raw_order = 0) {  // Worker. Reads only what it's given.
     Image ob, os;
     buildW(*w, follow, ed, {}, ob, os);
     paintOver(paint, ob, os);
-    return {encodePng(ob), encodePng(os)};
+    Pngs p;
+    if (ob.w != os.w || ob.h != os.h || ob.px.size() != static_cast<size_t>(ob.w) * ob.h * 4 || os.px.size() != ob.px.size()) raw_order = 0;
+    if (raw_order) {
+      p.w = ob.w;
+      p.h = ob.h;
+      p.raw_base = rawOf(ob, raw_order);
+      p.raw_sss = rawOf(os, raw_order);
+      return p;
+    }
+    p.base = encodePng(ob);
+    p.sss = encodePng(os);
+    if (ob.w == os.w && ob.h == os.h && ob.w > 0 && ob.h > 0 && ob.px.size() == static_cast<size_t>(ob.w) * ob.h * 4 && os.px.size() == ob.px.size()) {
+      p.w = ob.w;
+      p.h = ob.h;
+      p.sample_base = sampleOf(ob);
+      p.sample_sss = sampleOf(os);
+    }
+    return p;
   }
-  bool importPngs(UObject* world, Pngs& p, Shown& out) {  // (game thread)
+  bool importPngs(UObject* world, Pngs& p, Shown& out, bool watch_it = false) {  // (game thread)
     UObject* tb = importPng(world, p.base);
     UObject* ts = importPng(world, p.sss);
     if (!tb || !ts) return false;
     root(tb); root(ts);
     out = {tb, ts};
+    if (watch_it && p.w > 0 && !p.sample_base.rgba.empty() && !p.sample_sss.rgba.empty() && tb->GetClassPrivate() && ts->GetClassPrivate()) {
+      tex_upload::watch(tb, p.w, p.h, p.sample_base, tb->GetClassPrivate()->GetPropertiesSize());
+      tex_upload::watch(ts, p.w, p.h, p.sample_sss, ts->GetClassPrivate()->GetPropertiesSize());
+    }
     return true;
   }
   std::vector<std::future<Pngs>> g_png_orphans;  // Jobs no longer wanted, dropped once done (never waited on)
@@ -1292,13 +1913,13 @@ namespace {
   std::vector<int> g_hl_job_sel;
   std::string g_hl_job_key;
   std::string g_tex_key;                // Jobs running. One at a time, since each holds about half a GB at 4K.
-  Pngs encodeOne(std::shared_ptr<Worn> w, std::vector<Edit> ed, bool follow, PaintBytes paint) {
+  Pngs encodeOne(std::shared_ptr<Worn> w, std::vector<Edit> ed, bool follow, PaintBytes paint, int raw_order) {
     struct Count { ~Count() { g_encoding--; } } done;
-    return encodeEdited(std::move(w), std::move(ed), follow, std::move(paint));
+    return encodeEdited(std::move(w), std::move(ed), follow, std::move(paint), raw_order);
   }
-  std::future<Pngs> startEncode(std::shared_ptr<Worn> w, std::vector<Edit> ed, bool follow, PaintBytes paint) {  // Only when none is running.
+  std::future<Pngs> startEncode(std::shared_ptr<Worn> w, std::vector<Edit> ed, bool follow, PaintBytes paint, int raw_order = 0) {  // Only when none is running.
     g_encoding++;
-    try { return std::async(std::launch::async, encodeOne, std::move(w), std::move(ed), follow, std::move(paint)); }
+    try { return std::async(std::launch::async, encodeOne, std::move(w), std::move(ed), follow, std::move(paint), raw_order); }
     catch (...) { g_encoding--; return {}; }  // No thread, so no job. Tried again later.
   }
   void dropPngOrphans() {
@@ -1384,17 +2005,31 @@ namespace {
   bool outlineOnly(UObject* m);  // Defined below, with the material instances' textures
   UObject* gameSss(UObject* m);
   void show(Target& t, const Shown& s, bool scan = false) {  // scan means the mapping scan's frames, not a look
+    const bool pw = t.powered && !t.orig_p.empty() && t.orig_p.size() == t.mids.size();
+    const bool lp = pw && t.look_p;
+    const Shown none;
+    const Shown* other = &none;
+    if (pw)
+      if (auto o = g_shown.find(lp ? partKey(t) : partKey(t) + kPoweredTail); o != g_shown.end()) other = &o->second;
+    const Shown& sn = lp ? *other : s;
+    const Shown& sp = lp ? s : *other;
+    const bool pv = lp && g_open;
     for (size_t i = 0; i < t.mids.size(); i++) {
       if (i < t.items.size() && t.items[i] && (*reinterpret_cast<UObject* const*>(t.items[i]) != t.mids[i] ||
                                                (*reinterpret_cast<const int32_t*>(t.items[i] + 8) & ((1 << 28) | (1 << 29)))))
         continue;  // Gone, so never touched (its object slot is read, as in Kept)
-      if (outlineOnly(t.mids[i])) {  // An outline gets the shadow texture only. The scan reads the part's own texels.
-        if (!scan) setTexture(t.mids[i], STR("SssMap"), s.sss ? s.sss : gameSss(t.mids[i]));
+      const bool pb = pw && t.orig_p[i].first && t.orig_p[i].first == t.orig_p.front().first;
+      const bool ps = pw && t.orig_p[i].second && t.orig_p[i].second == t.orig_p.front().second;
+      const bool outline = outlineOnly(t.mids[i]);
+      if (pb) setTexture(t.mids[i], kSkinParamsW[0], sp.base ? sp.base : t.orig_p[i].first);
+      if (ps && !(scan && outline)) setTexture(t.mids[i], kSkinParamsW[1], sp.sss ? sp.sss : t.orig_p[i].second);
+      if (outline) {  // An outline gets the shadow texture only. The scan reads the part's own texels.
+        if (!scan) setTexture(t.mids[i], STR("SssMap"), pv && ps ? (sp.sss ? sp.sss : t.orig_p[i].second) : sn.sss ? sn.sss : gameSss(t.mids[i]));
         continue;
       }
-      setTexture(t.mids[i], STR("BaseMap"), s.base ? s.base : t.orig[i].first);
+      setTexture(t.mids[i], STR("BaseMap"), pv && pb ? (sp.base ? sp.base : t.orig_p[i].first) : sn.base ? sn.base : t.orig[i].first);
       if (t.orig[i].second == t.orig.front().second)  // A material with an SssMap of its own is left alone
-        setTexture(t.mids[i], STR("SssMap"), s.sss ? s.sss : t.orig[i].second);
+        setTexture(t.mids[i], STR("SssMap"), pv && ps ? (sp.sss ? sp.sss : t.orig_p[i].second) : sn.sss ? sn.sss : t.orig[i].second);
     }
   }
   bool anyEdit(const std::vector<Edit>& ed) {
@@ -1407,6 +2042,13 @@ namespace {
   }
   bool hasVector(UObject* m, const std::string& name) {  // In its own parameters or its parents', ignoring case as FNames do
     struct Arr { uint8_t* data; int32_t num, max; };
+    if (!name.empty() && name[0] == '#') {
+      for (int depth = 0; m && depth < 5; depth++, m = parentOf(m))
+        if (auto* a = m->GetValuePtrByPropertyNameInChain<Arr>(STR("ScalarParameterValues")))
+          for (int i = 0; i < a->num && i < 128; i++)
+            if (_stricmp(narrow(reinterpret_cast<const FName*>(a->data + i * 36)->ToString()).c_str(), name.c_str() + 1) == 0) return true;
+      return false;
+    }
     for (int depth = 0; m && depth < 5; depth++, m = parentOf(m))
       if (auto* a = m->GetValuePtrByPropertyNameInChain<Arr>(STR("VectorParameterValues")))
         for (int i = 0; i < a->num && i < 64; i++)  // FVectorParameterValue is 48 bytes, name first
@@ -1419,9 +2061,26 @@ namespace {
       {"OutlineColor", ""}, {"OutlineColorEx", "Edge glow"}, {"Taste_color", "Tint"}, {"Rim_Col", "Rim light"}, {"ShadowRim_Col", "Shadow rim"},
       {"Rim_Color", "Rim light"}, {"ShadowRim_Color", "Shadow rim"}, {"Color", "Color"}, {"crystal_colorA", "Crystal A"}, {"crystal_colorB", "Crystal B"},
       {"AuraColor", "Aura"}, {"GlowColor", "Glow color"}, {"wire_color", "Wire"}, {"Font_color", "Font"}, {"Star_color", "Star"},
-      {"base_color", "Base color"}, {"Color modifier", "Decal tint"}};
+      {"base_color", "Base color"}, {"Color modifier", "Decal tint"}, {"GIO_Skin_Glow", "Powered-up glow"},
+      {"matCap_Color", "Sheen tint"}, {"BaseColor", "Base color"}, {"EdgeColor", "Edge color"}, {"Color01", "Color 1"}, {"Color02", "Color 2"}, {"Color03", "Color 3"}};
   std::wstring wide(const std::string& s) { return std::wstring(s.begin(), s.end()); }
+  bool isNumber(const std::string& param) { return !param.empty() && param[0] == '#'; }
+  bool isPicture(const std::string& param) { return !param.empty() && param[0] == '$'; }
+  void picSet(UObject* m, const std::string& param, const float v[4]);
+  void picGet(UObject* m, const std::string& param, float out[4]);
   void getVector(UObject* mid, const TCHAR* name, float out[4]) {
+    if (name && name[0] == STR('$')) {
+      picGet(mid, narrow(std::wstring(name + 1)), out);
+      return;
+    }
+    if (name && name[0] == STR('#')) {
+      static UFunction* sf = fn(STR("/Script/Engine.MaterialInstanceDynamic:K2_GetScalarParameterValue"));
+      if (!sf || !isDynamic(mid)) return;
+      struct { FName name; float ret; } sp{FName(name + 1, FNAME_Add), 0.0f};
+      mid->ProcessEvent(sf, &sp);
+      out[0] = sp.ret; out[1] = 0.0f; out[2] = 0.0f; out[3] = 1.0f;
+      return;
+    }
     static UFunction* f = fn(STR("/Script/Engine.MaterialInstanceDynamic:K2_GetVectorParameterValue"));
     if (!f || !isDynamic(mid)) return;
     struct { FName name; float ret[4]; } p{FName(name, FNAME_Add), {}};
@@ -1429,6 +2088,17 @@ namespace {
     std::memcpy(out, p.ret, sizeof(p.ret));
   }
   void setVector(UObject* mid, const TCHAR* name, const float v[4]) {
+    if (name && name[0] == STR('$')) {
+      picSet(mid, narrow(std::wstring(name + 1)), v);
+      return;
+    }
+    if (name && name[0] == STR('#')) {
+      static UFunction* sf = fn(STR("/Script/Engine.MaterialInstanceDynamic:SetScalarParameterValue"));
+      if (!sf || !isDynamic(mid) || !std::isfinite(v[0])) return;
+      struct { FName name; float value; } sp{FName(name + 1, FNAME_Add), v[0]};
+      mid->ProcessEvent(sf, &sp);
+      return;
+    }
     static UFunction* f = fn(STR("/Script/Engine.MaterialInstanceDynamic:SetVectorParameterValue"));
     if (!f || !isDynamic(mid)) return;
     struct { FName name; float value[4]; } p{FName(name, FNAME_Add), {v[0], v[1], v[2], v[3]}};
@@ -1457,7 +2127,19 @@ namespace {
   std::map<UObject*, DecalPix> g_decal_pix;                         // by the game's texture
   std::map<std::pair<UObject*, std::string>, DecalTint> g_decals;  // by (the game's texture, the part's key)
   std::map<UObject*, std::pair<UObject*, std::string>> g_decal_of;  // Decal material -> its tint's key (its texture, taken before ours went on)
-  void unrootOne(UObject* o) { if (o && o->GetObjectItem()) o->GetObjectItem()->UnsetRootSet(); }
+  void unrootOne(UObject* o) { tex_upload::forget(o); if (o && o->GetObjectItem()) o->GetObjectItem()->UnsetRootSet(); }
+  std::string packageOf(UObject* o);
+  std::filesystem::path decalCacheFile(const std::string& chr, const std::string& color, const std::string& tex) {
+    return g_dir / "cache" / chr / ("decal_" + color + "_" + tex + ".png");
+  }
+  std::filesystem::path decalSource(const std::string& chr, const std::string& color, const std::string& tex, bool worn, bool per_color) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(g_dir / "cache" / chr, ec)) names.push_back(narrow(e.path().filename().wstring()));
+    const std::string n = bake::decalCache(names, color, tex, worn, per_color);
+    return n.empty() ? std::filesystem::path() : g_dir / "cache" / chr / n;
+  }
+  std::string gameTexture(const std::string& path);
   bool decalRead(const Target& t, UObject* m) {  // If m draws a Decal texture, read its pixels once (cached on disk)
     auto known = g_decal_of.find(m);
     UObject* tex = known != g_decal_of.end() ? known->second.first : getTexture(m, STR("Decal"));
@@ -1466,7 +2148,14 @@ namespace {
     if (!px.tried) {
       px.tried = true;
       std::error_code ec;
-      const auto file = g_dir / "cache" / t.chr / ("decal_" + t.color + "_" + narrow(tex->GetName()) + ".png");
+      const std::string tname = narrow(tex->GetName()), tpath = packageOf(tex);
+      const auto plain = decalCacheFile(t.chr, t.color, tname);
+      std::filesystem::path file = plain;
+      if (tpath.find("/SL_baked/") != std::string::npos) {
+        const std::string game = gameTexture(tpath);
+        const std::filesystem::path pick = decalSource(t.chr, t.color, tname, true, game.empty() || bake::perColorPath(game));
+        file = !pick.empty() ? pick : std::filesystem::path(plain).replace_extension(".ours.png");
+      }
       std::filesystem::create_directories(file.parent_path(), ec);
       if (!std::filesystem::exists(file, ec) || !decodePng(file, px.img)) {
         px.img = Image{};
@@ -1481,7 +2170,7 @@ namespace {
       }
     }
     if (!px.img.w || px.smax <= 0.05f) return false;  // Unreadable or no lines, so nothing to color
-    const auto key = std::make_pair(tex, keyOf(t));
+    const auto key = std::make_pair(tex, partKey(t));
     g_decal_of.emplace(m, key);
     DecalTint& d = g_decals[key];
     d.tex = tex;
@@ -1506,6 +2195,35 @@ namespace {
     unrootOne(d.ours);  // The game's own is back on, so let ours go
     d.ours = nullptr;
   }
+  Image resized(const Image& src, int w, int h) {
+    if (src.w == w && src.h == h) return src;
+    Image out;
+    out.w = w;
+    out.h = h;
+    out.px.resize(static_cast<size_t>(w) * h * 4);
+    if (!src.w || !src.h) return out;
+    for (int y = 0; y < h; y++) {
+      const float fy = (std::max)(0.0f, (y + 0.5f) * src.h / h - 0.5f);
+      const int y0 = (std::min)(static_cast<int>(fy), src.h - 1), y1 = (std::min)(y0 + 1, src.h - 1);
+      const float ty = fy - y0;
+      for (int x = 0; x < w; x++) {
+        const float fx = (std::max)(0.0f, (x + 0.5f) * src.w / w - 0.5f);
+        const int x0 = (std::min)(static_cast<int>(fx), src.w - 1), x1 = (std::min)(x0 + 1, src.w - 1);
+        const float tx = fx - x0;
+        for (int c = 0; c < 4; c++) {
+          auto at = [&](int xx, int yy) { return static_cast<float>(src.px[(static_cast<size_t>(yy) * src.w + xx) * 4 + c]); };
+          const float v = (at(x0, y0) * (1 - tx) + at(x1, y0) * tx) * (1 - ty) + (at(x0, y1) * (1 - tx) + at(x1, y1) * tx) * ty;
+          out.px[(static_cast<size_t>(y) * w + x) * 4 + c] = static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(v)), 0, 255));
+        }
+      }
+    }
+    return out;
+  }
+  Image decalTinted(const Image& src, float smax, const float T[3]) {
+    Image out = src;
+    bake::tintDecal(out.px, smax, T);
+    return out;
+  }
   // Each update puts a finished tint on its part's materials and starts the latest one asked for once the color
   // has stopped moving for a moment (a drag sends one every frame). One at a time per part.
   void decalTick(UObject* world) {
@@ -1526,15 +2244,7 @@ namespace {
       if (!px.img.w) { d.pending = false; continue; }
       d.pending = false;
       const float smax = px.smax, T[3] = {std::clamp(d.want[0], 0.0f, 1.0f), std::clamp(d.want[1], 0.0f, 1.0f), std::clamp(d.want[2], 0.0f, 1.0f)};
-      d.job = std::async(std::launch::async, [src = px.img, smax, T]() {
-        Image out = src;
-        for (size_t q = 0; q < static_cast<size_t>(out.w) * out.h; q++) {
-          uint8_t* c = &out.px[q * 4];
-          const float st = 1.0f - static_cast<float>(c[0] + c[1] + c[2]) / 765.0f, k = std::clamp(st / smax, 0.0f, 1.0f);
-          for (int i = 0; i < 3; i++) c[i] = static_cast<uint8_t>(std::lround(255.0f - k * (255.0f - 255.0f * T[i])));
-        }
-        return Pngs{encodePng(out), {}};
-      });
+      d.job = std::async(std::launch::async, [src = px.img, smax, T]() { return Pngs{encodePng(decalTinted(src, smax, T)), {}}; });
     }
   }
   void decalOriginals(const std::set<UObject*>& on_stage) {  // the game's decals back on materials still on stage
@@ -1553,7 +2263,7 @@ namespace {
   }
   // Puts a material color on, or the material's own back. It's either a vector parameter (OutlineColor,
   // Taste_color...) or a decal's lines.
-  void vecSet(UObject* m, const std::string& param, const float c[4]) { if (isDecal(m)) decalSet(m, c); else setVector(m, wide(param).c_str(), c); }
+  void vecSet(UObject* m, const std::string& param, const float c[4]) { if (isDecal(m) && !isPicture(param)) decalSet(m, c); else setVector(m, wide(param).c_str(), c); }
   struct VecGroup {
     std::string label;
     std::vector<UObject*> mids;
@@ -1562,6 +2272,9 @@ namespace {
     std::string param = "OutlineColor";  // The first member's
     std::vector<std::string> params;     // The parameter for each material in mids (one material can carry Rim_Col and Rim_Color)
     const std::string& paramOf(size_t i) const { return i < params.size() ? params[i] : param; }
+    const matpics::Row* pic_row = nullptr;
+    int pic_slot = 0;
+    std::string pic_tip, pic_mic;
   };
   std::vector<VecGroup> g_vecs;
   // Per fight, each material's own colors (per parameter), taken the first time it's seen since later it may wear
@@ -1572,13 +2285,13 @@ namespace {
   bool g_vec_unsaved = false;
   Clock::time_point g_vec_changed;
   void vecRestore(UObject* m, const std::string& param) {  // Puts its own back. If none is known, it's left as it is.
-    if (isDecal(m)) { decalRestore(m); return; }
+    if (isDecal(m) && !isPicture(param)) { decalRestore(m); return; }
     auto o = g_vec_orig.find({m, param});
     if (o != g_vec_orig.end()) setVector(m, wide(param).c_str(), o->second.data());
   }
   void restoreVecs(const std::string& key) {  // every material of this target back to its own colors
     {  // Only while its materials are still there. Once the fight that had them is over, they may be gone.
-      auto t = std::find_if(g_targets.begin(), g_targets.end(), [&](const Target& o) { return keyOf(o) == key; });
+      auto t = std::find_if(g_targets.begin(), g_targets.end(), [&](const Target& o) { return partKey(o) == key; });
       if (t == g_targets.end() || t->items.size() < t->mids.size()) return;
       for (size_t i = 0; i < t->mids.size(); i++) {
         const uint8_t* it = t->items[i];
@@ -1595,12 +2308,45 @@ namespace {
   const float* vecOrig(UObject* m, const std::string& param) { auto o = g_vec_orig.find({m, param}); return o == g_vec_orig.end() ? nullptr : o->second.data(); }
   std::string g_vecs_for;  // The target they belong to ("" means find them again)
   std::map<std::string, std::map<std::string, std::array<float, 4>>> g_vec_saved;  // The edited ones, by target, then by label
+  struct VecMeta { std::set<std::string> params, mats; };
+  std::map<std::string, std::map<std::string, VecMeta>> g_vec_meta;
+  std::map<std::string, std::map<std::string, VecMeta>> g_vec_rowmeta;
+  void readVecMeta(const std::string& l, std::map<std::string, VecMeta>& to) {
+    if (l.rfind("vecm ", 0) != 0) return;
+    const size_t a = l.find('\t');
+    const size_t b = a == std::string::npos ? a : l.find('\t', a + 1);
+    if (b == std::string::npos) return;
+    VecMeta m;
+    auto split = [](const std::string& s, std::set<std::string>& out) {
+      for (size_t p = 0; p <= s.size();) {
+        const size_t c = s.find(',', p);
+        const std::string w = s.substr(p, c == std::string::npos ? std::string::npos : c - p);
+        if (!w.empty()) out.insert(w);
+        if (c == std::string::npos) break;
+        p = c + 1;
+      }
+    };
+    split(l.substr(a + 1, b - a - 1), m.params);
+    split(l.substr(b + 1), m.mats);
+    if (!m.params.empty() && !m.mats.empty()) to[l.substr(5, a - 5)] = std::move(m);
+  }
   std::string vecLabel(UObject* m);
   // A vector parameter's value as the material asset sets it. A dynamic material's own overrides are skipped, since
   // they're ours.
   bool vecDefault(UObject* m, const std::string& name, float out[4]) {
     struct Arr { uint8_t* data; int32_t num, max; };
     if (isDynamic(m)) m = parentOf(m);
+    if (isNumber(name)) {
+      for (int depth = 0; m && depth < 5; depth++, m = parentOf(m))
+        if (auto* a = m->GetValuePtrByPropertyNameInChain<Arr>(STR("ScalarParameterValues")))
+          for (int i = 0; i < a->num && i < 128; i++)
+            if (_stricmp(narrow(reinterpret_cast<const FName*>(a->data + i * 36)->ToString()).c_str(), name.c_str() + 1) == 0) {
+              out[0] = *reinterpret_cast<const float*>(a->data + i * 36 + 16);
+              out[1] = 0.0f; out[2] = 0.0f; out[3] = 1.0f;
+              return std::isfinite(out[0]);
+            }
+      return false;
+    }
     for (int depth = 0; m && depth < 5; depth++, m = parentOf(m))
       if (auto* a = m->GetValuePtrByPropertyNameInChain<Arr>(STR("VectorParameterValues")))
         for (int i = 0; i < a->num && i < 64; i++)  // FVectorParameterValue is info (16 bytes), FLinearColor at +16, then guid
@@ -1610,44 +2356,425 @@ namespace {
           }
     return false;
   }
+  std::map<std::string, std::vector<std::string>> g_matcolors;
+  const std::vector<std::string>* tableColors(UObject* m) {
+    static bool read = false;
+    if (!read) {
+      read = true;
+      std::ifstream f(g_dir / "atlas" / "matcolors.txt");
+      std::string line;
+      while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos || tab == 0 || tab + 1 >= line.size()) continue;
+        std::string key = line.substr(0, tab);
+        for (auto& ch : key) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        g_matcolors[key].push_back(line.substr(tab + 1));
+      }
+      COMBO_LOG("color editor: " + std::to_string(g_matcolors.size()) + " materials in the table of color values (atlas/matcolors.txt)");
+    }
+    if (g_matcolors.empty()) return nullptr;
+    for (int depth = 0; m && depth < 6; depth++, m = parentOf(m)) {
+      const std::string full = narrow(m->GetFullName());
+      const size_t at = full.find("/Chara/"), mat = full.find("/Material/"), dot = full.rfind('.');
+      if (at == std::string::npos || mat == std::string::npos || dot == std::string::npos || mat <= at + 7 || dot < mat) continue;
+      std::string key = full.substr(at + 7, mat - at - 7) + "/" + full.substr(dot + 1);
+      for (auto& ch : key) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      auto it = g_matcolors.find(key);
+      if (it != g_matcolors.end()) return &it->second;
+    }
+    return nullptr;
+  }
+  bool tableHas(UObject* m, const std::string& name) {
+    const std::vector<std::string>* l = tableColors(m);
+    return l && std::any_of(l->begin(), l->end(), [&](const std::string& p) { return _stricmp(p.c_str(), name.c_str()) == 0; });
+  }
+  bool hasColor(UObject* m, const std::string& name) { return hasVector(m, name) || tableHas(m, name); }
+  std::map<std::pair<UObject*, std::string>, std::array<float, 4>> g_vec_base;
+  bool colorDefault(UObject* m, const std::string& name, float out[4]) {
+    if (vecDefault(m, name, out)) return true;
+    if (!isDynamic(m) || !parentOf(m) || !tableHas(m, name)) return false;
+    auto it = g_vec_base.find({parentOf(m), name});
+    if (it == g_vec_base.end()) {
+      std::array<float, 4> v{};
+      getVector(m, wide(name).c_str(), v.data());
+      it = g_vec_base.emplace(std::make_pair(parentOf(m), name), v).first;
+    }
+    std::memcpy(out, it->second.data(), sizeof(float) * 4);
+    return true;
+  }
+  float vecScale(const VecGroup& g) {
+    if (isNumber(g.param) || isPicture(g.param)) return 1.0f;
+    const float* og = g.mids.empty() ? nullptr : vecOrig(g.mids.front(), g.param);
+    const float om = og ? (std::max)({og[0], og[1], og[2]}) : 1.0f;
+    return om > 1.0f && std::isfinite(om) ? om : 1.0f;
+  }
+  std::string prettyParam(const std::string& n) {
+    std::string out;
+    for (size_t i = isNumber(n) ? 1 : 0; i < n.size(); i++) {
+      const char c = n[i];
+      if (c == '_') { out += ' '; continue; }
+      if (!out.empty() && std::isupper(static_cast<unsigned char>(c)) && std::islower(static_cast<unsigned char>(n[i - 1]))) out += ' ';
+      out += out.empty() ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+  }
+  std::vector<std::pair<std::string, std::string>> colorParams(UObject* m) {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto& [param, says] : kVecParams) out.push_back({param, says});
+    if (const std::vector<std::string>* l = tableColors(m))
+      for (const std::string& n : *l)
+        if (std::none_of(out.begin(), out.end(), [&](const auto& pr) { return _stricmp(pr.first.c_str(), n.c_str()) == 0; })) out.push_back({n, prettyParam(n)});
+    return out;
+  }
+  std::map<std::string, std::vector<matpics::Row>> g_matpics;
+  const std::vector<matpics::Row>* picTable(const std::string& key) {
+    static bool read = false;
+    if (!read) {
+      read = true;
+      std::ifstream f(g_dir / "atlas" / "matpictures.txt");
+      std::string line;
+      size_t rows = 0;
+      while (std::getline(f, line)) {
+        matpics::Row r;
+        if (!matpics::parseLine(line, r)) continue;
+        g_matpics[matpics::lower(r.path_key)].push_back(std::move(r));
+        rows++;
+      }
+      COMBO_LOG("color editor: " + std::to_string(rows) + " pictures on " + std::to_string(g_matpics.size()) + " materials in the table of pictures (atlas/matpictures.txt)");
+    }
+    auto it = g_matpics.find(key);
+    return it == g_matpics.end() ? nullptr : &it->second;
+  }
+  const matpics::Row* picRowOf(const std::string& mic_pkg, const std::string& param) {
+    const std::vector<matpics::Row>* l = picTable(matpics::keyOfPackage(mic_pkg));
+    if (l)
+      for (const matpics::Row& r : *l)
+        if (_stricmp(r.param.c_str(), param.c_str()) == 0) return &r;
+    return nullptr;
+  }
+  const std::vector<matpics::Row>* tablePictures(UObject* m, std::string* mic_pkg = nullptr) {
+    picTable({});
+    if (g_matpics.empty() || !m) return nullptr;
+    for (int depth = 0; m && depth < 6; depth++, m = parentOf(m)) {
+      const std::string full = narrow(m->GetFullName());
+      const size_t sp = full.find(' '), dot = full.rfind('.');
+      if (sp == std::string::npos || dot == std::string::npos || dot < sp) continue;
+      const std::string pkg = full.substr(sp + 1, dot - sp - 1);
+      const std::string key = matpics::keyOfPackage(pkg);
+      if (key.empty()) continue;
+      if (const std::vector<matpics::Row>* l = picTable(key)) {
+        if (mic_pkg) *mic_pkg = pkg;
+        return l;
+      }
+    }
+    return nullptr;
+  }
+  bool anyColor(UObject* m) {
+    if (std::any_of(std::begin(kVecParams), std::end(kVecParams), [&](const auto& pr) { return hasColor(m, pr.first); })) return true;
+    const std::vector<std::string>* l = tableColors(m);
+    if (l && !l->empty()) return true;
+    const std::vector<matpics::Row>* p = tablePictures(m);
+    return p && !p->empty();
+  }
+  std::filesystem::path pngFile(const std::string& mic_pkg, const std::string& hash) {
+    const std::string chr = matpics::chrOfPackage(mic_pkg);
+    if (chr.empty() || hash.empty()) return {};
+    return g_dir / "saved" / chr / "pictures" / (hash + ".png");
+  }
+  UObject* makeDynamic(UObject* world, UObject* parent);
+  UObject* chainTexture(UObject* m, const char* param);
+  std::string texPath(UObject* tex) { return tex ? packageOf(tex) + "." + narrow(tex->GetName()) : std::string(); }
+  bool texSrgb(UObject* tex) {
+    if (!tex) return false;
+    FBoolProperty* p = CastField<FBoolProperty>(tex->GetPropertyByNameInChain(STR("SRGB")));
+    return p && p->GetPropertyValueInContainer(tex);
+  }
+  std::map<std::string, std::string> g_pic_masters;
+  struct PicMasterTry { ULONGLONG at = 0; std::string said; };
+  std::map<std::string, PicMasterTry> g_pic_master_tried;
+  bool picMaster(UObject* ctx, const std::string& master, const std::string& param, bool editor) {
+    const std::string k = matpics::masterKey(master, param);
+    if (g_pic_masters.count(k)) return true;
+    const ULONGLONG now = GetTickCount64();
+    if (auto t = g_pic_master_tried.find(k); t != g_pic_master_tried.end() && (!editor || now - t->second.at < 5000)) return false;
+    g_pic_master_tried[k].at = now;
+    UObject* obj = loadAsset(wide(master));
+    UObject* tex = nullptr;
+    if (obj) {
+      const std::string cls = obj->GetClassPrivate() ? narrow(obj->GetClassPrivate()->GetName()) : std::string();
+      if (cls.find("MaterialInstance") != std::string::npos) tex = chainTexture(obj, param.c_str());
+      if (!tex)
+        if (UObject* mid = makeDynamic(ctx ? ctx : obj, obj)) tex = getTexture(mid, wide(param).c_str());
+    }
+    const std::string path = texPath(tex);
+    if (path.empty()) {
+      const std::string why = obj ? "gave no picture" : "couldn't be loaded";
+      if (g_pic_master_tried[k].said != why) {
+        g_pic_master_tried[k].said = why;
+        COMBO_LOG("color editor: picture " + param + ": " + master + " " + why + (editor ? " (read again at most every 5 seconds while the editor lists it)" : ""));
+      }
+      return false;
+    }
+    g_pic_masters[k] = path;
+    g_pic_master_tried.erase(k);
+    COMBO_LOG("color editor: picture " + param + ": " + master + " draws " + path);
+    return true;
+  }
+  void picMasters(UObject* ctx, const matpics::Row& r, bool editor) {
+    for (const matpics::Entry& e : r.by_color)
+      if (const std::string m = matpics::masterOf(e.value); !m.empty()) picMaster(ctx, m, r.param, editor);
+  }
+  struct PicLive {
+    std::string full, mic_pkg, applied_path, before_path;
+    const matpics::Row* row = nullptr;
+    int slot = 0;
+    bool srgb = false, set = false, changed = false;
+    float now[4] = {};
+    UObject* applied = nullptr;
+  };
+  std::map<std::pair<UObject*, std::string>, PicLive> g_pic_live;
+  struct PicPng { UObject* tex = nullptr; uint64_t used = 0; };
+  std::map<std::string, PicPng> g_pic_png;
+  std::set<std::string> g_pic_png_failed;
+  uint64_t g_pic_png_tick = 0;
+  constexpr size_t kPicPngKept = 4;
+  void picPngPrune() {
+    std::set<UObject*> shown;
+    for (const auto& [k, s] : g_pic_live)
+      if (s.applied && s.applied_path.rfind("png:", 0) == 0) shown.insert(s.applied);
+    std::vector<std::pair<uint64_t, std::string>> spare;
+    for (const auto& [k, p] : g_pic_png)
+      if (!shown.count(p.tex)) spare.push_back({p.used, k});
+    std::sort(spare.begin(), spare.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (size_t i = kPicPngKept; i < spare.size(); i++) {
+      unrootOne(g_pic_png[spare[i].second].tex);
+      g_pic_png.erase(spare[i].second);
+    }
+  }
+  UObject* picPngTex(UObject* ctx, const std::string& mic_pkg, const std::string& hash, bool srgb, bool editor) {
+    const std::string k = hash + (srgb ? "|s" : "|l");
+    if (auto it = g_pic_png.find(k); it != g_pic_png.end()) { it->second.used = ++g_pic_png_tick; return it->second.tex; }
+    if (g_pic_png_failed.count(k) && !editor) return nullptr;
+    Image img;
+    const std::filesystem::path file = pngFile(mic_pkg, hash);
+    std::error_code ec;
+    UObject* tex = nullptr;
+    if (!file.empty() && std::filesystem::exists(file, ec) && decodePng(file, img) && img.w) {
+      std::vector<uint8_t> png = encodePng(img, !srgb);
+      tex = importPng(ctx, png);
+    }
+    if (!tex) {
+      if (g_pic_png_failed.insert(k).second) COMBO_LOG("color editor: picture " + hash + ".png couldn't be read from " + narrow(file.parent_path().wstring()));
+      return nullptr;
+    }
+    g_pic_png_failed.erase(k);
+    root(tex);
+    g_pic_png[k] = PicPng{tex, ++g_pic_png_tick};
+    return tex;
+  }
+  PicLive* picLiveOf(UObject* m, const matpics::Row& r, const std::string& mic_pkg) {
+    const auto key = std::make_pair(m, r.param);
+    const std::string full = narrow(m->GetFullName()) + "|" + mic_pkg;
+    if (auto it = g_pic_live.find(key); it != g_pic_live.end()) {
+      if (it->second.full == full) return &it->second;
+      g_pic_live.erase(it);
+    }
+    PicLive s;
+    s.full = full;
+    s.mic_pkg = mic_pkg;
+    s.row = &r;
+    s.slot = matpics::colorNum(matpics::folderOfPackage(mic_pkg));
+    s.srgb = texSrgb(getTexture(m, wide(r.param).c_str()));
+    return &g_pic_live.emplace(key, std::move(s)).first->second;
+  }
+  void picSet(UObject* m, const std::string& param, const float v[4]) {
+    auto it = g_pic_live.find({m, param});
+    if (it == g_pic_live.end() || !it->second.row) return;
+    PicLive& s = it->second;
+    const matpics::Pick p = matpics::resolve(*s.row, g_pic_masters, s.slot, v);
+    const matpics::Act a = matpics::act(p, s.changed);
+    const std::wstring wp = wide(param);
+    auto keep = [&]() { std::memcpy(s.now, v, sizeof s.now); s.set = true; };
+    if (a == matpics::Act::Nothing) {
+      if (p.kind == matpics::Pick::Own) keep();
+      return;
+    }
+    UObject* tex = nullptr;
+    if (a == matpics::Act::Restore) {
+      if (!s.before_path.empty()) tex = loadAsset(wide(s.before_path));
+      if (!tex && !p.path.empty()) tex = loadAsset(wide(p.path));
+      if (!tex) return;
+      if (getTexture(m, wp.c_str()) != tex) setTexture(m, wp.c_str(), tex);
+      s.changed = false;
+      s.applied = nullptr;
+      s.applied_path.clear();
+      keep();
+      picPngPrune();
+      return;
+    }
+    std::string key;
+    if (p.kind == matpics::Pick::Png) {
+      key = "png:" + p.hash;
+      tex = picPngTex(m, s.mic_pkg, p.hash, s.srgb, g_open);
+    } else {
+      key = p.path;
+      if (s.applied && s.applied_path == key && getTexture(m, wp.c_str()) == s.applied) { keep(); return; }
+      tex = loadAsset(wide(p.path));
+    }
+    if (!tex) return;
+    UObject* cur = getTexture(m, wp.c_str());
+    if (!s.changed) {
+      s.before_path = texPath(cur);
+      s.changed = true;
+    }
+    if (cur != tex) setTexture(m, wp.c_str(), tex);
+    s.applied = tex;
+    s.applied_path = key;
+    keep();
+    picPngPrune();
+  }
+  void picGet(UObject* m, const std::string& param, float out[4]) {
+    auto it = g_pic_live.find({m, param});
+    if (it != g_pic_live.end() && it->second.set) { std::memcpy(out, it->second.now, sizeof it->second.now); return; }
+    out[0] = it == g_pic_live.end() ? -1.0f : static_cast<float>(it->second.slot);
+    out[1] = 0.0f; out[2] = 0.0f; out[3] = 0.0f;
+  }
+  void picForget() {
+    g_pic_live.clear();
+    for (auto& [k, p] : g_pic_png) unrootOne(p.tex);
+    g_pic_png.clear();
+    g_pic_png_failed.clear();
+  }
+  struct PicDone { bool ok = false; std::string why, name; float v[4] = {}; int w = 0, h = 0; };
+  std::mutex g_pic_files_m;
+  struct PicFor { std::string part, label; int region = -1; };
+  std::future<PicDone> g_pic_job;
+  PicFor g_pic_for;
+  PicDone pictureFromPng(const std::string& mic, const std::wstring& src) {
+    PicDone d;
+    d.name = narrow(std::filesystem::path(src).filename().wstring());
+    Image img;
+    if (!decodePng(src, img) || !img.w) { d.why = d.name + ": couldn't read it as a picture."; return d; }
+    d.w = img.w;
+    d.h = img.h;
+    const std::vector<uint8_t> bytes = encodePng(img, false, true);
+    const std::string hash = bake::sha1hex(bytes).substr(0, 18);
+    const std::filesystem::path file = pngFile(mic, hash);
+    if (file.empty() || !matpics::hashToValue(hash, d.v)) { d.why = "The picture couldn't be kept in the saves folder."; return d; }
+    std::error_code ec;
+    std::lock_guard<std::mutex> pic_lock(g_pic_files_m);
+    if (!std::filesystem::exists(file, ec)) {
+      std::filesystem::create_directories(file.parent_path(), ec);
+      std::filesystem::path tmp = file;
+      tmp += ".new";
+      bool wrote = false;
+      {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        wrote = f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())).good();
+      }
+      if (wrote) std::filesystem::rename(tmp, file, ec);
+      if (!wrote || ec) { std::filesystem::remove(tmp, ec); d.why = "The picture couldn't be kept in the saves folder."; return d; }
+    } else {
+      std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now(), ec);
+    }
+    d.ok = true;
+    return d;
+  }
+  std::string picChoice(const VecGroup& g, const float v[4]) {
+    if (!g.pic_row) return "?";
+    const matpics::Pick p = matpics::resolve(*g.pic_row, g_pic_masters, g.pic_slot, v);
+    switch (p.kind) {
+      case matpics::Pick::Own: return "the game's own, color " + std::to_string(p.color) + "'s " + p.path;
+      case matpics::Pick::Texture: return "color " + std::to_string(p.color) + "'s " + p.path;
+      case matpics::Pick::Png: return "the PNG " + narrow(pngFile(g.pic_mic, p.hash).wstring());
+      default: return "nothing (" + p.why + ")";
+    }
+  }
   std::string matShort(UObject* m) {  // "MI_EDY_BASE" -> "edy base"
     std::string n = parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName());
     if (n.rfind("MI_", 0) == 0) n = n.substr(3);
     for (auto& c : n) c = c == '_' ? ' ' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return n;
   }
+  std::set<UObject*> g_vec_outside;
+  bool onPartMesh(UObject* m, const std::vector<const Target*>& all) {
+    for (const Target* o : all)
+      for (UObject* pc : o->comps)
+        for (int i = 0, n = (std::min)(numMaterials(pc), 64); i < n; i++)
+          if (material(pc, i) == m) return true;
+    return false;
+  }
+  std::string matToken(UObject* m) {
+    std::string n = parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName());
+    if (n.rfind("MI_", 0) != 0) return std::string();
+    n = n.substr(3);
+    const size_t cut = n.find('_');
+    if (cut != std::string::npos) n = n.substr(0, cut);
+    for (auto& ch : n) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    return n;
+  }
+  const Target* outsideOwner(UObject* c, UObject* pawn, const std::vector<const Target*>& all, std::string* how = nullptr) {
+    for (const Target* o : all)
+      if (o->pawn == pawn && std::find(o->comps.begin(), o->comps.end(), c) != o->comps.end()) return nullptr;
+    const int n = (std::min)(numMaterials(c), 64);
+    for (int i = 0; i < n; i++)
+      for (const Target* o : all)
+        if (o->pawn == pawn && std::find(o->mids.begin(), o->mids.end(), material(c, i)) != o->mids.end()) { if (how) *how = "it wears that part's material"; return o; }
+    for (int i = 0; i < n; i++) {
+      UObject* m = material(c, i);
+      const std::string tok = m ? matToken(m) : std::string();
+      if (tok.empty()) continue;
+      for (const Target* o : all)
+        if (o->pawn == pawn && o->kind == tok) { if (how) *how = "its material is named for that part"; return o; }
+    }
+    for (const Target* o : all)
+      if (o->pawn == pawn && o->kind == "MAIN") { if (how) *how = "no part claims it, so it goes with the body"; return o; }
+    return nullptr;
+  }
   std::vector<VecGroup> vecRows(const std::vector<UObject*>& mats) {
     std::vector<VecGroup> rows;
-    std::vector<std::string> keys, friendly;
+    std::vector<std::string> keys, friendly, plains;
     // Two spellings of one setting. The masters read one, so a row sets both, keyed by the one the palette sets.
     const auto alias = [](const std::string& p) -> const char* {
       return p == "Rim_Col" ? "Rim_Color" : p == "ShadowRim_Col" ? "ShadowRim_Color" : nullptr;
     };
     for (UObject* m : mats)
-      for (const auto& [param, says] : kVecParams) {
+      for (const auto& [param, says] : colorParams(m)) {
         const std::string pn = param;
         if (pn == "Rim_Color" || pn == "ShadowRim_Color") continue;  // Handled with its other spelling
         const char* also = alias(pn);
         float probe[4];  // What the material asset sets, never our own overrides, so the rows keep their shape after edits
-        const bool own = vecDefault(m, pn, probe), other = also && vecDefault(m, also, probe);
+        const bool own_set = vecDefault(m, pn, probe), other_set = also && vecDefault(m, also, probe);
+        const bool in_files = own_set || other_set;
+        const bool own = in_files ? own_set : colorDefault(m, pn, probe), other = in_files ? other_set : (also && colorDefault(m, also, probe));
         if (!own && !other) continue;
-        std::string key, label;
-        if (std::string(param) == "OutlineColor") {
+        std::string key, label, plain;
+        bool fixed = false;
+        if (pn == "OutlineColor") {
           label = vecLabel(m);
           key = "O|" + label;
         } else {
           float v[4] = {};
-          vecDefault(m, own ? pn : std::string(also), v);
+          colorDefault(m, own ? pn : std::string(also), v);
           char buf[96];
-          snprintf(buf, sizeof(buf), "%s|%.3f %.3f %.3f %.3f", says, v[0], v[1], v[2], v[3]);
+          if (isNumber(pn)) snprintf(buf, sizeof(buf), "#%s|%.7g", says.c_str(), v[0]);
+          else snprintf(buf, sizeof(buf), "%s|%.3f %.3f %.3f %.3f", says.c_str(), v[0], v[1], v[2], v[3]);
           key = buf;
           label = says;
+          if (g_vec_outside.count(m) || !in_files) {
+            label = std::string(says) + " [" + matShort(m) + "]";
+            key = "X|" + label + "|" + buf;
+            fixed = true;
+            if (!g_vec_outside.count(m)) plain = says;
+          }
         }
         const std::string first = own ? pn : std::string(also), second = own ? (also ? std::string(also) : std::string()) : pn;  // The one it sets comes first
         size_t at = static_cast<size_t>(std::find(keys.begin(), keys.end(), key) - keys.begin());  // An index, because the push below can move the vector
         if (at == keys.size()) {
           keys.push_back(key);
-          friendly.push_back(pn == "OutlineColor" ? std::string() : label);
+          friendly.push_back(pn == "OutlineColor" || fixed ? std::string() : (isNumber(pn) ? "#" : "") + label);
+          plains.push_back(plain.empty() || !isNumber(pn) ? plain : "#" + plain);
           rows.push_back(VecGroup{label});
           rows.back().param = first;
         }
@@ -1656,42 +2783,181 @@ namespace {
         g.params.push_back(first);
         if (!second.empty()) { g.mids.push_back(m); g.params.push_back(second); }  // Set both spellings, whichever the master reads
       }
+    for (size_t i = 0; i < rows.size(); i++) {
+      if (plains[i].empty()) continue;
+      if (std::count(friendly.begin(), friendly.end(), plains[i]) > 0 || std::count(plains.begin(), plains.end(), plains[i]) > 1) continue;
+      const std::string bare = isNumber(plains[i]) ? plains[i].substr(1) : plains[i];
+      if (std::any_of(rows.begin(), rows.end(), [&](const VecGroup& r) { return r.label == bare && isNumber(r.param) == isNumber(rows[i].param); })) continue;
+      rows[i].label = bare;
+    }
     for (size_t i = 0; i < rows.size(); i++) {  // A name shared by rows with other values says which material's it is
       if (friendly[i].empty()) continue;
       const bool shared = std::count(friendly.begin(), friendly.end(), friendly[i]) > 1;
       if (!shared) continue;
       std::string least;
       for (UObject* m : rows[i].mids) { const std::string n = matShort(m); if (least.empty() || n < least) least = n; }
-      rows[i].label = friendly[i] + " (" + least + ")";
+      rows[i].label = (isNumber(friendly[i]) ? friendly[i].substr(1) : friendly[i]) + " (" + least + ")";
     }
     for (size_t i = 0; i < rows.size(); i++)  // Still the same, so add the parameter too
       for (size_t j = i + 1; j < rows.size(); j++)
-        if (rows[j].label == rows[i].label && !friendly[j].empty()) rows[j].label += " " + rows[j].param;
+        if (rows[j].label == rows[i].label && !friendly[j].empty() && isNumber(rows[i].param) == isNumber(rows[j].param))
+          rows[j].label += " " + (isNumber(rows[j].param) ? rows[j].param.substr(1) : rows[j].param);
+    for (size_t j = 0; j < rows.size(); j++) {
+      if (!isNumber(rows[j].param)) continue;
+      while (std::any_of(rows.begin(), rows.end(), [&](const VecGroup& r) { return &r != &rows[j] && r.label == rows[j].label; })) rows[j].label += " (number)";
+    }
+    return rows;
+  }
+  std::vector<VecGroup> picRows(const std::vector<UObject*>& mats) {
+    std::vector<VecGroup> rows;
+    std::vector<std::string> sigs;
+    for (UObject* m : mats) {
+      std::string mic_pkg;
+      const std::vector<matpics::Row>* t = tablePictures(m, &mic_pkg);
+      if (!t || !matpics::colorNum(matpics::folderOfPackage(mic_pkg))) continue;
+      for (const matpics::Row& e : *t) {
+        PicLive* s = picLiveOf(m, e, mic_pkg);
+        picMasters(m, e, g_open);
+        std::string sig = matpics::lower(e.param) + "|" + std::to_string(s->slot);
+        for (const matpics::Option& o : matpics::options(e, g_pic_masters)) {
+          sig += "|" + o.path + "=";
+          for (int c : o.members) sig += std::to_string(c) + ",";
+        }
+        size_t at = static_cast<size_t>(std::find(sigs.begin(), sigs.end(), sig) - sigs.begin());
+        if (at == sigs.size()) {
+          sigs.push_back(sig);
+          rows.push_back(VecGroup{prettyParam(e.param)});
+          rows.back().param = "$" + e.param;
+          rows.back().pic_row = &e;
+          rows.back().pic_slot = s->slot;
+          rows.back().pic_mic = mic_pkg;
+        }
+        rows[at].mids.push_back(m);
+        rows[at].params.push_back("$" + e.param);
+      }
+    }
+    for (VecGroup& g : rows) {
+      std::set<std::string> names;
+      for (UObject* m : g.mids) names.insert(parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName()));
+      std::string list;
+      for (const std::string& n : names) list += (list.empty() ? "" : ", ") + n;
+      g.pic_tip = "Material " + list + ", parameter " + g.param.substr(1);
+    }
+    for (size_t i = 0; i < rows.size(); i++) {
+      if (std::count_if(rows.begin(), rows.end(), [&](const VecGroup& r) { return r.label == rows[i].label; }) < 2) continue;
+      const std::string base = rows[i].label;
+      for (VecGroup& r : rows) {
+        if (r.label != base) continue;
+        std::string least;
+        for (UObject* m : r.mids) { const std::string n = matShort(m); if (least.empty() || n < least) least = n; }
+        r.label = base + " (" + least + ")";
+      }
+    }
+    return rows;
+  }
+  std::vector<VecGroup> partRows(const std::vector<UObject*>& mats) {
+    std::vector<VecGroup> rows = vecRows(mats);
+    for (VecGroup& p : picRows(mats)) {
+      const std::string base = p.label;
+      for (int k = 2; std::any_of(rows.begin(), rows.end(), [&](const VecGroup& r) { return r.label == p.label; }); k++)
+        p.label = base + (k == 2 ? " (picture)" : " (picture " + std::to_string(k) + ")");
+      rows.push_back(std::move(p));
+    }
     return rows;
   }
   std::string vecLabel(UObject* m) {
     std::string n = parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName()), u = n;
     for (auto& c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (g_vec_outside.count(m)) {
+      std::string who = n;
+      if (who.rfind("MI_", 0) == 0) who = who.substr(3);
+      const size_t cut = u.find("_OUTLINE");
+      if (cut != std::string::npos && cut >= 3 && cut - 3 <= who.size()) who = who.substr(0, cut - 3);
+      return u.find("OUTLINE") != std::string::npos ? "Outline [" + who + "]" : n;
+    }
     if (u.find("FLARE") != std::string::npos) return "Flare";
     if (u.find("GLOWOUTLINE") != std::string::npos) return "Glow outline";
     if (u.find("GLOW") != std::string::npos) return "Glow";
     if (u.find("OUTLINE") != std::string::npos) return "Outline";
     return n;
   }
+  std::string meshNameOf(UObject* c);
   void buildVecs(const Target& t) {
     g_vecs.clear();
-    g_vecs_for = keyOf(t);
+    g_vecs_for = partKey(t);
     std::vector<UObject*> seen, mats;  // mats holds the ones with color parameters, for the rows
-    for (UObject* comp : t.comps)
+    std::vector<UObject*> comps = t.comps;
+    std::set<UObject*> allow, nopart;
+    g_vec_outside.clear();
+    {
+      std::vector<const Target*> all;
+      for (const Target& o : g_targets) if (o.pawn == t.pawn) all.push_back(&o);
+      for (UObject* c : fighterParts()) {
+        if (!c || c->GetOuterPrivate() != t.pawn) continue;
+        const int n = (std::min)(numMaterials(c), 64);
+        std::string how;
+        const Target* owner = outsideOwner(c, t.pawn, all, &how);
+        if (!owner || owner->kind != t.kind || owner->pawn != t.pawn) continue;
+        comps.push_back(c);
+        for (int i = 0; i < n; i++) {
+          UObject* m = material(c, i);
+          if (!m) continue;
+          const std::string name = parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName());
+          std::string line;
+          if (!isDynamic(m)) {
+            if (anyColor(m))
+              line = name + " (slot " + std::to_string(i) + ") has colors but is not a live copy, so it can't be edited here";
+          } else if (std::find(t.mids.begin(), t.mids.end(), m) != t.mids.end()) {
+            allow.insert(m);
+            line = name + " (slot " + std::to_string(i) + ") is this part's material: its material colors are listed";
+          } else if (std::any_of(g_targets.begin(), g_targets.end(), [&](const Target& o) { return std::find(o.mids.begin(), o.mids.end(), m) != o.mids.end(); })) {
+            continue;
+          } else {
+            const bool outline = hasVector(m, "OutlineColor");
+            const bool decal = !outline && (isDecal(m) || getTexture(m, STR("Decal")));
+            const bool colors = anyColor(m);
+            if (decal)
+              if (auto known = g_decal_of.find(m); known != g_decal_of.end() && known->second.second != partKey(t)) {
+                line = name + " (slot " + std::to_string(i) + ") is the same decal material as " + known->second.second + ": its color is that part's \"" + kDecalLabel + "\" row";
+                static std::set<std::string> said1;
+                const std::string l1 = partKey(t) + ": " + narrow(c->GetName()) + ": " + line;
+                if (said1.insert(l1).second) COMBO_LOG("color editor: " + l1);
+                continue;
+              }
+            if (!outline && !decal && !colors) continue;
+            if (onPartMesh(m, all)) continue;
+            allow.insert(m);
+            nopart.insert(m);
+            line = name + " (slot " + std::to_string(i) + ") belongs to no part: its " + (decal ? "decal lines are" : "material colors are") + " listed here";
+          }
+          if (line.empty()) continue;
+          static std::set<std::string> said;
+          const std::string l = partKey(t) + ": mesh " + meshNameOf(c) + " (" + how + "): " + line;
+          if (said.insert(l).second) COMBO_LOG("color editor: " + l);
+        }
+      }
+    }
+    for (UObject* comp : comps)
       for (int i = 0, n = numMaterials(comp); i < n; i++) {
         UObject* m = material(comp, i);
         if (!isDynamic(m) || std::find(seen.begin(), seen.end(), m) != seen.end()) continue;
         seen.push_back(m);
+        const bool outside_mesh = std::find(t.comps.begin(), t.comps.end(), comp) == t.comps.end();
+        if (outside_mesh && !allow.count(m)) continue;
         if (g_extra_read.count(t.chr + "/" + t.kind) && std::find(t.mids.begin(), t.mids.end(), m) == t.mids.end())
           continue;  // A part of its own, like Sol's DI wing, shares another part's meshes. Only its own material's colors count.
         if (!hasVector(m, "OutlineColor") && (isDecal(m) || getTexture(m, STR("Decal")))) {  // a decal's lines
-          const auto owner = g_vec_owner.emplace(m, keyOf(t)).first;
-          if (owner->second != keyOf(t) || !decalRead(t, m)) { if (owner->second == keyOf(t) && !isDecal(m)) g_vec_owner.erase(owner); continue; }
+          const auto owner = g_vec_owner.emplace(m, partKey(t)).first;
+          if (owner->second != partKey(t) || !decalRead(t, m)) {
+            if (nopart.count(m)) {
+              static std::set<std::string> said;
+              const std::string line = partKey(t) + ": the decal on a mesh of no part (" + (parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName())) + ") got no row: " +
+                                       (owner->second != partKey(t) ? "it belongs to " + owner->second : std::string("its lines couldn't be read or it has none"));
+              if (said.insert(line).second) COMBO_LOG("color editor: " + line);
+            }
+            if (owner->second == partKey(t) && !isDecal(m)) g_vec_owner.erase(owner);
+            continue;
+          }
           const DecalTint& d = g_decals[g_decal_of[m]];
           const DecalPix& px = g_decal_pix[d.tex];
           const float dk[4] = {(px.darkest >> 16 & 0xFF) / 255.0f, (px.darkest >> 8 & 0xFF) / 255.0f, (px.darkest & 0xFF) / 255.0f, 1.0f};
@@ -1712,12 +2978,13 @@ namespace {
               return o.pawn == t.pawn && o.kind != t.kind && std::find(o.mids.begin(), o.mids.end(), m) != o.mids.end();
             }))
           continue;
-        if (!std::any_of(std::begin(kVecParams), std::end(kVecParams), [&](const auto& pr) { return hasVector(m, pr.first); })) continue;
-        const auto owner = g_vec_owner.emplace(m, keyOf(t)).first;
-        if (owner->second != keyOf(t)) continue;  // another part's
+        if (!anyColor(m)) continue;
+        const auto owner = g_vec_owner.emplace(m, partKey(t)).first;
+        if (owner->second != partKey(t)) continue;  // another part's
+        if (outside_mesh) g_vec_outside.insert(m);
         mats.push_back(m);
       }
-    for (VecGroup& row : vecRows(mats)) {
+    for (VecGroup& row : partRows(mats)) {
       for (size_t i = 0; i < row.mids.size(); i++) {
         const std::string& prm = row.params[i];
         if (!g_vec_orig.count({row.mids[i], prm})) getVector(row.mids[i], wide(prm).c_str(), g_vec_orig[{row.mids[i], prm}].data());
@@ -1725,7 +2992,51 @@ namespace {
       getVector(row.mids.front(), wide(row.params.front()).c_str(), row.cur);  // as it is now (ours, if edited)
       g_vecs.push_back(std::move(row));
     }
-    auto& saved = g_vec_saved[keyOf(t)];
+    auto& saved = g_vec_saved[partKey(t)];
+    {
+      auto& rowmeta = g_vec_rowmeta[partKey(t)];
+      rowmeta.clear();
+      for (const VecGroup& g : g_vecs) {
+        VecMeta m;
+        for (size_t i = 0; i < g.mids.size(); i++) {
+          m.params.insert(g.paramOf(i));
+          UObject* src = isDynamic(g.mids[i]) && parentOf(g.mids[i]) ? parentOf(g.mids[i]) : g.mids[i];
+          if (src) m.mats.insert(narrow(src->GetName()));
+        }
+        if (!m.params.empty() && !m.mats.empty()) rowmeta[g.label] = std::move(m);
+      }
+    }
+    {
+      auto& metas = g_vec_meta[partKey(t)];
+      std::vector<std::string> lost;
+      for (const auto& [label, c] : saved)
+        if (label != kDecalLabel && std::none_of(g_vecs.begin(), g_vecs.end(), [&](const VecGroup& g) { return g.label == label; })) lost.push_back(label);
+      for (const std::string& label : lost) {
+        const auto mt = metas.find(label);
+        if (mt == metas.end()) continue;
+        std::vector<VecGroup*> fits;
+        for (VecGroup& g : g_vecs) {
+          if (saved.count(g.label)) continue;
+          bool param = false, mat = false;
+          for (size_t i = 0; i < g.mids.size(); i++) {
+            param = param || mt->second.params.count(g.paramOf(i)) > 0;
+            UObject* src = isDynamic(g.mids[i]) && parentOf(g.mids[i]) ? parentOf(g.mids[i]) : g.mids[i];
+            mat = mat || (src && mt->second.mats.count(narrow(src->GetName())) > 0);
+          }
+          if (param && mat) fits.push_back(&g);
+        }
+        if (fits.size() != 1) {
+          COMBO_LOG("color editor: " + partKey(t) + ": the saved row \"" + label + "\" matches " + std::to_string(fits.size()) + " rows now, so it isn't put on any");
+          continue;
+        }
+        const std::string to = fits.front()->label;
+        saved[to] = saved[label];
+        saved.erase(label);
+        metas[to] = mt->second;
+        metas.erase(label);
+        COMBO_LOG("color editor: " + partKey(t) + ": the saved row \"" + label + "\" is called \"" + to + "\" with the materials on this part now, so it goes on that row (same material and setting)");
+      }
+    }
     for (VecGroup& g : g_vecs) {
       auto it = saved.find(g.label);
       if (it == saved.end()) continue;
@@ -1733,7 +3044,31 @@ namespace {
       g.edited = true;
       for (size_t i = 0; i < g.mids.size(); i++) vecSet(g.mids[i], g.paramOf(i), g.cur);
     }
-    COMBO_LOG("color editor: " + std::to_string(g_vecs.size()) + " material colors on " + keyOf(t));
+    {
+      const size_t numbers = static_cast<size_t>(std::count_if(g_vecs.begin(), g_vecs.end(), [](const VecGroup& g) { return isNumber(g.param); }));
+      const size_t pictures = static_cast<size_t>(std::count_if(g_vecs.begin(), g_vecs.end(), [](const VecGroup& g) { return isPicture(g.param); }));
+      COMBO_LOG("color editor: " + std::to_string(g_vecs.size() - numbers - pictures) + " material colors, " + std::to_string(numbers) + " material numbers and " +
+                std::to_string(pictures) + " material pictures on " + partKey(t));
+      for (const VecGroup& g : g_vecs) {
+        if (!isPicture(g.param)) continue;
+        std::string opts;
+        if (g.pic_row)
+          for (const matpics::Option& o : matpics::options(*g.pic_row, g_pic_masters)) opts += (opts.empty() ? "" : ", ") + std::string("color ") + std::to_string(o.color) + " " + o.path;
+        COMBO_LOG("color editor:   picture \"" + g.label + "\" (" + g.pic_tip + "): " + opts + "; the slot is color " + std::to_string(g.pic_slot) +
+                  (g.edited ? ", edited to " + picChoice(g, g.cur) : std::string()));
+      }
+      for (const VecGroup& g : g_vecs) {
+        if (!isNumber(g.param)) continue;
+        std::set<std::string> on;
+        for (UObject* m : g.mids) on.insert(parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName()));
+        std::string names;
+        for (const std::string& n : on) names += (names.empty() ? "" : ", ") + n;
+        const float* og = g.mids.empty() ? nullptr : vecOrig(g.mids.front(), g.param);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "%.7g, the game's %.7g", g.cur[0], og ? og[0] : g.cur[0]);
+        COMBO_LOG("color editor:   number \"" + g.label + "\" (" + g.param.substr(1) + ") = " + buf + (g.edited ? ", edited" : "") + " on " + names);
+      }
+    }
   }
 
   // ---- Effect colors. The color slot's PTCColorAndMaterial names its particle colors (Sol's fire_color01 ...)
@@ -1754,6 +3089,33 @@ namespace {
     }
   };
   Kept keep(UObject* o) { return {o, o ? reinterpret_cast<const uint8_t*>(o->GetObjectItem()) : nullptr}; }  // o must be known alive now
+  struct ProbeSlot { Kept comp, orig; int slot = 0; std::string mesh, mat, by; bool held = false; };
+  void probeHold(ProbeSlot& s) {
+    UObject* o = s.orig.obj;
+    if (s.held || !s.orig.alive() || !o->GetObjectItem()) return;
+    if (*reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(o->GetObjectItem()) + 8) & (1 << 30)) return;
+    o->GetObjectItem()->SetRootSet();
+    s.held = true;
+  }
+  void probeLetGo(ProbeSlot& s) {
+    if (!s.held) return;
+    s.held = false;
+    if (s.orig.alive() && s.orig.obj->GetObjectItem()) s.orig.obj->GetObjectItem()->UnsetRootSet();
+  }
+  struct Probe {
+    bool on = false, grabbed = false, failed = false;
+    int id = 0, frame = -1;
+    float xy[2] = {};
+    double ms = 0;
+    UObject* pawn = nullptr;
+    Clock::time_point since;
+    std::vector<ProbeSlot> slots;
+    std::vector<std::array<uint8_t, 75>> shots;
+    std::string why;
+  };
+  Probe g_probe;
+  std::mutex g_probe_m;
+  bool g_probe_wanted = false;
   struct FxCopy { UObject* module; const TCHAR* prop; std::vector<float> orig; Kept k; std::string effect;
                   bool named = false; };  // named is a by-name copy or the fighter's palette (the slot's color, never one effect's own)  // An effect's own module holding the same values. k tells if it's still loaded.
   std::string effectOf(UObject* m) {  // the effect (ParticleSystem) a module is part of
@@ -2205,12 +3567,12 @@ namespace {
   void setVisible(UObject* c, bool on);  // Defined below (SceneComponent::SetVisibility)
   void hideTick(UObject* psc, UObject* tpl) {
     if (g_hidden.empty() && g_hid.empty()) return;
-    static std::map<UObject*, std::string> name_of;  // Each effect's name, looked up once
+    static std::map<UObject*, std::pair<Kept, std::string>> name_of;
     bool want = false;
     if (tpl && !g_hidden.empty()) {
       auto n = name_of.find(tpl);
-      if (n == name_of.end()) n = name_of.emplace(tpl, narrow(tpl->GetName())).first;
-      want = g_hidden.count("*") || g_hidden.count(n->second);
+      if (n == name_of.end() || !n->second.first.alive()) n = name_of.insert_or_assign(tpl, std::make_pair(keep(tpl), narrow(tpl->GetName()))).first;
+      want = g_hidden.count("*") || g_hidden.count(n->second.second);
     }
     auto h = g_hid.find(psc);
     if (want) { setVisible(psc, false); g_hid[psc] = tpl; }  // Every update, since the pool can show it again when it plays
@@ -2228,12 +3590,13 @@ namespace {
   // The copy takes everything the game sets on the part's own material (its lighting each frame, our edited
   // textures). A bare copy has none of the lighting and draws black.
   std::string paramsOf(UObject* m);
-  struct EffCopy { UObject* mid = nullptr; UObject* base = nullptr; UObject* src = nullptr; const uint8_t* src_item = nullptr; UObject* mic = nullptr; UObject* own_sss = nullptr; };
+  struct EffCopy { UObject* mid = nullptr; UObject* base = nullptr; UObject* src = nullptr; const uint8_t* src_item = nullptr; UObject* mic = nullptr; UObject* own_sss = nullptr;
+                   UObject* pbase = nullptr; UObject* own_pb = nullptr; UObject* own_ps = nullptr; };
   // Puts the effect material's own textures back over the copied ones, except BaseMap and a SssMap that's the
   // part's. Its own colors and numbers aren't put back. Where the part's material sets the same one, that's the
   // game's lighting now and it wins. Where it doesn't, the effect's comes through as the parent's anyway.
   // Layout as in paramsOf: FMaterialParameterInfo (16) then the texture pointer, 40 bytes an entry.
-  void effOwnBack(UObject* to, UObject* mic, UObject* part_sss) {
+  void effOwnBack(UObject* to, UObject* mic, UObject* part_sss, UObject* part_pb = nullptr, UObject* part_ps = nullptr) {
     struct Arr { uint8_t* data; int32_t num, max; };
     static UFunction* st = fn(STR("/Script/Engine.MaterialInstanceDynamic:SetTextureParameterValue"));
     if (!to || !mic) return;
@@ -2243,6 +3606,7 @@ namespace {
         UObject* tex = *reinterpret_cast<UObject* const*>(a->data + i * 40 + 16);
         const std::string nn = narrow(n.ToString());
         if (!tex || nn == "BaseMap" || (nn == "SssMap" && tex == part_sss)) continue;
+        if ((part_pb && nn == kSkinParams[0] && tex == part_pb) || (part_ps && nn == kSkinParams[1] && tex == part_ps)) continue;
         struct { FName name; UObject* value; } p{n, tex};
         to->ProcessEvent(st, &p);
       }
@@ -2289,6 +3653,12 @@ namespace {
         UObject* m = material(comp, i);
         if (!m || std::find(t.mids.begin(), t.mids.end(), m) != t.mids.end() || taken(m) || !outlineOnly(m) || gameSss(m) != sss) continue;
         t.mids.push_back(m);
+        if (std::find(t.comps.begin(), t.comps.end(), comp) == t.comps.end()) {
+          static std::set<std::string> said;
+          const std::string line = t.chr + "/" + t.color + "/" + t.kind + ": the outline " + narrow(m->GetName()) + " on " + narrow(comp->GetName()) + " slot " + std::to_string(i) +
+                                   " (a mesh of no part) draws this part's shadow texture, so it takes the recolor";
+          if (said.insert(line).second) COMBO_LOG("color editor: " + line);
+        }
       }
   }
   UObject* effCopyFor(UObject* mic, const Target& t) {
@@ -2297,29 +3667,36 @@ namespace {
     if (!base) return nullptr;
     for (size_t i = 0; i < t.mids.size() && i < t.orig.size(); i++) {
       if (t.orig[i].first != base) continue;
-      auto sh = g_shown.find(keyOf(t));
-      if (sh == g_shown.end() || !sh->second.base) return nullptr;  // Nothing of ours is on yet
-      EffCopy& c = g_eff_copies[{mic, keyOf(t)}];
+      auto sh = g_shown.find(partKey(t));
+      UObject* nb = sh != g_shown.end() ? sh->second.base : nullptr;
+      UObject* pb = nullptr;
+      if (t.powered)
+        if (auto sp = g_shown.find(partKey(t) + kPoweredTail); sp != g_shown.end()) pb = sp->second.base;
+      if (!nb && !pb) return nullptr;  // Nothing of ours is on yet
+      EffCopy& c = g_eff_copies[{mic, partKey(t)}];
       if (!c.mid) {
         c.mid = makeDynamic(t.mids.front(), mic);
         if (!c.mid) {
           static std::set<UObject*> said;
           if (said.insert(mic).second) COMBO_LOG("smear: couldn't make a copy of " + narrow(mic->GetName()));
-          g_eff_copies.erase({mic, keyOf(t)});
+          g_eff_copies.erase({mic, partKey(t)});
           return nullptr;
         }
         root(c.mid);
-        COMBO_LOG("smear: " + narrow(mic->GetName()) + " (an effect's own copy of " + keyOf(t) + "'s material) gets our textures; copy in " +
+        COMBO_LOG("smear: " + narrow(mic->GetName()) + " (an effect's own copy of " + partKey(t) + "'s material) gets our textures; copy in " +
                   (c.mid->GetOuterPrivate() ? narrow(c.mid->GetOuterPrivate()->GetFullName()) : std::string("nothing")));  // Expected to be the transient package
       }
       c.src = t.mids[i];
       c.src_item = c.src->GetObjectItem() ? reinterpret_cast<const uint8_t*>(c.src->GetObjectItem()) : nullptr;
       c.mic = mic;
       c.own_sss = t.orig[i].second;  // The part's SssMap. The effect's own, if different, is put back.
-      if (c.base != sh->second.base) {
+      c.own_pb = t.powered && i < t.orig_p.size() ? t.orig_p[i].first : nullptr;
+      c.own_ps = t.powered && i < t.orig_p.size() ? t.orig_p[i].second : nullptr;
+      if (c.base != nb || c.pbase != pb) {
         copyOverrides(c.mid, c.src);
-        effOwnBack(c.mid, c.mic, c.own_sss);
-        c.base = sh->second.base;
+        effOwnBack(c.mid, c.mic, c.own_sss, c.own_pb, c.own_ps);
+        c.base = nb;
+        c.pbase = pb;
         static std::set<UObject*> said;  // What the copy draws with, once
         if (said.insert(mic).second) COMBO_LOG("smear: copy of " + narrow(mic->GetName()) + " now has" + paramsOf(c.mid));
       }
@@ -2332,7 +3709,7 @@ namespace {
       if (!c.mid || !c.src) continue;
       if (!Kept{c.src, c.src_item}.alive()) { c.src = nullptr; continue; }  // The part's material is gone, so leave it as it was
       copyOverrides(c.mid, c.src);
-      effOwnBack(c.mid, c.mic, c.own_sss);
+      effOwnBack(c.mid, c.mic, c.own_sss, c.own_pb, c.own_ps);
     }
   }
   void effCopiesForget() {  // The fight is gone
@@ -2342,7 +3719,12 @@ namespace {
   bool wearsOurs(const Target& o) {  // Edited, or wearing our textures now (a part with only paint)
     if (anyEdit(g_edits[keyOf(o)])) return true;
     auto sh = g_shown.find(keyOf(o));
-    return sh != g_shown.end() && sh->second.base;
+    if (sh != g_shown.end() && sh->second.base) return true;
+    if (!o.powered) return false;
+    const std::string pk = partKey(o) + kPoweredTail;
+    auto pe = g_edits.find(pk);
+    auto ps = g_shown.find(pk);
+    return (pe != g_edits.end() && anyEdit(pe->second)) || (ps != g_shown.end() && ps->second.base);
   }
   // The live copy for a material name of the shown slot. That's the name's color material in the slot's table,
   // worn by a target as one of our edited copies, or an effect's own copy of a part's material, given the part's
@@ -2465,7 +3847,16 @@ namespace {
         }
         if (gone) break;
       }
-      if (gone) { g_smear_stale = true; return; }
+      if (gone) {
+        g_smear_stale = true;
+        if (!g_hidden.empty() || !g_hid.empty())
+          for (const Kept& k : g_smear_pool) {
+            if (!k.alive()) continue;
+            auto** tp = k.obj->GetValuePtrByPropertyNameInChain<UObject*>(STR("Template"));
+            hideTick(k.obj, tp ? *tp : nullptr);
+          }
+        return;
+      }
     }
     for (const Kept& k : takeNewEffects())
       if (std::none_of(g_smear_pool.begin(), g_smear_pool.end(), [&](const Kept& p) { return p.obj == k.obj; })) g_smear_pool.push_back(k);
@@ -3062,8 +4453,12 @@ namespace {
         for (int k = 0; k < 3; k++) c.rgb[k] = c.orig[static_cast<size_t>(k)] / mx;
         auto s = g_cap_saved.find(path + "\t" + std::to_string(c.index));
         if (s != g_cap_saved.end()) { std::memcpy(c.rgb, s->second.data(), sizeof(c.rgb)); c.edited = true; }
-        g_cap.push_back(c);
-        if (g_cap.back().edited) capApply(g_cap.back());
+        size_t at = g_cap.size();
+        for (size_t k = g_cap.size(); k-- > 0;)
+          if (g_cap[k].effect == effect) { at = k + 1; break; }
+        if (at != g_cap.size()) g_cap_gen++;
+        g_cap.insert(g_cap.begin() + static_cast<std::ptrdiff_t>(at), c);
+        if (g_cap[at].edited) capApply(g_cap[at]);
       }
     }
   }
@@ -3131,10 +4526,14 @@ namespace {
   // Edits are kept on disk per character, color and part, and come back the next time. The region
   // count guards them: another region map would put them on the wrong parts.
   std::set<std::string> g_edits_loaded;  // targets whose saved edits were read
-  std::filesystem::path editsFile(const Target& t) { return g_dir / "saved" / t.chr / (t.color + "_" + t.kind + ".txt"); }
+  std::filesystem::path editsFile(const Target& t) { return g_dir / "saved" / t.chr / (t.color + "_" + kindOf(t) + ".txt"); }
   std::string stampOf(const CharMap& m) {  // the big regions' count and sizes, hashed (the same as before the small ones)
     uint64_t h = 1469598103934665603ull;
     for (int r = 0; r < m.major && r < static_cast<int>(m.share.size()); r++) h = (h ^ static_cast<uint64_t>(std::llround(m.share[r] * 1e7))) * 1099511628211ull;
+    if (!m.piece.empty()) {
+      h = (h ^ 0x50494543ull) * 1099511628211ull;
+      for (int r = 0; r < m.major && r < static_cast<int>(m.piece.size()); r++) h = (h ^ static_cast<uint64_t>(m.piece[static_cast<size_t>(r)])) * 1099511628211ull;
+    }
     return "edits regions " + std::to_string(m.major) + " map " + std::to_string(h);
   }
   std::string minorsLine(const CharMap& m) {  // "minors <count> <hash>" for the small regions, guarding what's saved on them
@@ -3490,6 +4889,7 @@ namespace {
       if (m && m->regions > 0 && own.empty()) migrateSaves(dir.filename().string(), kind, *m);
     } catch (...) {  // Never takes the game down, and the saves are left as they were
     }
+    if (m && m->regions > 0) withFixes(dir, kind, own, *m);
     return m;
   }
   bool saveEditsTo(const Target& t, const std::vector<Edit>& ed, const std::filesystem::path& to) {  // Returns false if it couldn't be written
@@ -3504,8 +4904,22 @@ namespace {
       const Edit& e = ed[r];
       if (e.has_lit || e.has_shadow) f << r << ' ' << e.has_lit << ' ' << e.lit << ' ' << e.has_shadow << ' ' << e.shadow << ' ' << e.derive << "\n";
     }
-    for (const auto& [label, c] : g_vec_saved[keyOf(t)])  // Material colors, as "vec <label>\t<r g b a>"
-      f << "vec " << label << '\t' << c[0] << ' ' << c[1] << ' ' << c[2] << ' ' << c[3] << "\n";
+    for (const auto& [label, c] : t.look_p ? std::map<std::string, std::array<float, 4>>() : g_vec_saved[partKey(t)])  // Material colors, as "vec <label>\t<r g b a>"
+      f << "vec " << label << '\t' << matpics::num(c[0]) << ' ' << matpics::num(c[1]) << ' ' << matpics::num(c[2]) << ' ' << matpics::num(c[3]) << "\n";
+    if (!t.look_p) {
+      const auto& saved_now = g_vec_saved[partKey(t)];
+      std::map<std::string, VecMeta> metas = g_vec_meta[partKey(t)];
+      if (const auto rm = g_vec_rowmeta.find(partKey(t)); rm != g_vec_rowmeta.end())
+        for (const auto& [label, m] : rm->second)
+          if (saved_now.count(label)) metas[label] = m;
+      for (const auto& [label, m] : metas) {
+        if (!saved_now.count(label) || m.params.empty() || m.mats.empty()) continue;
+        std::string ps, ms;
+        for (const std::string& p : m.params) ps += (ps.empty() ? "" : ",") + p;
+        for (const std::string& x : m.mats) ms += (ms.empty() ? "" : ",") + x;
+        f << "vecm " << label << '\t' << ps << '\t' << ms << "\n";
+      }
+    }
     if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end())
       f << colorsLine(*mp->second) << "\n" << minorsLine(*mp->second) << "\n" << blobsLine(*mp->second) << "\n";  // The colors it's for
     f.flush();
@@ -3539,7 +4953,7 @@ namespace {
   };
   std::map<std::string, PaintPart> g_paint;                          // Keyed by part key (read when first painted or shown)
   std::map<std::string, std::filesystem::path> g_paint_restore;      // recovered copies waiting to be read
-  std::filesystem::path paintFile(const Target& t) { return g_dir / "saved" / t.chr / (t.color + "_" + t.kind + "_paint.slpn"); }
+  std::filesystem::path paintFile(const Target& t) { return g_dir / "saved" / t.chr / (t.color + "_" + kindOf(t) + "_paint.slpn"); }
   std::vector<uint8_t> readBytes(const std::filesystem::path& f) {  // (whole, in one read)
     std::ifstream in(f, std::ios::binary | std::ios::ate);
     if (!in) return {};
@@ -3629,7 +5043,7 @@ namespace {
     if (!from.empty()) may_set_aside = false;  // A recovery copy is never set aside here
     std::vector<std::string> moved;  // With in_memory, it's moved here and the file is left as it is
     if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end() && may_move)  // Made on a kept old map, so move it onto this one first
-      moveOntoMap(from.empty() ? editsFile(t) : from, t.chr, t.kind, *mp->second, false, in_memory ? &moved : nullptr);
+      moveOntoMap(from.empty() ? editsFile(t) : from, t.chr, kindOf(t), *mp->second, false, in_memory ? &moved : nullptr);
     std::ifstream file(from.empty() ? editsFile(t) : from);
     std::istringstream mem([&] { std::string all; for (const std::string& l : moved) all += l + "\n"; return all; }());
     std::istream& f = moved.empty() ? static_cast<std::istream&>(file) : mem;
@@ -3642,7 +5056,8 @@ namespace {
       if (from.empty())
         for (std::string l; std::getline(f, l);) {
           if (!l.empty() && l.back() == '\r') l.pop_back();
-          if (l.rfind("vec ", 0) == 0) { readVecLine(l, vecs ? *vecs : g_vec_saved[keyOf(t)]); kept.push_back(l); }
+          if (l.rfind("vec ", 0) == 0 && !t.look_p) { readVecLine(l, vecs ? *vecs : g_vec_saved[partKey(t)]); kept.push_back(l); }
+          if (l.rfind("vecm ", 0) == 0 && !t.look_p) { if (!vecs) readVecMeta(l, g_vec_meta[partKey(t)]); kept.push_back(l); }
           regions_in = regions_in || (!l.empty() && std::isdigit(static_cast<unsigned char>(l[0])));
         }
       if (!may_set_aside) return false;  // The menus only read
@@ -3659,7 +5074,7 @@ namespace {
       if (!ec && !kept.empty()) saveEditsTo(t, {}, editsFile(t));  // Its material colors on this map, the region colors in the .old
       COMBO_LOG("color editor: " + keyOf(t) + "'s save was made on another region map: its region colors set aside (.old)" +
                 (kept.empty() ? std::string() : ", its " + std::to_string(kept.size()) + " material colors kept"));
-      g_aside_note = partName(t.kind) + "'s region colors were made on another region map, so they couldn't be placed (kept as a .old file)" +
+      g_aside_note = partLabel(t.chr, t.kind) + "'s region colors were made on another region map, so they couldn't be placed (kept as a .old file)" +
                      (kept.empty() ? std::string(".") : ". Its material colors are on.");
       return false;
     }
@@ -3674,7 +5089,8 @@ namespace {
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.rfind("minors ", 0) == 0) minors = line;
       if (line.rfind("blobs ", 0) == 0) blobs = line;
-      readVecLine(line, vecs ? *vecs : g_vec_saved[keyOf(t)]);
+      if (!t.look_p) readVecLine(line, vecs ? *vecs : g_vec_saved[partKey(t)]);
+      if (!t.look_p && !vecs) readVecMeta(line, g_vec_meta[partKey(t)]);
     }
     if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end()) {  // (other small regions or strokes: theirs dropped)
       const size_t from = minors != minorsLine(*mp->second) ? static_cast<size_t>(mp->second->major)
@@ -3758,7 +5174,7 @@ namespace {
   std::map<std::string, std::vector<std::string>> g_names;  // Keyed by map key
   std::filesystem::path namesFile(const Target& t) {
     const std::string own = ownOfKey(mapKey(t));
-    return g_dir / "saved" / t.chr / ("names_" + t.kind + (own.empty() ? std::string() : "_" + own) + ".txt");
+    return g_dir / "saved" / t.chr / ("names_" + kindOf(t) + (own.empty() ? std::string() : "_" + own) + ".txt");
   }
   std::vector<std::string>& namesOf(const Target& t, int regions) {
     auto it = g_names.find(mapKey(t));
@@ -3767,10 +5183,10 @@ namespace {
       if (!ownOfKey(mapKey(t)).empty()) {  // A slot's own map starts from the shared names, moved onto it below
         std::lock_guard<std::mutex> lk(g_files_m);
         std::error_code ec;
-        const auto shared = g_dir / "saved" / t.chr / ("names_" + t.kind + ".txt");
+        const auto shared = g_dir / "saved" / t.chr / ("names_" + kindOf(t) + ".txt");
         if (!std::filesystem::exists(namesFile(t), ec) && std::filesystem::exists(shared, ec)) std::filesystem::copy_file(shared, namesFile(t), ec);
       }
-      if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end()) moveOntoMap(namesFile(t), t.chr, t.kind, *mp->second, true);  // Same as the edits
+      if (auto mp = g_maps.find(mapKey(t)); mp != g_maps.end()) moveOntoMap(namesFile(t), t.chr, kindOf(t), *mp->second, true);  // Same as the edits
       std::ifstream f(namesFile(t));
       std::string line, minors, blobs;
       if (f && std::getline(f, line) && line == mapStamp(t))
@@ -3849,13 +5265,34 @@ namespace {
   std::map<std::string, uint64_t> g_slot_gen;  // "chr/color" -> how many times its recolor changed (reloadSlot)
   std::set<std::string> g_refresh_wait;        // Slots whose other parts are to be made again (when nothing else runs)
   void autoQueue(const std::string& key);  // Defined with the queue
+  Target fromKey(const std::string& k);
+  std::vector<std::string> dropLooks(Target& o) {
+    Target* shown = target();
+    const bool here = shown && partKey(*shown) == partKey(o);
+    std::vector<std::string> keys;
+    if (!(here && !shown->look_p)) keys.push_back(partKey(o));
+    if (o.powered && !(here && shown->look_p)) keys.push_back(partKey(o) + kPoweredTail);
+    if (keys.empty()) return keys;
+    std::vector<Shown> old;
+    for (const std::string& k : keys)
+      if (auto sh = g_shown.find(k); sh != g_shown.end()) {
+        if (k != partKey(o) && sh->second.base) COMBO_LOG("color editor: " + k + "'s powered-up textures taken off (GIO_Skin_Base / GIO_Skin_Sss back to the game's)");
+        old.push_back(sh->second);
+        g_shown.erase(sh);
+      }
+    if (here && o.pawn == shown->pawn) show(*shown, edited(*shown));
+    else if (here) show(o, edited(o));
+    else show(o, Shown{});
+    for (Shown& s : old) unroot(s);
+    return keys;
+  }
   void reloadSlot(const std::string& chr, const std::string& color) {
     const std::string pre = chr + "/" + color + "/";  // Every part of the slot, on stage or not, since what's in memory for one not shown is old too
     for (const Target& o : g_targets)
       if (o.chr == chr && o.color == color) {
-        restoreVecs(keyOf(o));
-        if (g_vecs_for == keyOf(o)) g_vecs_for.clear();
-        if (g_tex_job.valid() && g_tex_key == keyOf(o)) g_png_orphans.push_back(std::move(g_tex_job));  // Textures from the old edits aren't put on
+        restoreVecs(partKey(o));
+        if (g_vecs_for == partKey(o)) g_vecs_for.clear();
+        if (g_tex_job.valid() && partOfKey(g_tex_key) == partKey(o)) g_png_orphans.push_back(std::move(g_tex_job));  // Textures from the old edits aren't put on
       }
     auto drop = [&](auto& by_key) { for (auto it = by_key.begin(); it != by_key.end();) it = it->first.rfind(pre, 0) == 0 ? by_key.erase(it) : std::next(it); };
     drop(g_edits);
@@ -3885,17 +5322,18 @@ namespace {
       std::error_code ec;
       if (!g_open && shown && shown->chr == chr && shown->color == color) autoQueue(keyOf(*shown));  // (first, so it's made again before the others)
       for (Target& o : g_targets) {
-        if (o.chr != chr || o.color != color || (shown && keyOf(o) == keyOf(*shown))) continue;
+        if (o.chr != chr || o.color != color || (shown && keyOf(o) == keyOf(*shown) && !o.powered)) continue;
         bool alive = o.items.size() >= o.mids.size();  // A fight just ended and its meshes may be gone, so don't touch them
         for (size_t i = 0; alive && i < o.mids.size(); i++) alive = Kept{o.mids[i], o.items[i]}.alive();
         if (!alive) continue;
-        show(o, Shown{});
-        auto sh = g_shown.find(keyOf(o));
-        if (sh != g_shown.end()) { unroot(sh->second); g_shown.erase(sh); }
+        const std::vector<std::string> keys = dropLooks(o);
+        if (keys.empty()) continue;
         g_smear_stale = true;  // Effect copies of the old textures are looked up again
-        if (std::filesystem::exists(editsFile(o), ec) || std::filesystem::exists(paintFile(o), ec)) {
-          if (!g_open) { autoQueue(keyOf(o)); continue; }  // Closed (a palette's look finished after it closed): the saved recolors' queue puts it on
-          if (std::find(g_auto_paused.begin(), g_auto_paused.end(), keyOf(o)) == g_auto_paused.end()) g_auto_paused.push_back(keyOf(o));
+        for (const std::string& k : keys) {
+          const Target x = fromKey(k);
+          if (!std::filesystem::exists(editsFile(x), ec) && !std::filesystem::exists(paintFile(x), ec)) continue;
+          if (!g_open) { autoQueue(k); continue; }  // Closed (a palette's look finished after it closed): the saved recolors' queue puts it on
+          if (std::find(g_auto_paused.begin(), g_auto_paused.end(), k) == g_auto_paused.end()) g_auto_paused.push_back(k);
           refresh = true;  // Queued already or not, make it again now
         }
       }
@@ -3973,6 +5411,7 @@ namespace {
     }
     for (const std::string& part : parts) {
       Target x = t;
+      x.look_p = false;
       x.kind = part.substr(0, part.size() - 4);
       const std::string kind = x.kind, own = ownOfKey(mapKey(x));
       const auto mine = savedDir(t.chr) / ("names_" + kind + (own.empty() ? std::string() : "_" + own) + ".txt");
@@ -4158,7 +5597,7 @@ namespace {
       if (std::any_of(looks_in.begin(), looks_in.end(), [&](const LookIn& l) { return l.kind == x.kind && !l.ids.empty(); })) continue;
       std::vector<std::string> moved;
       if (moveOntoMap(editsFile(x), x.chr, x.kind, *mp->second, false, &moved)) continue;
-      unplaced += (unplaced.empty() ? "" : ", ") + partName(x.kind);
+      unplaced += (unplaced.empty() ? "" : ", ") + partLabel(x.chr, x.kind);
     }
     if (!g_hold.count(t.chr + "/" + t.color)) reloadSlot(t.chr, t.color);  // If held, it's read again once the fight's over
     if (looks && !g_hold.count(t.chr + "/" + t.color)) lookApplyStart(t, looks_in);
@@ -4227,6 +5666,12 @@ namespace {
   bool& capUnsavedFlag() { return g_cap_unsaved; }
   bool g_confirm_close = false;
   void markUnsaved(const Target& t) { g_unsaved.insert(keyOf(t)); g_recovery_due = true; g_recovery_change = Clock::now(); }
+  void markUnsavedVecs(const Target& t) {
+    if (!t.look_p) { markUnsaved(t); return; }
+    Target n = t;
+    n.look_p = false;
+    markUnsaved(n);
+  }
   void writeRecovery() {  // Copies the unsaved changes aside (not the parts still waiting to be read from a recovery)
     std::set<std::string> slots(g_unsaved_slots.begin(), g_unsaved_slots.end());
     for (const std::string& k : g_unsaved) {
@@ -4234,9 +5679,9 @@ namespace {
       if (o.chr.empty()) continue;
       slots.insert(o.chr + "/" + o.color);
       if (!g_paint_restore.count(k) && g_paint.count(k) && g_paint[k].ready)
-        savePaintTo(o, recoveryDir(o.chr) / (o.color + "_" + o.kind + "_paint.slpn"));
+        savePaintTo(o, recoveryDir(o.chr) / (o.color + "_" + kindOf(o) + "_paint.slpn"));
       if (g_edit_restore.count(k) || !g_maps.count(mapKey(o)) || !g_edits_loaded.count(k)) continue;  // Skip edits that were never read
-      saveEditsTo(o, g_edits[k], recoveryDir(o.chr) / (o.color + "_" + o.kind + ".txt"));
+      saveEditsTo(o, g_edits[k], recoveryDir(o.chr) / (o.color + "_" + kindOf(o) + ".txt"));
     }
     for (const std::string& s : slots) {
       if (g_fx_restore.count(s) || !g_fx_saved.count(s)) continue;
@@ -4340,16 +5785,25 @@ namespace {
     g_dirty = true;
   }
   Target targetOf(const std::string& k) {  // The live target if it's here, else one from fromKey
-    for (const Target& o : g_targets) if (keyOf(o) == k) return o;
+    const std::string part = partOfKey(k);
+    for (const Target& o : g_targets)
+      if (partKey(o) == part) {
+        Target x = o;
+        x.look_p = part != k;
+        return x;
+      }
     return fromKey(k);
   }
   Target fromKey(const std::string& k) {  // "SOL/Color08/MAIN" -> a target to save or load by (no materials)
     Target t;
     const size_t a = k.find('/'), b = a == std::string::npos ? a : k.find('/', a + 1);
     if (b != std::string::npos) { t.chr = k.substr(0, a); t.color = k.substr(a + 1, b - a - 1); t.kind = k.substr(b + 1); }
+    if (poweredKind(t.kind)) { t.kind.resize(t.kind.size() - kPoweredTail.size()); t.look_p = true; }
     return t;
   }
+  void startPictureTidy();
   void saveAllNow() {
+    struct AfterSave { ~AfterSave() { try { startPictureTidy(); } catch (...) {} } } after_save;
     std::set<std::string> slots(g_unsaved_slots.begin(), g_unsaved_slots.end());
     std::set<std::string> chrs = unsavedCharacters(), kept;  // kept holds characters with a staged copy that couldn't be put in place
     std::error_code ec;
@@ -4436,13 +5890,99 @@ namespace {
   }
   // Undo keeps the shown part's region colors, material colors and its slot's effect colors from before each change.
   struct Snap { std::string key; std::vector<Edit> ed; std::map<std::string, std::array<float, 4>> vec; std::map<std::string, std::array<float, 3>> fx;
-                int paint = 0; bool with_ed = false; };  // paint marks a painting step, undone by the part's canvas as this many of its own steps (with_ed: and ed swapped back with it, an import's)
+                int paint = 0; bool with_ed = false; int fix = 0; uint64_t seq = 0; };
+  struct FixRef { int id = 0; uint64_t seq = 0; };
+  uint64_t g_undo_seq = 0;
+  std::map<std::string, std::pair<std::vector<FixRef>, std::vector<FixRef>>> g_fix_hist;  // paint marks a painting step, undone by the part's canvas as this many of its own steps (with_ed: and ed swapped back with it, an import's)
   std::map<std::string, std::vector<Snap>> g_undo, g_redo;  // Keyed by color slot ("SOL/Color08"), covering every part of it and its effect colors
   std::string slotOf(const Target& t) { return t.chr + "/" + t.color; }
+  std::future<void> g_pic_clean;
+  void pictureHashes(const std::map<std::string, std::array<float, 4>>& m, std::set<std::string>& used) {
+    for (const auto& [label, v] : m)
+      if (std::isfinite(v[0]) && std::lround(v[0]) == 0) {
+        const std::string h = matpics::hashOf(v.data());
+        if (!h.empty()) used.insert(h);
+      }
+  }
+  void dropUnusedPictures(std::filesystem::path root, std::set<std::string> used) {
+    std::error_code ec;
+    const std::filesystem::path saved = root / "saved";
+    for (const std::filesystem::path& top : {root}) {
+      if (!std::filesystem::exists(top, ec)) { if (ec) return; continue; }
+      for (auto it = std::filesystem::recursive_directory_iterator(top, ec); it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) { COMBO_LOG("color editor: picture tidy-up stopped, a folder couldn't be read; nothing was removed"); return; }
+        std::error_code e2;
+        if (it->is_directory(e2)) {
+          const std::string dn = it->path().filename().string();
+          if (it.depth() == 0 && (dn == "baked" || dn == "cache" || dn == "atlas" || dn == "layouts")) it.disable_recursion_pending();
+          continue;
+        }
+        if (!it->is_regular_file(e2) || e2) continue;
+        const std::string ext = it->path().extension().string();
+        if (ext == ".png" || ext == ".pak" || ext == ".sig" || ext == ".bin" || ext == ".slpn" || ext == ".tga" || ext == ".dds") continue;
+        const uintmax_t size = it->file_size(e2);
+        if (e2 || size > (64u << 20)) { COMBO_LOG("color editor: picture tidy-up stopped at " + it->path().filename().string() + "; nothing was removed"); return; }
+        std::string text;
+        {
+          std::lock_guard<std::mutex> lk(g_files_m);
+          std::ifstream f(it->path(), std::ios::binary);
+          if (!f) { COMBO_LOG("color editor: picture tidy-up stopped, " + it->path().filename().string() + " couldn't be read; nothing was removed"); return; }
+          text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+          if (f.bad()) { COMBO_LOG("color editor: picture tidy-up stopped, " + it->path().filename().string() + " couldn't be read; nothing was removed"); return; }
+        }
+        std::istringstream lines(text);
+        for (std::string l; std::getline(lines, l);) {
+          if (!l.empty() && l.back() == '\r') l.pop_back();
+          const size_t at = l.find("vec ");
+          if (at == std::string::npos) continue;
+          std::map<std::string, std::array<float, 4>> one;
+          readVecLine(l.substr(at), one);
+          pictureHashes(one, used);
+        }
+      }
+      if (ec) { COMBO_LOG("color editor: picture tidy-up stopped, a folder couldn't be read; nothing was removed"); return; }
+    }
+    const auto now = std::filesystem::file_time_type::clock::now();
+    std::vector<std::filesystem::path> gone;
+    for (const auto& d : std::filesystem::directory_iterator(saved, ec)) {
+      const std::filesystem::path pics = d.path() / "pictures";
+      std::error_code e2;
+      if (!std::filesystem::is_directory(pics, e2)) continue;
+      for (const auto& f : std::filesystem::directory_iterator(pics, e2)) {
+        if (f.path().extension() != ".png") continue;
+        const std::string stem = f.path().stem().string();
+        if (stem.size() != 18 || used.count(stem)) continue;
+        std::error_code e3;
+        const auto when = std::filesystem::last_write_time(f.path(), e3);
+        if (e3 || now - when < std::chrono::minutes(10)) continue;
+        gone.push_back(f.path());
+      }
+      if (e2) { COMBO_LOG("color editor: picture tidy-up stopped, a pictures folder couldn't be read; nothing was removed"); return; }
+    }
+    if (ec) { COMBO_LOG("color editor: picture tidy-up stopped, the saves folder couldn't be read; nothing was removed"); return; }
+    int dropped = 0;
+    for (const auto& p : gone) {
+      std::lock_guard<std::mutex> pic_lock(g_pic_files_m);
+      std::error_code e3;
+      const auto when = std::filesystem::last_write_time(p, e3);
+      if (e3 || std::filesystem::file_time_type::clock::now() - when < std::chrono::minutes(10)) continue;
+      if (std::filesystem::remove(p, e3)) dropped++;
+    }
+    if (dropped) COMBO_LOG("color editor: " + std::to_string(dropped) + " picture copies that no save, palette, export or undo step uses were removed from saved/<character>/pictures");
+  }
+  void startPictureTidy() {
+    if (g_pic_clean.valid() && g_pic_clean.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    std::set<std::string> used;
+    for (const auto& [part, m] : g_vec_saved) pictureHashes(m, used);
+    for (auto* h : {&g_undo, &g_redo})
+      for (const auto& [slot, list] : *h)
+        for (const Snap& s : list) pictureHashes(s.vec, used);
+    try { g_pic_clean = std::async(std::launch::async, dropUnusedPictures, g_dir, std::move(used)); } catch (...) {}
+  }
   int g_snap_kind = -1, g_snap_index = -1;
   void dropUndo(const std::string& slot) { g_undo.erase(slot); g_redo.erase(slot); g_snap_kind = -1; }
   Clock::time_point g_snap_at;
-  Snap snapOf(const Target& t) { return {keyOf(t), g_edits[keyOf(t)], g_vec_saved[keyOf(t)], g_fx_saved[t.chr + "/" + t.color]}; }
+  Snap snapOf(const Target& t) { return {keyOf(t), g_edits[keyOf(t)], g_vec_saved[partKey(t)], g_fx_saved[t.chr + "/" + t.color]}; }
   void pushUndo(const Target& t, int kind, int index) {  // (a drag on one color is one step)
     const bool same_drag = kind == g_snap_kind && index == g_snap_index && Clock::now() - g_snap_at < std::chrono::milliseconds(1500) &&
                            (kind == kVec || kind == kFx || kind == kFxOne);  // Those send every frame of a drag. A region's color comes once, on release
@@ -4452,15 +5992,26 @@ namespace {
     if (same_drag) return;
     auto& u = g_undo[slotOf(t)];
     u.push_back(snapOf(t));
+    u.back().seq = ++g_undo_seq;
+    for (auto& [hk, h] : g_fix_hist) if (hk.rfind(t.chr + "/", 0) == 0) h.second.clear();
     if (u.size() > 100) u.erase(u.begin());
     g_redo[slotOf(t)].clear();
   }
+  void owePowered(const std::string& k) {
+    if (!g_open || std::find(g_auto_paused.begin(), g_auto_paused.end(), k) != g_auto_paused.end()) return;
+    if (k == partOfKey(k)) {
+      Target* s = shownPart();
+      if (!s || partKey(*s) != k) return;
+    }
+    g_auto_paused.push_back(k);
+  }
   void applySnap(const Target& shown, const Snap& s) {  // The step's own part, which may not be the one shown
     const Target t = fromKey(s.key);
-    const std::string k = s.key, slot = slotOf(t);
+    const std::string k = s.key, slot = slotOf(t), part = partOfKey(k);
     g_edits[k] = s.ed;
-    g_vec_saved[k] = s.vec;
-    if (g_vecs_for == k)
+    const bool vec_changed = g_vec_saved[part] != s.vec;
+    g_vec_saved[part] = s.vec;
+    if (g_vecs_for == part)
       for (VecGroup& g : g_vecs) {
         auto it = s.vec.find(g.label);
         g.edited = it != s.vec.end();
@@ -4477,14 +6028,22 @@ namespace {
         auto it = s.fx.find(f.label);
         f.edited = it != s.fx.end();
         if (f.edited) std::memcpy(f.rgb, it->second.data(), sizeof(f.rgb));
+        else {
+          const float mx = (std::max)({f.orig[0], f.orig[1], f.orig[2], 1e-6f});
+          for (int k = 0; k < 3; k++) f.rgb[k] = f.orig[static_cast<size_t>(k)] / mx;
+        }
         f.per.clear();
         for (const auto& [k, c] : s.fx)
           if (k.size() > f.label.size() + 1 && k.compare(0, f.label.size() + 1, f.label + "@") == 0) f.per[k.substr(f.label.size() + 1)] = c;
         fxApply(f);
       }
     if (k == keyOf(shown)) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }
-    else if (g_worn_key == k) g_worn_key.clear();  // Another part is made again when it's shown
-    markUnsaved(fromKey(k));
+    else {
+      if (g_worn_key == k) g_worn_key.clear();  // Another part is made again when it's shown
+      owePowered(k);
+    }
+    if (vec_changed) markUnsavedVecs(fromKey(k));
+    else markUnsaved(fromKey(k));
     g_snap_kind = -1;
   }
 
@@ -4495,17 +6054,22 @@ namespace {
   std::string g_auto_was;                 // the part shown before the queue (shown again after it)
   int g_auto_updates = 0;                 // Updates since the front part started. It's given up on after a while (its colors failed)
   int targetIndex(const std::string& key) {
-    for (int i = 0; i < static_cast<int>(g_targets.size()); i++) if (keyOf(g_targets[static_cast<size_t>(i)]) == key) return i;
+    const std::string part = partOfKey(key);
+    for (int i = 0; i < static_cast<int>(g_targets.size()); i++) if (partKey(g_targets[static_cast<size_t>(i)]) == part) return i;
     return -1;
   }
   void autoNext() {  // the next queued part that's still here, or the shown part back
-    while (!g_auto_queue.empty() && targetIndex(g_auto_queue.front()) < 0) g_auto_queue.erase(g_auto_queue.begin());
+    while (!g_auto_queue.empty() && (targetIndex(g_auto_queue.front()) < 0 ||
+                                     (g_auto_queue.front() != partOfKey(g_auto_queue.front()) && !g_targets[static_cast<size_t>(targetIndex(g_auto_queue.front()))].powered)))
+      g_auto_queue.erase(g_auto_queue.begin());
     if (g_auto_queue.empty()) {
       const int was = targetIndex(g_auto_was);
       if (was >= 0) g_target = was;
+      g_powered_look = false;
       return;
     }
     g_target = targetIndex(g_auto_queue.front());
+    g_powered_look = g_auto_queue.front() != partOfKey(g_auto_queue.front());
     g_dirty = true;
     g_last_change = Clock::now() - std::chrono::seconds(1);
     g_auto_updates = 0;
@@ -4513,7 +6077,7 @@ namespace {
   void autoQueue(const std::string& key) {  // With the editor closed, a part whose saved recolor goes on next (after any queued)
     if (std::find(g_auto_queue.begin(), g_auto_queue.end(), key) != g_auto_queue.end()) return;
     const bool idle = g_auto_queue.empty();
-    if (idle) g_auto_was = target() ? keyOf(*target()) : std::string();
+    if (idle) g_auto_was = shownPart() ? partKey(*shownPart()) : std::string();
     g_auto_queue.push_back(key);
     if (idle) autoNext();
   }
@@ -4523,6 +6087,7 @@ namespace {
     g_auto_queue.clear();
     const int was = targetIndex(g_auto_was);
     if (was >= 0) g_target = was;
+    g_powered_look = false;
   }
 
   // ---- Menus (character select ...) show saved recolors on the preview models too. They're made from the cached
@@ -4701,8 +6266,9 @@ namespace {
   }
   // The materials a part's material color rows are made from, as the editor lists them: every material with a
   // color parameter on its meshes, less decals and what other(m) says is another part's.
-  template <class Other> std::vector<UObject*> vecMats(const Target& t, Other other) {
+  template <class Other> std::vector<UObject*> vecMats(const Target& t, Other other, const std::vector<const Target*>& all) {
     std::vector<UObject*> seen, mats;
+    g_vec_outside.clear();
     for (UObject* comp : t.comps)
       for (int i = 0, n = numMaterials(comp); i < n; i++) {
         UObject* m = material(comp, i);
@@ -4711,9 +6277,28 @@ namespace {
         if (g_extra_read.count(t.chr + "/" + t.kind) && std::find(t.mids.begin(), t.mids.end(), m) == t.mids.end()) continue;  // (a part sharing another's meshes: its own only)
         if (!hasVector(m, "OutlineColor") && (isDecal(m) || getTexture(m, STR("Decal")))) continue;
         if (other(m)) continue;
-        if (!std::any_of(std::begin(kVecParams), std::end(kVecParams), [&](const auto& pr) { return hasVector(m, pr.first); })) continue;
+        if (!anyColor(m)) continue;
         mats.push_back(m);
       }
+    for (UObject* c : fighterParts()) {
+      if (!c || c->GetOuterPrivate() != t.pawn) continue;
+      const Target* owner = outsideOwner(c, t.pawn, all);
+      if (!owner || owner->kind != t.kind) continue;
+      for (int i = 0, n = (std::min)(numMaterials(c), 64); i < n; i++) {
+        UObject* m = material(c, i);
+        if (!m || !isDynamic(m) || std::find(seen.begin(), seen.end(), m) != seen.end()) continue;
+        seen.push_back(m);
+        const bool own = std::find(t.mids.begin(), t.mids.end(), m) != t.mids.end();
+        if (!own && std::any_of(all.begin(), all.end(), [&](const Target* o) { return std::find(o->mids.begin(), o->mids.end(), m) != o->mids.end(); })) continue;
+        if (!hasVector(m, "OutlineColor") && (isDecal(m) || getTexture(m, STR("Decal")))) continue;
+        if (!anyColor(m)) continue;
+        if (g_extra_read.count(t.chr + "/" + t.kind) && !own) continue;
+        if (other(m)) continue;
+        if (!own && onPartMesh(m, all)) continue;
+        g_vec_outside.insert(m);
+        mats.push_back(m);
+      }
+    }
     return mats;
   }
   // A part outside the editor (menus, matches, the opponent's): its rows, kept per key while its materials stay.
@@ -4724,11 +6309,15 @@ namespace {
       if (kv.second.pawn == t.pawn && kv.second.kind != t.kind) sig.insert(sig.end(), kv.second.mids.begin(), kv.second.mids.end());
     auto& ro = g_menu_rows[key];
     if (ro.first != sig)
-      ro = {sig, vecRows(vecMats(t, [&](UObject* m) {
+    {
+      std::vector<const Target*> all;
+      for (const auto& kv : parts) if (kv.second.pawn == t.pawn) all.push_back(&kv.second);
+      ro = {sig, partRows(vecMats(t, [&](UObject* m) {
               return std::any_of(parts.begin(), parts.end(), [&](const auto& kv) {
                 return kv.second.pawn == t.pawn && kv.second.kind != t.kind && std::find(kv.second.mids.begin(), kv.second.mids.end(), m) != kv.second.mids.end();
               });
-            }))};
+            }, all))};
+    }
     return ro.second;
   }
   void rxPutOn(const Target& t, const std::string& key, const std::map<std::string, Target>& parts) {  // Puts its texture and material colors on the opponent's fighter
@@ -5066,6 +6655,8 @@ namespace {
   void writeMatColors(const std::vector<VecGroup>& rows, const std::filesystem::path& file) {  // the colors the materials draw with besides the textures (glow, edges)
     std::ofstream f(file, std::ios::trunc);
     f << "# material instance, label, vector parameter, R G B A (linear; above 1 glows brighter)\n";
+    f << "# a parameter starting with # is a number: its value is the first of the four\n";
+    f << "# a parameter starting with $ is a picture: the first value is the color whose picture it takes (0: a PNG, whose id the other three make)\n";
     for (const VecGroup& g : rows) {
       if (g.label == kDecalLabel) {  // Not a parameter but a texture made from the decal
         f << "# " << kDecalLabel << ": the decal texture tinted (white stays, the strongest line becomes " << g.cur[0] << ' ' << g.cur[1] << ' ' << g.cur[2]
@@ -5075,19 +6666,22 @@ namespace {
       std::set<std::string> parents;
       for (UObject* m : g.mids) parents.insert(parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName()));
       for (const std::string& pn : parents)
-        f << pn << "\t" << g.label << "\t" << g.param << "\t" << g.cur[0] << ' ' << g.cur[1] << ' ' << g.cur[2] << ' ' << g.cur[3] << (g.edited ? "" : "\t(unchanged)") << "\n";
+        f << pn << "\t" << g.label << "\t" << g.param << "\t" << matpics::num(g.cur[0]) << ' ' << matpics::num(g.cur[1]) << ' ' << matpics::num(g.cur[2]) << ' '
+          << matpics::num(g.cur[3]) << (g.edited ? "" : "\t(unchanged)") << "\n";
     }
   }
   // A part that isn't shown: its material color rows as buildVecs lists them, read only (nothing set or claimed).
   // Decal lines are left out since they're read when the part is shown.
   std::vector<VecGroup> vecsOf(const Target& t) {
-    std::vector<VecGroup> rows = vecRows(vecMats(t, [&](UObject* m) {
-      if (auto ow = g_vec_owner.find(m); ow != g_vec_owner.end() && ow->second != keyOf(t)) return true;  // (another part's)
+    std::vector<const Target*> all_parts;
+    for (const Target& o : g_targets) if (o.pawn == t.pawn) all_parts.push_back(&o);
+    std::vector<VecGroup> rows = partRows(vecMats(t, [&](UObject* m) {
+      if (auto ow = g_vec_owner.find(m); ow != g_vec_owner.end() && ow->second != partKey(t)) return true;  // (another part's)
       return std::any_of(g_targets.begin(), g_targets.end(), [&](const Target& o) {
         return o.pawn == t.pawn && o.kind != t.kind && std::find(o.mids.begin(), o.mids.end(), m) != o.mids.end();
       });
-    }));
-    const auto saved = g_vec_saved.find(keyOf(t));
+    }, all_parts));
+    const auto saved = g_vec_saved.find(partKey(t));
     for (VecGroup& g : rows) {
       getVector(g.mids.front(), wide(g.params.front()).c_str(), g.cur);
       if (saved == g_vec_saved.end()) continue;
@@ -5272,7 +6866,7 @@ namespace {
   // would (each material's own taken first, so a reset puts it back). Decal lines wait until it's opened.
   void putSavedVecs(const Target& o) {
     std::map<std::string, std::array<float, 4>> saved;
-    if (g_edits_loaded.count(keyOf(o))) { if (auto v = g_vec_saved.find(keyOf(o)); v != g_vec_saved.end()) saved = v->second; }  // Opened before: its colors as they are now, unsaved ones too
+    if (g_edits_loaded.count(keyOf(o))) { if (auto v = g_vec_saved.find(partKey(o)); v != g_vec_saved.end()) saved = v->second; }  // Opened before: its colors as they are now, unsaved ones too
     else for (const std::string& l : readLines(editsFile(o))) readVecLine(l, saved);
     if (saved.empty()) return;
     for (const VecGroup& row : vecsOf(o)) {
@@ -5282,7 +6876,7 @@ namespace {
         UObject* m = row.mids[i];
         const std::string& prm = row.paramOf(i);
         if (!g_vec_orig.count({m, prm})) getVector(m, wide(prm).c_str(), g_vec_orig[{m, prm}].data());
-        g_vec_owner.emplace(m, keyOf(o));
+        g_vec_owner.emplace(m, partKey(o));
         setVector(m, wide(prm).c_str(), c->second.data());
       }
     }
@@ -5296,11 +6890,11 @@ namespace {
     std::string skipped;
     int n_skipped = 0;
     for (const Target& o : g_targets) {
-      if (o.chr != t.chr || o.color != t.color) continue;
+      if (o.chr != t.chr || o.color != t.color || o.no_part) continue;
       if (std::any_of(parts.begin(), parts.end(), [&](const Target* x) { return x->kind == o.kind; })) continue;  // A mirror match gets one each
       ExportPart p;
       if (!gatherPart(o, p)) {
-        skipped += (skipped.empty() ? "" : ", ") + partName(o.kind);
+        skipped += (skipped.empty() ? "" : ", ") + partLabel(o.chr, o.kind);
         n_skipped++;
         continue;
       }
@@ -5318,7 +6912,7 @@ namespace {
     if (!ec) std::filesystem::create_directories(ex->dir / ".exported", ec);
     if (ec) { g_status = "Couldn't make the export folder."; return; }
     for (size_t i = 0; i < parts.size(); i++) {
-      const std::vector<VecGroup> rows = g_vecs_for == keyOf(*parts[i]) ? g_vecs : vecsOf(*parts[i]);
+      const std::vector<VecGroup> rows = g_vecs_for == partKey(*parts[i]) ? g_vecs : vecsOf(*parts[i]);
       if (!rows.empty()) writeMatColors(rows, ex->dir / (ex->todo[i].file + "_material_colors.txt"));
     }
     if (g_fx_for == t.chr + "/" + t.color && !fxList().empty()) {  // The slot's effect colors as they are (a skin's own too), for Import
@@ -5348,6 +6942,11 @@ namespace {
         // ponytail: runs on the game thread. A save that needs moving rebuilds its old map here (a hitch, only after a
         // map change).
         if (own.empty()) try { migrateSaves(o.chr, o.kind, *m); } catch (...) {}  // Saves made on an older map are moved onto it, as the editor's own map job does
+        {
+          const std::string fk = mapKey(o);
+          const size_t fa = fk.find('/'), fb = fk.rfind('/');
+          withFixes(cache, fb > fa ? fk.substr(fa + 1, fb - fa - 1) : o.kind, own, *m, false);
+        }
         mp = g_maps.emplace(mapKey(o), m).first;
         g_old_fits.clear();
       }
@@ -5379,10 +6978,10 @@ namespace {
     ex->follow = g_follow;
     std::set<std::string> kinds;  // A mirror match gets one each
     for (const Target& o : g_targets) {
-      if (o.chr != t.chr || o.color != t.color || !kinds.insert(o.kind).second) continue;
+      if (o.chr != t.chr || o.color != t.color || o.no_part || !kinds.insert(o.kind).second) continue;
       ExportPart p;
       p.ids = g_reading ? std::string() : cacheIds(o);
-      if (p.ids.empty() || !gatherPart(o, p)) { ex->later += (ex->later.empty() ? "" : ", ") + partName(o.kind); continue; }  // Its textures aren't known yet, so leave it out
+      if (p.ids.empty() || !gatherPart(o, p)) { ex->later += (ex->later.empty() ? "" : ", ") + partLabel(o.chr, o.kind); continue; }  // Its textures aren't known yet, so leave it out
       p.out = std::make_shared<std::vector<uint8_t>>();
       ex->results.push_back({o.kind + "\t" + p.ids, p.out});
       ex->todo.push_back(std::move(p));
@@ -5411,7 +7010,7 @@ namespace {
       if (ready && now == l.ids && (l.stamp.empty() || l.stamp == mapStamp(*o))) continue;  // (its map was read just now)
       if (!ready) {  // The part has to be read again first, then it goes on
         g_look_wait.push_back({t.chr + "/" + t.color, l});
-        g_look_note += (g_look_note.empty() ? "" : ", ") + partName(l.kind);
+        g_look_note += (g_look_note.empty() ? "" : ", ") + partLabel(t.chr, l.kind);
         continue;
       }
       p.look = l.data;
@@ -5499,16 +7098,18 @@ namespace {
         if (!f.good()) { f.close(); std::filesystem::remove(withSuffix(to, ".new"), ec); continue; }
       }
       if (eds && !eds->empty()) {  // Then its region colors, into the part's save with its material colors kept
-        auto& vecs = g_vec_saved[keyOf(*o)];
+        auto& vecs = g_vec_saved[partKey(*o)];
         if (vecs.empty())
           for (const std::string& l : readLines(editsFile(*o))) readVecLine(l, vecs);
+        if (g_vec_meta[partKey(*o)].empty())
+          for (const std::string& l : readLines(editsFile(*o))) readVecMeta(l, g_vec_meta[partKey(*o)]);
         if (!saveEditsTo(*o, *eds, editsFile(*o))) { std::lock_guard<std::mutex> lk(g_files_m); std::filesystem::remove(withSuffix(to, ".new"), ec); continue; }
         wrote = true;
       }
       std::lock_guard<std::mutex> lk(g_files_m);  // Then put the paint in place
       std::filesystem::rename(withSuffix(to, ".new"), to, ec);
       if (ec) std::filesystem::remove(withSuffix(to, ".new"), ec);
-      else { parts += (parts.empty() ? "" : ", ") + partName(kind); wrote = true; }
+      else { parts += (parts.empty() ? "" : ", ") + partLabel(ex.chr, kind); wrote = true; }
     }
     if (wrote && !g_hold.count(ex.chr + "/" + ex.color)) reloadSlot(ex.chr, ex.color);
     g_status = parts.empty() ? "Loaded. Its look couldn't be put on." : "Loaded, with its look on " + parts + " (made on other textures).";
@@ -5522,7 +7123,7 @@ namespace {
     ex->gen = g_slot_gen[slot];
     const Target* shown = target();
     for (const Target& o : g_targets)
-      if (o.chr + "/" + o.color == slot && !(shown && keyOf(o) == keyOf(*shown)) &&
+      if (o.chr + "/" + o.color == slot && !(shown && partKey(o) == partKey(*shown)) &&
           std::find(ex->keys.begin(), ex->keys.end(), keyOf(o)) == ex->keys.end())
         ex->keys.push_back(keyOf(o));
     if (ex->keys.empty()) return;
@@ -5535,7 +7136,7 @@ namespace {
       const std::string key = ex.keys.front();
       ex.keys.erase(ex.keys.begin());
       auto o = std::find_if(g_targets.begin(), g_targets.end(), [&](const Target& x) { return keyOf(x) == key; });
-      if (o == g_targets.end() || (target() && keyOf(*target()) == key)) continue;  // Gone, or the part on screen, which the editor makes
+      if (o == g_targets.end() || (target() && partKey(*target()) == key)) continue;  // Gone, or the part on screen, which the editor makes
       const bool has = g_edits_loaded.count(key) ? anyEdit(g_edits[key]) || hasPaint(*o) : std::filesystem::exists(editsFile(*o), ec) || hasPaint(*o);
       if (!has) continue;  // Nothing saved, so the game's own stays as it is
       ExportPart p;
@@ -5549,7 +7150,7 @@ namespace {
   void refreshOne(Export& ex, size_t i) {  // Game thread. Puts a part's new textures on if the slot hasn't changed since
     if (i >= ex.made.size()) return;
     const auto& [key, pngs] = ex.made[i];
-    if (!pngs || pngs->base.empty() || (target() && keyOf(*target()) == key)) return;  // Shown in the editor meanwhile, so the editor makes this part itself
+    if (!pngs || pngs->base.empty() || (target() && partKey(*target()) == key)) return;  // Shown in the editor meanwhile, so the editor makes this part itself
     std::vector<Target*> on;  // Every model with that key. A mirror's two share one texture, kept once in g_shown
     for (Target& o : g_targets) {
       if (keyOf(o) != key || g_slot_gen[o.chr + "/" + o.color] != ex.gen || o.mids.empty() || o.items.size() < o.mids.size()) continue;
@@ -5672,16 +7273,41 @@ namespace {
     std::string kind;
     ExportPart gather;
     std::vector<BakeTex> texs;  // its BaseMap, then its SssMap
+    bool equip = false;
   };
-  struct BakeMic { std::string path; bake::Bytes uasset, uexp; };
-  struct BakeVec { std::string mic, param, label; float rgba[4]; };
+  struct BakeMic { std::string path; bake::Bytes uasset, uexp; bool equip = false; std::string shared, in_all; };
+  struct BakeVec { std::string mic, param, label; float rgba[4]; std::string tex = {}; };
+  struct BakePic { size_t vec = 0; std::string src, param, hash; bake::Texture t; Image img; };
   struct BakeFx { std::string label; float rgb[3]; };
+  struct BakeDecal { std::string label, kind, tex, dir, shared, holder; bool equip = false; bake::Texture t; Image img; float smax = 0; float rgb[3] = {}; };
+  struct BakeMod { std::string ps, label; int emitter = 0, module = 0; float rgb[3] = {}; };
+  struct BakeFxOwn { std::string ps, label, effect; float rgb[3] = {}; };
+  struct BakeShared {
+    std::filesystem::path pak;
+    int order = 0;
+    bake::ShareLast last;
+    std::filesystem::path prev;
+    std::vector<std::string> prev_manifest;
+    std::vector<bake::PakFile> back;
+    std::vector<std::string> labels, done, manifest;
+    std::vector<std::pair<std::string, std::string>> moved;
+    bool wrote = false;
+  };
   struct BakeJob {
     std::string chr, color, slot_dir;  // slot_dir "/Game/Chara/SOL/Costume01/Material/Color02"
+    std::string only;
     std::vector<BakePart> parts;
     std::vector<BakeMic> mics;
     std::vector<BakeVec> vecs;
     std::vector<BakeFx> fx;  // the slot's saved effect colors
+    std::vector<BakeDecal> decals;
+    std::vector<BakeMod> mods;
+    std::vector<BakeFxOwn> fx_own;
+    std::vector<BakePic> pics;
+    std::vector<std::string> pic_log;
+    BakeMic ptc01;
+    std::set<std::string> palette;
+    std::map<std::string, BakeShared> shared;
     BakeMic ptc;             // its palette, as the game ships it
     std::vector<std::string> notes;  // what isn't baked, and why (for the status and the manifest)
     bool follow = true;
@@ -5689,17 +7315,24 @@ namespace {
     std::wstring sig;
     // results
     std::vector<std::string> done;  // what went in
+    std::vector<std::string> changed;
     std::vector<std::pair<std::string, std::string>> moved;  // (game texture, our copy), for the manifest
     std::string error;
+    std::string equip_chr, equip_dir, equip_label;
+    std::filesystem::path pak2;
+    std::vector<std::string> done2;
+    std::vector<std::pair<std::string, std::string>> moved2;
+    bool wrote1 = false, wrote2 = false;
     std::future<bool> job;
   };
   std::unique_ptr<BakeJob> g_bake;
   std::mutex g_bake_result_m;
   recolor_test::BakeResult g_bake_result;
   bool g_bake_result_up = false;
-  void showBakeResult(bool ok, const std::string& title, const std::vector<std::string>& baked, const std::vector<std::string>& not_baked) {
+  void showBakeResult(bool ok, const std::string& title, const std::vector<std::string>& baked, const std::vector<std::string>& not_baked,
+                      const std::string& notice = {}) {
     std::lock_guard<std::mutex> lk(g_bake_result_m);
-    g_bake_result = {ok, title, baked, not_baked};
+    g_bake_result = {ok, title, baked, not_baked, notice};
     g_bake_result_up = true;
   }
 
@@ -5767,11 +7400,13 @@ namespace {
       return std::search(b.begin(), b.end(), tag.begin(), tag.end()) != b.end();
     };
     if (std::filesystem::exists(keep, ec)) { out = readBytes(keep); return !out.empty() && !ours(out); }
-    if (g_baked_slots.count(slot)) {  // A bake of the slot is on: refused only if one of its paks holds this file (ours would come back)
+    if (!g_baked_slots.empty()) {  // A bake of the slot is on: refused only if one of its paks holds this file (ours would come back)
       const std::string want = "../../../" + pakName(pkg, ext);
-      const std::string prefix = slot.substr(0, slot.find('/')) + "_" + slot.substr(slot.find('/') + 1) + "_";
       for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
-        if (e.path().extension() != ".pak" || e.path().stem().string().rfind(prefix, 0) != 0) continue;
+        if (e.path().extension() != ".pak") continue;
+        const std::string stem = e.path().stem().string();
+        const size_t us = stem.rfind('_'), c = us == std::string::npos ? us : stem.rfind("_Color", us);
+        if (c == std::string::npos || c == 0 || !g_baked_slots.count(stem.substr(0, c) + "/" + stem.substr(c + 1, us - c - 1))) continue;
         std::vector<std::string> names;
         if (!bake::pakNames(e.path().wstring(), names)) return false;  // (can't tell: refuse)
         if (std::find(names.begin(), names.end(), want) != names.end()) return false;
@@ -5782,14 +7417,236 @@ namespace {
     return writeBytes(keep, out);
   }
 
+  const std::string kAllColors = "ColorAll";
+  std::string shareScope(const std::string& pkg) {
+    if (pkg.rfind("/Game/Chara/", 0) == 0) {
+      const size_t e = pkg.find('/', 12);
+      if (e != std::string::npos && e > 12) return pkg.substr(12, e - 12);
+    }
+    return "Shared";
+  }
+  bool inFolder(const std::string& pkg, const std::string& dir) {
+    return !dir.empty() && pkg.size() > dir.size() + 1 && pkg.rfind(dir + "/", 0) == 0 && pkg.find('/', dir.size() + 1) == std::string::npos;
+  }
+  BakeMic* bakeMicOf(BakeJob& j, const std::string& pkg) {
+    for (BakeMic& m : j.mics) if (_stricmp(m.path.c_str(), pkg.c_str()) == 0) return &m;
+    return nullptr;
+  }
+  std::filesystem::path latestPak(const std::string& stem);
+  bool unbaked(const std::filesystem::path& manifest);
+  std::string otherSlotHolds(const std::string& pkg, const std::string& chr, const std::string& color) {
+    std::string oc, ocol;
+    if (!slotOfPath(pkg, oc, ocol) || (oc == chr && ocol == color) || !inFolder(pkg, narrow(materialDir(oc, ocol)))) return {};
+    {
+      std::lock_guard<std::mutex> lk(g_bake_stale_m);
+      if (g_bake_stale.count(oc + "_" + ocol)) return {};
+    }
+    const std::filesystem::path pak = latestPak(oc + "_" + ocol);
+    if (pak.empty() || unbaked(std::filesystem::path(pak).replace_extension(".txt"))) return {};
+    std::vector<std::string> names;
+    if (!bake::pakNames(pak.wstring(), names)) return {};
+    const std::string na = pakName(pkg, ".uasset"), ne = pakName(pkg, ".uexp");
+    auto has = [&](const std::string& n) { return std::find(names.begin(), names.end(), n) != names.end() || std::find(names.begin(), names.end(), "../../../" + n) != names.end(); };
+    if (!has(na) && !has(ne)) return {};
+    return slotLabel(ocol);
+  }
+  bool bakeShare(BakeJob& j, const std::string& pkg, std::string& why) {
+    if (bakeMicOf(j, pkg)) return true;
+    if (pkg.rfind("/Game/", 0) != 0 || pkg.find("/SL_baked/") != std::string::npos) { why = "not one of the game's files"; return false; }
+    if (const std::string holder = otherSlotHolds(pkg, j.chr, j.color); !holder.empty()) {
+      why = pkg.substr(pkg.rfind('/') + 1) + " is " + holder + "'s own file and " + holder + "'s bake has it, so it isn't baked again from here (change it from " + holder +
+            ", or unbake " + holder + " first)";
+      return false;
+    }
+    const std::string scope = shareScope(pkg);
+    BakeMic m;
+    m.path = pkg;
+    m.shared = scope;
+    if (!gameOriginal(scope + "/" + kAllColors, pkg, ".uasset", m.uasset) || !gameOriginal(scope + "/" + kAllColors, pkg, ".uexp", m.uexp)) {
+      why = "the game's own " + pkg.substr(pkg.rfind('/') + 1) + " isn't known";
+      return false;
+    }
+    j.shared[scope];
+    j.mics.push_back(std::move(m));
+    return true;
+  }
+  bool bakeFileOf(BakeJob& j, const std::string& pkg, bake::Package& p) {
+    bake::Bytes a, e;
+    std::string why;
+    if (BakeMic* m = bakeMicOf(j, pkg)) return p.parse(m->uasset, m->uexp, why);
+    if (pkg.rfind("/Game/", 0) != 0) return false;
+    const std::string scope = shareScope(pkg) + "/" + kAllColors;
+    return gameOriginal(scope, pkg, ".uasset", a) && gameOriginal(scope, pkg, ".uexp", e) && p.parse(a, e, why);
+  }
+  bool bakeFileVector(BakeJob& j, const std::string& pkg, const std::string& param, float out[4]) {
+    std::string cur = pkg;
+    for (int depth = 0; depth < 5 && !cur.empty(); depth++) {
+      bake::Package p;
+      std::string why;
+      if (!bakeFileOf(j, cur, p)) return false;
+      if (bake::vectorValue(p, param, out)) return true;
+      if (!bake::parentPackage(p, cur, why)) return false;
+    }
+    return false;
+  }
+  std::string bakeDecalHolder(BakeJob& j, const std::string& mic, const std::string& tex) {
+    std::string cur = mic;
+    for (int depth = 0; depth < 6 && !cur.empty(); depth++) {
+      bake::Package p;
+      std::string why;
+      if (!bakeFileOf(j, cur, p)) return {};
+      if (bake::importsPackage(p, tex)) return cur;
+      if (!bake::parentPackage(p, cur, why)) return {};
+    }
+    return {};
+  }
+  std::string gameTexture(const std::string& path) {
+    if (path.find("/SL_baked/") == std::string::npos) return path;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+      if (e.path().extension() != ".txt") continue;
+      for (const std::string& l : readLines(e.path())) {
+        if (l.rfind("moved\t", 0) != 0) continue;
+        const size_t t2 = l.find('\t', 6);
+        if (t2 != std::string::npos && l.compare(t2 + 1, std::string::npos, path) == 0) return l.substr(6, t2 - 6);
+      }
+    }
+    return {};
+  }
+  void bakeAddVec(BakeJob& j, const std::string& label, const std::string& path, const std::string& param, const float rgba[4]) {
+    const bool own = inFolder(path, j.slot_dir) || inFolder(path, j.equip_dir);
+    if (own && !bakeMicOf(j, path)) { j.notes.push_back(label + ": its material file " + path + " isn't among the slot's"); return; }
+    if (!own) {
+      std::string why;
+      if (!bakeShare(j, path, why)) { j.notes.push_back(label + ": " + why); return; }
+      j.shared[shareScope(path)].labels.push_back(label);
+    }
+    BakeVec v{path, param, label, {}};
+    std::memcpy(v.rgba, rgba, sizeof v.rgba);
+    if (std::none_of(j.vecs.begin(), j.vecs.end(), [&](const BakeVec& x) { return x.mic == v.mic && x.param == v.param; })) j.vecs.push_back(v);
+  }
+  void bakeAddPicture(BakeJob& j, const std::string& label, const std::string& mic, const std::string& param, const float v[4]) {
+    const std::string what = label + " (" + param + " on " + mic.substr(mic.rfind('/') + 1) + ")";
+    const matpics::Row* r = picRowOf(mic, param);
+    if (!r) { j.notes.push_back(what + ": not in the table of pictures (atlas/matpictures.txt)"); return; }
+    picMasters(nullptr, *r, true);
+    const int slot = matpics::colorNum(matpics::folderOfPackage(mic));
+    const matpics::Pick p = matpics::resolve(*r, g_pic_masters, slot, v);
+    if (p.kind == matpics::Pick::Own) return;
+    if (p.kind == matpics::Pick::Unknown || p.kind == matpics::Pick::Unresolved) { j.notes.push_back(what + ": " + p.why); return; }
+    std::string src;
+    std::filesystem::path file;
+    if (p.kind == matpics::Pick::Png) {
+      src = matpics::ownPath(*r, g_pic_masters, slot);
+      if (src.empty()) { j.notes.push_back(what + ": the picture it replaces comes from a master material that wasn't read"); return; }
+      src = src.substr(0, src.rfind('.'));
+      file = pngFile(mic, p.hash);
+      std::error_code ec;
+      if (file.empty() || !std::filesystem::exists(file, ec)) {
+        j.notes.push_back(what + ": its PNG " + p.hash + ".png isn't in " + narrow(file.parent_path().wstring()) + " (an edit brought from another PC needs that file too)");
+        return;
+      }
+    }
+    bakeAddVec(j, label, mic, "$" + param, v);
+    auto bv = std::find_if(j.vecs.begin(), j.vecs.end(), [&](const BakeVec& x) { return x.mic == mic && x.param == "$" + param; });
+    if (bv == j.vecs.end()) return;
+    bv->tex = p.kind == matpics::Pick::Texture ? p.path : std::string();
+    if (p.kind != matpics::Pick::Png) return;
+    BakePic b;
+    b.vec = static_cast<size_t>(bv - j.vecs.begin());
+    b.src = src;
+    b.param = param;
+    b.hash = p.hash;
+    if (!decodePng(file, b.img) || !b.img.w) { j.notes.push_back(what + ": its PNG " + p.hash + ".png couldn't be read"); return; }
+    if (!pak_mount::readFile(gameFile(src, ".uasset"), b.t.uasset) || !pak_mount::readFile(gameFile(src, ".uexp"), b.t.uexp)) {
+      j.notes.push_back(what + ": the picture it replaces (" + src + ") couldn't be read");
+      return;
+    }
+    pak_mount::readFile(gameFile(src, ".ubulk"), b.t.ubulk);
+    j.pics.push_back(std::move(b));
+  }
+  void bakeAddDecal(BakeJob& j, const std::string& kind, const std::string& label, const std::string& tex_in, const std::string& mic, const float rgb[3]);
+  std::filesystem::path bakeMapFile(const std::string& chr);
+  bool bakeMapDecals(BakeJob& j, const std::string& kind, const std::string& base, const std::string& label, const float rgb[3]) {
+    bool any = false;
+    const std::string head = "decal\t" + kind + "\t";
+    auto resolve = [&](const std::string& n) { return n.empty() || n[0] == '/' ? n : n[0] == '^' ? j.slot_dir + "/" + n.substr(1) : base + "/" + n; };
+    for (const std::string& l : readLines(bakeMapFile(j.chr))) {
+      if (l.rfind(head, 0) != 0) continue;
+      const size_t t = l.find('\t', head.size());
+      if (t == std::string::npos) continue;
+      bakeAddDecal(j, kind, label, resolve(l.substr(head.size(), t - head.size())), resolve(l.substr(t + 1)), rgb);
+      any = true;
+    }
+    return any;
+  }
+  void bakeAddDecal(BakeJob& j, const std::string& kind, const std::string& label, const std::string& tex_in, const std::string& mic, const float rgb[3]) {
+    const std::string tex = gameTexture(tex_in);
+    const std::string what = label + " (" + tex_in.substr(tex_in.rfind('/') + 1) + ")";
+    if (tex.empty()) { j.notes.push_back(what + ": wears a bake whose record is gone"); return; }
+    const std::string holder = bakeDecalHolder(j, mic, tex);
+    if (holder.empty()) { j.notes.push_back(what + ": no material file from " + mic.substr(mic.rfind('/') + 1) + " up sets it"); return; }
+    if (auto same = std::find_if(j.decals.begin(), j.decals.end(), [&](const BakeDecal& x) { return x.tex == tex && x.holder == holder; }); same != j.decals.end()) {
+      if (std::memcmp(same->rgb, rgb, sizeof same->rgb) != 0)
+        j.notes.push_back(what + ": " + holder.substr(holder.rfind('/') + 1) + " sets it for " + same->label + " too, so both show " + same->label + "'s color");
+      return;
+    }
+    if (holder != mic)
+      j.notes.push_back(what + ": set in " + holder.substr(holder.rfind('/') + 1) + ", a parent of " + mic.substr(mic.rfind('/') + 1) + ", so every material under it shows this color");
+    BakeDecal d;
+    d.label = label;
+    d.kind = kind;
+    d.tex = tex;
+    d.holder = holder;
+    std::memcpy(d.rgb, rgb, sizeof d.rgb);
+    if (inFolder(holder, j.slot_dir) && bakeMicOf(j, holder)) d.dir = j.slot_dir;
+    else if (!j.equip_dir.empty() && inFolder(holder, j.equip_dir) && bakeMicOf(j, holder)) { d.equip = true; d.dir = j.equip_dir; }
+    else {
+      std::string why;
+      if (!bakeShare(j, holder, why)) { j.notes.push_back(what + ": " + why); return; }
+      d.shared = shareScope(holder);
+      d.dir = holder.substr(0, holder.rfind('/'));
+    }
+    const std::string name = tex.substr(tex.rfind('/') + 1);
+    const std::filesystem::path pic = decalSource(j.chr, j.color, name, true, bake::perColorPath(tex));
+    if (pic.empty() || !decodePng(pic, d.img) || !d.img.w) {
+      j.notes.push_back(what + ": open it once in the editor in this color (its lines aren't read yet)");
+      return;
+    }
+    for (size_t q = 0; q < static_cast<size_t>(d.img.w) * d.img.h; q++) {
+      const uint8_t* c = &d.img.px[q * 4];
+      d.smax = (std::max)(d.smax, 1.0f - static_cast<float>(c[0] + c[1] + c[2]) / 765.0f);
+    }
+    if (d.smax <= 0.05f) { j.notes.push_back(what + ": it has no lines to color"); return; }
+    if (!pak_mount::readFile(gameFile(tex, ".uasset"), d.t.uasset) || !pak_mount::readFile(gameFile(tex, ".uexp"), d.t.uexp)) {
+      j.notes.push_back(what + ": its texture couldn't be read");
+      return;
+    }
+    pak_mount::readFile(gameFile(tex, ".ubulk"), d.t.ubulk);
+    if (!d.shared.empty()) j.shared[d.shared].labels.push_back(label);
+    j.decals.push_back(std::move(d));
+  }
+
+  std::string bakeLabel(const std::string& chr, const std::string& kind) {
+    return poweredKind(kind) ? partLabel(chr, kind.substr(0, kind.size() - kPoweredTail.size())) + ", " + lookName(chr) : partLabel(chr, kind);
+  }
+  const std::string kEquipDest = "\x01";
   bool bakeWorker(BakeJob* j) {  // Worker. Reads only the job
     struct Count { ~Count() { g_encoding--; } } count;
-    std::vector<bake::PakFile> files;
-    std::vector<std::pair<std::string, std::string>> moved;  // (game texture, our copy)
+    std::map<std::string, std::vector<bake::PakFile>> out;
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> moves;
+    std::vector<bake::PakFile>& files = out[""];
+    std::vector<bake::PakFile>& files2 = out[kEquipDest];
+    std::vector<std::pair<std::string, std::string>>& moved = moves[""];  // (game texture, our copy)
+    std::vector<std::pair<std::string, std::string>>& moved2 = moves[kEquipDest];
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> decal_moves;
+    auto lowered = [](std::string x) { for (char& c : x) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return x; };
+    auto destOf = [](bool equip, const std::string& shared) { return equip ? kEquipDest : shared; };
+    auto doneOf = [&](const std::string& d) -> std::vector<std::string>& { return d.empty() ? j->done : d == kEquipDest ? j->done2 : j->shared[d].done; };
     for (BakePart& bp : j->parts) {
       ExportPart& p = bp.gather;
       if (!p.worn) p.worn = prepareWorn(p.map, p.base, p.sss);
-      if (!p.worn) { j->notes.push_back(partName(bp.kind) + ": its colors couldn't be read"); continue; }
+      if (!p.worn) { j->notes.push_back(bakeLabel(j->chr, bp.kind) + ": its colors couldn't be read"); continue; }
       Image ob, os;
       buildW(*p.worn, j->follow, p.ed, {}, ob, os);
       paintOver(p.paint, ob, os);
@@ -5797,64 +7654,234 @@ namespace {
         const Image& im = bt.base ? ob : os;
         const Image& was = bt.base ? p.worn->base : p.worn->sss;
         std::string why;
-        if (!bt.tex.parse(why)) { j->notes.push_back(partName(bp.kind) + ": " + bt.path + ": " + why); continue; }
-        if (im.w != bt.tex.mips[0].w || im.h != bt.tex.mips[0].h) { j->notes.push_back(partName(bp.kind) + ": the editor's picture isn't the texture's size"); continue; }
+        if (!bt.tex.parse(why)) { j->notes.push_back(bakeLabel(j->chr, bp.kind) + ": " + bt.path + ": " + why); continue; }
+        if (im.w != bt.tex.mips[0].w || im.h != bt.tex.mips[0].h) { j->notes.push_back(bakeLabel(j->chr, bp.kind) + ": the editor's picture isn't the texture's size"); continue; }
         const size_t enc = bake::writeImage(bt.tex, im.px, was.px, why);
-        if (!why.empty()) { j->notes.push_back(partName(bp.kind) + ": " + why); continue; }
+        if (!why.empty()) { j->notes.push_back(bakeLabel(j->chr, bp.kind) + ": " + why); continue; }
         if (enc == 0) continue;  // (unchanged: the game's own stays)
-        const std::string copy = copyPath(j->slot_dir, bt.path);
+        const std::string copy = copyPath(bp.equip ? j->equip_dir : j->slot_dir, bt.path);
         bake::Package pk;
         bake::Bytes a, e;
         if (!pk.parse(bt.tex.uasset, bt.tex.uexp, why) || !bake::renameTexture(pk, copy, a, e, why) || !bake::verifyPackage(a, e, why)) {
-          j->notes.push_back(partName(bp.kind) + ": " + why);
+          j->notes.push_back(bakeLabel(j->chr, bp.kind) + ": " + why);
           continue;
         }
-        files.push_back({pakName(copy, ".uasset"), std::move(a)});
-        files.push_back({pakName(copy, ".uexp"), std::move(e)});
-        files.push_back({pakName(copy, ".ubulk"), bt.tex.ubulk});
-        moved.push_back({bt.path, copy});
-        j->moved.push_back({bt.path, copy});
-        j->done.push_back(bt.path.substr(bt.path.rfind('/') + 1) + " (" + std::to_string(enc) + " blocks)");
+        auto& fl = bp.equip ? files2 : files;
+        fl.push_back({pakName(copy, ".uasset"), std::move(a)});
+        fl.push_back({pakName(copy, ".uexp"), std::move(e)});
+        fl.push_back({pakName(copy, ".ubulk"), bt.tex.ubulk});
+        (bp.equip ? moved2 : moved).push_back({bt.path, copy});
+        (bp.equip ? j->moved2 : j->moved).push_back({bt.path, copy});
+        (bp.equip ? j->done2 : j->done).push_back(bt.path.substr(bt.path.rfind('/') + 1) + " (" + std::to_string(enc) + " blocks)");
       }
       p.worn.reset();
     }
+    for (BakeDecal& d : j->decals) {
+      const std::string what = d.label + " (" + d.tex.substr(d.tex.rfind('/') + 1) + ")";
+      std::string why;
+      if (!d.t.parse(why)) { j->notes.push_back(what + ": " + why); continue; }
+      if (d.img.w != d.t.mips[0].w || d.img.h != d.t.mips[0].h) { j->notes.push_back(what + ": the editor's picture of it isn't the texture's size"); continue; }
+      const float T[3] = {std::clamp(d.rgb[0], 0.0f, 1.0f), std::clamp(d.rgb[1], 0.0f, 1.0f), std::clamp(d.rgb[2], 0.0f, 1.0f)};
+      const Image tinted = decalTinted(d.img, d.smax, T);
+      const size_t enc = bake::writeImage(d.t, tinted.px, d.img.px, why);
+      if (!why.empty()) { j->notes.push_back(what + ": " + why); continue; }
+      if (enc == 0) continue;
+      std::string copy = copyPath(d.dir, d.tex);
+      copy.insert(copy.rfind('/'), "_" + d.kind);
+      bake::Package pk;
+      bake::Bytes a, e;
+      if (!pk.parse(d.t.uasset, d.t.uexp, why) || !bake::renameTexture(pk, copy, a, e, why) || !bake::verifyPackage(a, e, why)) {
+        j->notes.push_back(what + ": " + why);
+        continue;
+      }
+      const std::string dest = destOf(d.equip, d.shared);
+      auto& fl = out[dest];
+      fl.push_back({pakName(copy, ".uasset"), std::move(a)});
+      fl.push_back({pakName(copy, ".uexp"), std::move(e)});
+      fl.push_back({pakName(copy, ".ubulk"), d.t.ubulk});
+      decal_moves[lowered(d.holder)].push_back({d.tex, copy});
+      (dest.empty() ? j->moved : dest == kEquipDest ? j->moved2 : j->shared[dest].moved).push_back({d.tex, copy});
+      doneOf(dest).push_back(what + " (" + std::to_string(enc) + " blocks)");
+      d.img = Image{};
+    }
+    std::set<std::string> pic_copies;
+    for (BakePic& bp : j->pics) {
+      if (bp.vec >= j->vecs.size()) continue;
+      BakeVec& v = j->vecs[bp.vec];
+      const std::string what = v.label + " (" + bp.param + " on " + v.mic.substr(v.mic.rfind('/') + 1) + ")";
+      std::string why;
+      const std::string copy = matpics::pngCopyPath(v.mic, bp.src, bp.param, bp.hash);
+      if (copy.empty()) { j->notes.push_back(what + ": no place for its picture"); continue; }
+      if (!pic_copies.insert(copy).second) { v.tex = copy + "." + copy.substr(copy.rfind('/') + 1); continue; }
+      if (!bp.t.parse(why)) { j->notes.push_back(what + ": " + why); continue; }
+      const Image img = resized(bp.img, bp.t.mips[0].w, bp.t.mips[0].h);
+      Image was = img;
+      for (uint8_t& c : was.px) c = static_cast<uint8_t>(~c);
+      const size_t enc = bake::writeImage(bp.t, img.px, was.px, why);
+      if (!why.empty() || enc == 0) { j->notes.push_back(what + ": " + (why.empty() ? std::string("nothing was written") : why)); continue; }
+      bake::Package pk;
+      bake::Bytes a, e;
+      if (!pk.parse(bp.t.uasset, bp.t.uexp, why) || !bake::renameTexture(pk, copy, a, e, why) || !bake::verifyPackage(a, e, why)) { j->notes.push_back(what + ": " + why); continue; }
+      const BakeMic* bm = bakeMicOf(*j, v.mic);
+      const std::string dest = bm ? destOf(bm->equip, bm->shared) : std::string();
+      auto& fl = out[dest];
+      fl.push_back({pakName(copy, ".uasset"), std::move(a)});
+      fl.push_back({pakName(copy, ".uexp"), std::move(e)});
+      fl.push_back({pakName(copy, ".ubulk"), bp.t.ubulk});
+      (dest.empty() ? j->moved : dest == kEquipDest ? j->moved2 : j->shared[dest].moved).push_back({bp.src, copy});
+      doneOf(dest).push_back(what + ": picture from the PNG " + bp.hash + ".png, " + std::to_string(img.w) + "x" + std::to_string(img.h) + " (" + std::to_string(enc) + " blocks)");
+      v.tex = copy + "." + copy.substr(copy.rfind('/') + 1);
+      bp.img = Image{};
+    }
+    std::map<std::string, std::vector<float>> pal_slot, pal_01;
+    auto paletteValues = [](const BakeMic& src, std::map<std::string, std::vector<float>>& to) {
+      bake::Package pp;
+      std::string w;
+      std::vector<std::pair<std::string, std::vector<float>>> vals;
+      if (!src.uasset.empty() && pp.parse(src.uasset, src.uexp, w) && bake::effectColorValues(pp, vals, w))
+        for (auto& [l, v] : vals) to[l] = std::move(v);
+    };
+    if (!j->fx_own.empty()) { paletteValues(j->ptc, pal_slot); paletteValues(j->ptc01, pal_01); }
     // Every material of the slot folder that uses a moved texture points at the copy; the colors go in
     std::set<std::string> used, matched;
+    bake::Prop model, tex_model;
+    bool model_tried = false, has_model = false, tex_model_tried = false, has_tex_model = false;
     for (BakeMic& m : j->mics) {
       bake::Bytes a = m.uasset, e = m.uexp;
       bool changed = false;
       std::string why;
       bool ok = true;
-      for (const auto& [from, to] : moved) {
-        bake::Package pk;
-        if (!pk.parse(a, e, why)) { ok = false; break; }
-        bool imports = false, already = false;
-        for (const auto& imp : pk.imports) { imports |= pk.name(imp[5]) == from; already |= pk.name(imp[5]) == to; }
-        if (already) used.insert(from);
-        if (!imports) continue;
-        bake::Bytes a2, e2;
-        if (!bake::repoint(pk, from, to, a2, e2, why)) { ok = false; break; }
-        a.swap(a2); e.swap(e2);
-        changed = true;
-        used.insert(from);
+      const std::string dest = destOf(m.equip, m.shared);
+      const size_t done_before = doneOf(dest).size();
+      for (const auto* mv : {&moves[dest], &decal_moves[lowered(m.path)]}) {
+        const std::string key = mv == &moves[dest] ? dest : "\x02" + lowered(m.path);
+        for (const auto& [from, to] : *mv) {
+          if (!ok) break;
+          bake::Package pk;
+          if (!pk.parse(a, e, why)) { ok = false; break; }
+          bool imports = false, already = false;
+          for (const auto& imp : pk.imports) { imports |= pk.name(imp[5]) == from; already |= pk.name(imp[5]) == to; }
+          if (already) used.insert(key + "\t" + from);
+          if (!imports) continue;
+          bake::Bytes a2, e2;
+          if (!bake::repoint(pk, from, to, a2, e2, why)) { ok = false; break; }
+          a.swap(a2); e.swap(e2);
+          changed = true;
+          used.insert(key + "\t" + from);
+        }
       }
       for (const BakeVec& v : j->vecs) {
         if (!ok || _stricmp(v.mic.c_str(), m.path.c_str()) != 0) continue;
         matched.insert(v.mic + "\t" + v.param);
+        if (isPicture(v.param)) {
+          if (v.tex.empty()) continue;
+          bake::Package pk;
+          if (!pk.parse(a, e, why)) { ok = false; break; }
+          if (!tex_model_tried) {
+            tex_model_tried = true;
+            for (const BakeMic& o : j->mics) {
+              bake::Package mp;
+              std::string w2;
+              if (mp.parse(o.uasset, o.uexp, w2) && bake::textureListOf(mp, tex_model, w2)) { has_tex_model = true; break; }
+            }
+          }
+          std::string how;
+          bake::Bytes a2, e2;
+          if (!bake::setTextureParam(pk, v.param.substr(1), v.tex, a2, e2, how, why, has_tex_model ? &tex_model : nullptr)) {
+            j->notes.push_back(v.label + " (" + v.param.substr(1) + "): " + why);
+            continue;
+          }
+          a.swap(a2); e.swap(e2);
+          changed = true;
+          const std::string mname = m.path.substr(m.path.rfind('/') + 1);
+          doneOf(dest).push_back(v.label + " picture on " + mname + ": " + v.tex.substr(v.tex.rfind('/') + 1));
+          j->pic_log.push_back("picture " + mname + " " + v.param.substr(1) + " -> " + v.tex + " (" + how + ")");
+          continue;
+        }
         bake::Package pk;
         if (!pk.parse(a, e, why)) { ok = false; break; }
         bake::Bytes a2, e2;
         bool added = false;
         const uint8_t zero[16] = {};
-        if (!bake::setVector(pk, v.param, v.rgba, zero, a2, e2, added, why)) { j->notes.push_back(v.label + " (" + v.param + "): " + why); continue; }
+        if (!model_tried) {
+          model_tried = true;
+          for (const BakeMic& o : j->mics) {
+            bake::Package mp;
+            std::string w2;
+            if (mp.parse(o.uasset, o.uexp, w2) && bake::numberListOf(mp, model, w2)) { has_model = true; break; }
+          }
+        }
+        const bake::Prop* mdl = has_model ? &model : nullptr;
+        const bool set_ok = isNumber(v.param) ? bake::setScalar(pk, v.param.substr(1), v.rgba[0], a2, e2, added, why, mdl)
+                                              : bake::setVector(pk, v.param, v.rgba, zero, a2, e2, added, why, mdl);
+        if (!set_ok) { j->notes.push_back(v.label + " (" + (isNumber(v.param) ? v.param.substr(1) : v.param) + "): " + why); continue; }
         a.swap(a2); e.swap(e2);
         changed = true;
-        j->done.push_back(v.label + " on " + m.path.substr(m.path.rfind('/') + 1) + (added ? " (added)" : ""));
+        doneOf(dest).push_back(v.label + " on " + m.path.substr(m.path.rfind('/') + 1) + (added ? " (added)" : ""));
       }
-      if (!ok || (changed && !bake::verifyPackage(a, e, why))) { j->error = m.path + ": " + why; return false; }  // A material we can't write right: nothing is baked
+      const std::string ename = m.path.substr(m.path.rfind('/') + 1);
+      std::vector<bake::ColorModule> cms;
+      bool cms_read = false;
+      auto modules = [&]() -> bool {
+        if (cms_read) return true;
+        bake::Package pk;
+        if (!pk.parse(a, e, why) || !bake::colorModules(pk, cms, why)) return false;
+        cms_read = true;
+        return true;
+      };
+      auto setValues = [&](const bake::ColorModule& c, const std::vector<float>& vals) {
+        bake::Package pk;
+        bake::Bytes a2, e2;
+        if (!pk.parse(a, e, why) || !bake::setModuleValues(pk, c, vals, a2, e2, why)) return false;
+        a.swap(a2); e.swap(e2);
+        changed = true;
+        return true;
+      };
+      for (const BakeMod& md : j->mods) {
+        if (!ok || md.ps != m.path) continue;
+        const std::string what = "captured color " + ename + " " + md.label;
+        if (!modules()) { j->notes.push_back(what + ": " + why); break; }
+        auto c = std::find_if(cms.begin(), cms.end(), [&](const bake::ColorModule& x) { return x.emitter == md.emitter && x.module == md.module; });
+        if (c == cms.end()) { j->notes.push_back(what + ": the effect's file has no color module there"); continue; }
+        if (c->fed && j->palette.count(c->byName)) {
+          j->notes.push_back(what + ": the game fills it from the palette's " + c->byName + " when the effect loads, so a baked effect file can't hold it (set " + c->byName + " in Effect colors)");
+          continue;
+        }
+        if (c->values.empty()) { j->notes.push_back(what + ": its color isn't a table in the effect's file"); continue; }
+        if (!setValues(*c, bake::ratioed(c->values, md.rgb))) { j->notes.push_back(what + ": " + why); continue; }
+        cms_read = false;
+        doneOf(dest).push_back(what);
+      }
+      for (const BakeFxOwn& fo : j->fx_own) {
+        if (!ok || fo.ps != m.path) continue;
+        const std::string what = "effect color " + fo.label + "@" + fo.effect;
+        auto ps = pal_slot.find(fo.label);
+        if (ps == pal_slot.end() || ps->second.empty()) { j->notes.push_back(what + ": the slot's palette has no such color"); continue; }
+        auto p1 = pal_01.find(fo.label);
+        if (!modules()) { j->notes.push_back(what + ": " + why); continue; }
+        int hits = 0;
+        for (const bake::ColorModule& c : std::vector<bake::ColorModule>(cms)) {
+          if (c.fed || c.values.size() != ps->second.size()) continue;
+          if (c.values != ps->second && (p1 == pal_01.end() || c.values != p1->second)) continue;
+          if (!setValues(c, bake::ratioed(ps->second, fo.rgb))) { j->notes.push_back(what + ": " + why); continue; }
+          hits++;
+        }
+        cms_read = false;
+        if (!hits) { j->notes.push_back(what + ": none of " + fo.effect + "'s own modules holds this color in the game's file"); continue; }
+        doneOf(dest).push_back(what + " (" + std::to_string(hits) + (hits == 1 ? " module)" : " modules)"));
+      }
+      if (!ok || (changed && !bake::verifyPackage(a, e, why))) {  // A material we can't write right: nothing is baked
+        if (m.shared.empty()) { j->error = m.path + ": " + why; return false; }
+        j->notes.push_back(ename + " (shared by every color): " + why + ", so it isn't baked");
+        doneOf(dest).resize(done_before);
+        continue;
+      }
       if (!changed) continue;
-      files.push_back({pakName(m.path, ".uasset"), std::move(a)});
-      files.push_back({pakName(m.path, ".uexp"), std::move(e)});
+      if (!m.in_all.empty() && m.shared.empty())
+        doneOf(dest).push_back(ename + " (also in " + m.in_all + ": this slot's version is the one the game uses, so the All colors change to it no longer shows)");
+      j->changed.push_back(m.path);
+      out[dest].push_back({pakName(m.path, ".uasset"), std::move(a)});
+      out[dest].push_back({pakName(m.path, ".uexp"), std::move(e)});
     }
     if (!j->fx.empty()) {  // The effect colors, into the slot's palette
       bake::Bytes a = j->ptc.uasset, e = j->ptc.uexp;
@@ -5875,27 +7902,83 @@ namespace {
         files.push_back({pakName(j->ptc.path, ".uexp"), std::move(e)});
       }
     }
-    for (const auto& [from, to] : moved)
-      if (!used.count(from)) j->notes.push_back(from.substr(from.rfind('/') + 1) + ": no material in the slot's folder uses it, so it doesn't show");
+    for (const auto& [dest, mv] : moves)
+      for (const auto& [from, to] : mv)
+        if (!used.count(dest + "\t" + from)) j->notes.push_back(from.substr(from.rfind('/') + 1) + ": no material in the slot's folder uses it, so it doesn't show");
+    for (const auto& [holder, mv] : decal_moves)
+      for (const auto& [from, to] : mv)
+        if (!used.count("\x02" + holder + "\t" + from)) j->notes.push_back(from.substr(from.rfind('/') + 1) + ": its decal material " + holder.substr(holder.rfind('/') + 1) + " wasn't pointed at the copy, so it doesn't show");
     for (const BakeVec& v : j->vecs)
       if (!matched.count(v.mic + "\t" + v.param)) j->notes.push_back(v.label + ": its material file " + v.mic + " isn't among the slot's");
-    if (files.empty()) { j->error = "nothing to bake"; return false; }
-    std::string why;
-    std::error_code ec;
-    std::filesystem::create_directories(j->pak.parent_path(), ec);
-    const std::filesystem::path tmp = std::filesystem::path(j->pak).replace_extension(".tmp");  // (renamed to .pak only once whole and checked)
-    if (!bake::writePak(tmp.wstring(), files, why) || !bake::checkPak(tmp.wstring(), files, why)) {
-      std::filesystem::remove(tmp, ec);
-      j->error = "the pak: " + why;
-      return false;
+    const std::string me = bake::shareOwner(j->chr, j->color, j->only);
+    std::map<std::string, std::vector<bake::PakFile>> share_files;
+    for (auto& [scope, s] : j->shared) {
+      if (!s.prev.empty()) {
+        std::vector<bake::PakFile> was;
+        std::string why;
+        if (!bake::readPak(s.prev.wstring(), was, why)) {
+          j->notes.push_back(scope + " " + slotLabel(kAllColors) + ": its last bake couldn't be read (" + why + "), so its shared files aren't baked this time");
+          continue;
+        }
+        bake::shareLast(s.prev_manifest, std::move(was), me, s.last);
+      }
+      std::vector<bake::PakFile> fl;
+      if (bake::shareNext(me, out[scope], s.back, s.last, s.done, s.moved, fl, s.manifest)) share_files[scope] = std::move(fl);
     }
-    std::filesystem::copy_file(j->sig, std::filesystem::path(j->pak).replace_extension(".sig"), std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) { std::filesystem::remove(tmp, ec); j->error = "the game's .sig couldn't be copied"; return false; }
-    std::filesystem::rename(tmp, j->pak, ec);
-    if (ec) { std::filesystem::remove(tmp, ec); std::filesystem::remove(std::filesystem::path(j->pak).replace_extension(".sig"), ec); j->error = "the pak couldn't be put in place"; return false; }
+    if (files.empty() && files2.empty() && share_files.empty()) { j->error = "nothing to bake"; return false; }
+    auto put = [&](const std::filesystem::path& pak, const std::vector<bake::PakFile>& fl) {
+      std::string why;
+      std::error_code ec;
+      std::filesystem::create_directories(pak.parent_path(), ec);
+      const std::filesystem::path tmp = std::filesystem::path(pak).replace_extension(".tmp");  // (renamed to .pak only once whole and checked)
+      if (!bake::writePak(tmp.wstring(), fl, why) || !bake::checkPak(tmp.wstring(), fl, why)) {
+        std::filesystem::remove(tmp, ec);
+        j->error = "the pak: " + why;
+        return false;
+      }
+      std::filesystem::copy_file(j->sig, std::filesystem::path(pak).replace_extension(".sig"), std::filesystem::copy_options::overwrite_existing, ec);
+      if (ec) { std::filesystem::remove(tmp, ec); j->error = "the game's .sig couldn't be copied"; return false; }
+      std::filesystem::rename(tmp, pak, ec);
+      if (ec) { std::filesystem::remove(tmp, ec); std::filesystem::remove(std::filesystem::path(pak).replace_extension(".sig"), ec); j->error = "the pak couldn't be put in place"; return false; }
+      return true;
+    };
+    auto undo = [&]() {
+      std::error_code ec;
+      if (j->wrote2) { std::filesystem::remove(j->pak2, ec); std::filesystem::remove(std::filesystem::path(j->pak2).replace_extension(".sig"), ec); j->wrote2 = false; }
+      for (auto& [scope, s] : j->shared)
+        if (s.wrote) { std::filesystem::remove(s.pak, ec); std::filesystem::remove(std::filesystem::path(s.pak).replace_extension(".sig"), ec); s.wrote = false; }
+    };
+    if (!files2.empty()) {
+      if (j->pak2.empty()) { j->error = "the weapon skin's pak has no name"; return false; }
+      if (!put(j->pak2, files2)) return false;
+      j->wrote2 = true;
+    }
+    for (auto& [scope, fl] : share_files) {
+      BakeShared& s = j->shared[scope];
+      if (s.pak.empty()) { j->error = "the shared files' pak has no name"; undo(); return false; }
+      if (!put(s.pak, fl)) { undo(); return false; }
+      s.wrote = true;
+    }
+    if (!files.empty()) {
+      if (!put(j->pak, files)) { undo(); return false; }
+      j->wrote1 = true;
+    }
     return true;
   }
 
+  std::vector<std::string> bakeHeld(const BakeJob& j) {
+    std::vector<std::string> out;
+    auto add = [&](UObject* mic) {
+      if (!mic) return;
+      const std::string p = packageOf(mic);
+      if (std::none_of(j.changed.begin(), j.changed.end(), [&](const std::string& c) { return _stricmp(c.c_str(), p.c_str()) == 0; })) return;
+      const std::string n = p.substr(p.rfind('/') + 1);
+      if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    };
+    for (const auto& [mic, mid] : g_mat_mid) if (mid) add(mic);
+    for (UObject* m : g_mat_retired) add(parentOf(m));
+    return out;
+  }
   int bakeOrder() {  // Each bake mounts above every earlier one (and above every ~mods pak: those are 3 or 103)
     int n = 1000;
     for (const std::string& l : readLines(bakedDir() / "order.txt")) n = (std::max)(n, std::atoi(l.c_str()));
@@ -5907,6 +7990,18 @@ namespace {
     return n + 1;
   }
 
+  bool isMaterialFile(const std::string& pkg) {
+    bake::Bytes a;
+    if (!pak_mount::readFile(gameFile(pkg, ".uasset"), a) || a.empty()) return false;
+    bake::Package p;
+    std::string why;
+    const bake::Bytes tag{0xC1, 0x83, 0x2A, 0x9E};
+    if (!p.parse(a, tag, why) || p.exports.size() != 1) return false;
+    int32_t ci = 0;
+    std::memcpy(&ci, p.exports[0].data(), 4);
+    if (ci >= 0 || static_cast<size_t>(-ci - 1) >= p.imports.size()) return false;
+    return p.name(p.imports[static_cast<size_t>(-ci - 1)][5]) == "MaterialInstanceConstant";
+  }
   // The slot folder's material files, as the game ships them (game thread)
   bool bakeReadFolder(BakeJob& j, const std::string& slot, std::string& err) {
     const std::wstring dir = materialDir(j.chr, j.color);
@@ -5915,17 +8010,214 @@ namespace {
     for (const std::wstring& f : files) {
       const std::string n = narrow(f);
       const size_t slash = n.rfind('/');
-      if (slash == std::string::npos || n.size() < 7 || n.compare(n.size() - 7, 7, ".uasset") != 0 || n.compare(slash + 1, 3, "MI_") != 0) continue;
+      if (slash == std::string::npos || n.size() < 7 || n.compare(n.size() - 7, 7, ".uasset") != 0) continue;
       if (n.find("/SL_baked/") != std::string::npos) continue;
       BakeMic m;
       m.path = j.slot_dir + "/" + n.substr(slash + 1, n.size() - 7 - slash - 1);
+      const bool named = n.compare(slash + 1, 3, "MI_") == 0;
+      if (!named && !isMaterialFile(m.path)) continue;
       if (!gameOriginal(slot, m.path, ".uasset", m.uasset) || !gameOriginal(slot, m.path, ".uexp", m.uexp)) {
+        if (!named) { j.notes.push_back(m.path.substr(m.path.rfind('/') + 1) + ": the game's own file isn't known, so its values aren't baked"); continue; }
         err = "the game's own " + m.path.substr(m.path.rfind('/') + 1) + " isn't known";
         return false;
       }
+      if (!named) COMBO_LOG("bake: " + m.path.substr(m.path.rfind('/') + 1) + " is a material of the slot's folder too (not named MI_)");
       j.mics.push_back(std::move(m));
     }
+    std::map<std::string, std::map<std::string, std::string>> owners;
+    for (BakeMic& m : j.mics) {
+      const std::string scope = shareScope(m.path);
+      auto l = owners.find(scope);
+      if (l == owners.end()) {
+        std::map<std::string, std::string> names;
+        bool stale = false;
+        {
+          std::lock_guard<std::mutex> lk(g_bake_stale_m);
+          stale = g_bake_stale.count(scope + "_" + kAllColors) > 0;
+        }
+        const std::filesystem::path pak = stale ? std::filesystem::path() : latestPak(scope + "_" + kAllColors);
+        const std::filesystem::path manifest = pak.empty() ? std::filesystem::path() : std::filesystem::path(pak).replace_extension(".txt");
+        if (!pak.empty() && !unbaked(manifest))
+          for (const std::string& line : readLines(manifest)) {
+            const size_t t2 = line.size() > 6 ? line.find('\t', 6) : std::string::npos;
+            if (line.rfind("owner\t", 0) == 0 && t2 != std::string::npos) names[line.substr(6, t2 - 6)] = line.substr(t2 + 1);
+          }
+        l = owners.emplace(scope, std::move(names)).first;
+      }
+      const auto o = l->second.find(pakName(m.path, ".uasset"));
+      if (o == l->second.end()) continue;
+      const size_t slash = o->second.find('/');
+      std::string who = slash == std::string::npos ? o->second : slotLabel(o->second.substr(slash + 1, 7));
+      m.in_all = scope + " " + slotLabel(kAllColors) + " (baked from " + who + ")";
+    }
     return true;
+  }
+  std::filesystem::path bakeMapFile(const std::string& chr);
+  bool bakeReadEquip(BakeJob& j, std::string& err) {
+    const std::wstring dir = materialDir(j.equip_chr, "Color01");
+    const std::string slot = j.equip_chr + "/Color01";
+    std::vector<std::wstring> files;
+    if (!pak_mount::listDir(L"../../../RED/Content/" + dir.substr(6), files) || files.empty()) { err = "its folder couldn't be listed"; return false; }
+    std::vector<BakeMic> got;
+    for (const std::wstring& f : files) {
+      const std::string n = narrow(f);
+      const size_t slash = n.rfind('/');
+      if (slash == std::string::npos || n.size() < 7 || n.compare(n.size() - 7, 7, ".uasset") != 0) continue;
+      if (n.find("/SL_baked/") != std::string::npos) continue;
+      BakeMic m;
+      m.equip = true;
+      m.path = j.equip_dir + "/" + n.substr(slash + 1, n.size() - 7 - slash - 1);
+      const bool named = n.compare(slash + 1, 3, "MI_") == 0;
+      if (!named && !isMaterialFile(m.path)) continue;
+      if (!gameOriginal(slot, m.path, ".uasset", m.uasset) || !gameOriginal(slot, m.path, ".uexp", m.uexp)) {
+        if (!named) { j.notes.push_back(m.path.substr(m.path.rfind('/') + 1) + ": the game's own file isn't known, so its values aren't baked"); continue; }
+        err = "the game's own " + m.path.substr(m.path.rfind('/') + 1) + " isn't known";
+        return false;
+      }
+      got.push_back(std::move(m));
+    }
+    for (BakeMic& m : got) j.mics.push_back(std::move(m));
+    return true;
+  }
+  bool matDefaultOf(const std::string& chr, const std::string& color, const std::string& name, const std::string& param, float out[4]) {
+    const std::string head = "matc\t" + color + "\t" + name + "\t" + param + "\t";
+    for (const std::string& l : readLines(bakeMapFile(chr))) {
+      if (l.rfind(head, 0) != 0) continue;
+      std::istringstream v(l.substr(head.size()));
+      if (v >> out[0] >> out[1] >> out[2] >> out[3]) return true;
+    }
+    return false;
+  }
+  void writeBakeMap(const std::string& chr, const std::vector<std::string>& keep) {
+    std::error_code ec;
+    const std::filesystem::path file = bakeMapFile(chr), tmp = withSuffix(file, ".new");
+    std::filesystem::create_directories(file.parent_path(), ec);
+    bool ok;
+    {
+      std::ofstream f(tmp, std::ios::trunc);
+      f << "# StriveLabs: what each part of " << chr << " is drawn from, for baking (written when the editor has it open)\n";
+      for (const std::string& l : keep) if (!l.empty() && l[0] != '#') f << l << "\n";
+      f.flush();
+      ok = f.good();
+    }
+    if (ok) std::filesystem::rename(tmp, file, ec);
+    else std::filesystem::remove(tmp, ec);
+  }
+  void recordMatDefault(const std::string& chr, const std::string& color, const std::string& name, const std::string& param, const float v[4]) {
+    const std::string head = "matc\t" + color + "\t" + name + "\t" + param + "\t";
+    char b[96];
+    snprintf(b, sizeof b, "%.9g %.9g %.9g %.9g", v[0], v[1], v[2], v[3]);
+    std::vector<std::string> keep;
+    for (const std::string& l : readLines(bakeMapFile(chr))) {
+      if (l.rfind(head, 0) != 0) { keep.push_back(l); continue; }
+      if (l == head + b) return;
+    }
+    keep.push_back(head + b);
+    writeBakeMap(chr, keep);
+  }
+  void bakePaletteLabels(BakeJob& j, const std::string& slot) {
+    if (!j.palette.empty()) return;
+    BakeMic p;
+    const std::string path = j.slot_dir + "/PTCColorAndMaterial";
+    bake::Package pk;
+    std::string why;
+    std::vector<std::pair<std::string, std::vector<float>>> vals;
+    if (gameOriginal(slot, path, ".uasset", p.uasset) && gameOriginal(slot, path, ".uexp", p.uexp) && pk.parse(p.uasset, p.uexp, why) && bake::effectColorValues(pk, vals, why))
+      for (const auto& [l, v] : vals) j.palette.insert(l);
+  }
+  void bakeAddMatColors(BakeJob& j, const std::string& slot) {
+    for (const std::string& l : readLines(capFile(slot))) {
+      const size_t t1 = l.find('\t'), t2 = t1 == std::string::npos ? t1 : l.find('\t', t1 + 1);
+      if (t2 == std::string::npos) continue;
+      float rgb[3] = {};
+      std::istringstream in(l.substr(t2 + 1));
+      if (!(in >> rgb[0] >> rgb[1] >> rgb[2])) continue;
+      const std::string path = l.substr(0, t1);
+      const size_t slash = path.rfind('/'), dot = path.rfind('.');
+      if (slash == std::string::npos || dot == std::string::npos || dot < slash) { j.notes.push_back("captured effect color " + path + ": not a path to an object"); continue; }
+      const std::string pkg = path.substr(0, dot), name = pkg.substr(slash + 1);
+      std::string why;
+      if (l[t1 + 1] != '@') {
+        const int index = std::atoi(l.c_str() + t1 + 1);
+        BakeMod md;
+        md.ps = pkg;
+        md.emitter = index / 100;
+        md.module = index % 100;
+        md.label = "emitter " + std::to_string(md.emitter + 1) + ", module " + std::to_string(md.module + 1);
+        std::memcpy(md.rgb, rgb, sizeof md.rgb);
+        if (!bakeShare(j, pkg, why)) { j.notes.push_back("captured effect color " + name + " " + md.label + ": " + why); continue; }
+        j.shared[shareScope(pkg)].labels.push_back("Captured colors of " + name);
+        j.mods.push_back(md);
+        bakePaletteLabels(j, slot);
+        continue;
+      }
+      const std::string param = l.substr(t1 + 2, t2 - t1 - 2);
+      const bool own = pkg == j.slot_dir + "/" + name;
+      float orig[4] = {};
+      if (bakeFileVector(j, pkg, param, orig)) {
+      } else if (own) {
+        UObject* mic = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, wide(path).c_str());
+        const bool baked = g_baked_slots.count(slot) != 0;
+        if (baked && matDefaultOf(j.chr, j.color, name, param, orig)) {
+        } else if (isMatInstance(mic) && vecDefault(mic, param, orig)) {
+          if (!baked) recordMatDefault(j.chr, j.color, name, param, orig);
+        } else if (!matDefaultOf(j.chr, j.color, name, param, orig)) {
+          j.notes.push_back(name + " " + param + ": the game's own value isn't known yet (bake this color once with the character on stage)");
+          continue;
+        }
+      } else {
+        j.notes.push_back(name + " " + param + ": the game's own value isn't in its file or its parents' (only its base material has it)");
+        continue;
+      }
+      if (!own) {
+        if (!bakeShare(j, pkg, why)) { j.notes.push_back(name + " " + param + ": " + why); continue; }
+        j.shared[shareScope(pkg)].labels.push_back("Effect color " + param + " on " + name);
+      }
+      const std::vector<float> v = ratioed(std::vector<float>{orig[0], orig[1], orig[2]}, rgb);
+      BakeVec bv{pkg, param, "Effect color " + param, {v[0], v[1], v[2], orig[3]}};
+      if (std::none_of(j.vecs.begin(), j.vecs.end(), [&](const BakeVec& x) { return x.mic == bv.mic && x.param == bv.param; })) j.vecs.push_back(bv);
+    }
+  }
+  std::string effectPackage(const std::string& chr, const std::string& effect);
+  bool gatherPart(const Target& o, ExportPart& p);
+  void bakeAddPowered(BakeJob& j, Target x, const std::string paths[2], std::map<std::string, std::string>& texs_taken, const std::map<std::string, std::string>& copies) {
+    const std::string label = partLabel(x.chr, x.kind) + ", " + lookName(x.chr);
+    x.kind += kPoweredTail;
+    x.look_p = false;
+    std::error_code ec;
+    BakePart bp;
+    bp.kind = x.kind;
+    if (!gatherPart(x, bp.gather)) {
+      if (std::filesystem::exists(editsFile(x), ec) || std::filesystem::exists(paintFile(x), ec)) j.notes.push_back(label + ": not ready (open its Powered up look once in the editor)");
+      return;
+    }
+    const bool edited = std::any_of(bp.gather.ed.begin(), bp.gather.ed.end(), [](const Edit& e) { return e.has_lit || e.has_shadow; }) ||
+                        (bp.gather.paint && !bp.gather.paint->empty());
+    if (!edited) return;
+    for (int m = 0; m < 2; m++) {
+      BakeTex bt;
+      bt.base = m == 0;
+      bt.path = paths[m];
+      if (bt.path.empty()) {
+        if (bt.base) { j.notes.push_back(label + ": its textures weren't found on its material"); return; }
+        continue;
+      }
+      if (bt.path.find("/SL_baked/") != std::string::npos) {
+        auto c = copies.find(bt.path);
+        if (c == copies.end()) { j.notes.push_back(label + ": wears a bake whose record is gone"); return; }
+        bt.path = c->second;
+      }
+      if (auto taken = texs_taken.find(bt.path); taken != texs_taken.end()) {
+        j.notes.push_back(label + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
+        continue;
+      }
+      if (bt.path.rfind("/Game/", 0) != 0 || !pak_mount::readFile(gameFile(bt.path, ".uasset"), bt.tex.uasset) ||
+          !pak_mount::readFile(gameFile(bt.path, ".uexp"), bt.tex.uexp)) { j.notes.push_back(label + ": its textures couldn't be read"); return; }
+      texs_taken[bt.path] = label;
+      pak_mount::readFile(gameFile(bt.path, ".ubulk"), bt.tex.ubulk);
+      bp.texs.push_back(std::move(bt));
+    }
+    if (!bp.texs.empty()) j.parts.push_back(std::move(bp));
   }
   // The saved effect colors ("label<TAB>r g b"); "label@effect" is an effect's own, in an effect every slot uses
   void bakeAddFx(BakeJob& j, const std::string& slot) {
@@ -5936,21 +8228,115 @@ namespace {
       BakeFx f{label, {}};
       std::istringstream v(l.substr(tab + 1));
       if (!(v >> f.rgb[0] >> f.rgb[1] >> f.rgb[2])) continue;
-      if (label.find('@') != std::string::npos) { j.notes.push_back("effect color " + label + ": in an effect every color of the character shares, so it isn't baked"); continue; }
+      if (const size_t at = label.find('@'); at != std::string::npos) {
+        BakeFxOwn fo;
+        fo.label = label.substr(0, at);
+        fo.effect = label.substr(at + 1);
+        std::memcpy(fo.rgb, f.rgb, sizeof fo.rgb);
+        fo.ps = effectPackage(j.chr, fo.effect);
+        std::string why;
+        if (fo.ps.empty()) { j.notes.push_back("effect color " + label + ": which file " + fo.effect + " is isn't known yet (open this color's Effect colors once while it has played)"); continue; }
+        if (!bakeShare(j, fo.ps, why)) { j.notes.push_back("effect color " + label + ": " + why); continue; }
+        j.shared[shareScope(fo.ps)].labels.push_back("Effect color " + label);
+        j.fx_own.push_back(fo);
+        continue;
+      }
       j.fx.push_back(f);
       // (Effects whose modules hold this color's values take it from the slot's palette when they load, e.g. Tyrant Rave,
       // Volcanic Viper's ash and Heavy Mob Cemetery)
     }
-    std::error_code fec;
-    if (std::filesystem::exists(capFile(slot), fec))
-      j.notes.push_back("captured effect colors: shared by every color of the character, so they stay training-only");
-    if (!j.fx.empty()) {
+    bakeAddMatColors(j, slot);
+    if (!j.fx.empty() || !j.fx_own.empty()) {
       j.ptc.path = j.slot_dir + "/PTCColorAndMaterial";
       if (!gameOriginal(slot, j.ptc.path, ".uasset", j.ptc.uasset) || !gameOriginal(slot, j.ptc.path, ".uexp", j.ptc.uexp)) {
         j.notes.push_back("effect colors: the game's own palette isn't known");
         j.fx.clear();
+        j.fx_own.clear();
       }
     }
+    if (!j.fx_own.empty()) {
+      j.ptc01.path = narrow(materialDir(j.chr, "Color01")) + "/PTCColorAndMaterial";
+      const std::string s01 = j.chr + "/Color01";
+      if (j.color == "Color01") j.ptc01 = j.ptc;
+      else if (!gameOriginal(s01, j.ptc01.path, ".uasset", j.ptc01.uasset) || !gameOriginal(s01, j.ptc01.path, ".uexp", j.ptc01.uexp)) j.ptc01 = BakeMic{};
+    }
+  }
+  bool unbaked(const std::filesystem::path& manifest);
+  std::filesystem::path latestPak(const std::string& stem) {
+    std::vector<std::string> stems;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec))
+      if (e.path().extension() == ".pak" && std::filesystem::exists(std::filesystem::path(e.path()).replace_extension(".sig"), ec)) stems.push_back(e.path().stem().string());
+    const std::string best = bake::newestPak(stems, stem);
+    return best.empty() ? std::filesystem::path() : bakedDir() / (best + ".pak");
+  }
+  template <class Gone> void bakeEraseVecs(BakeJob& j, Gone gone) {
+    const size_t none = static_cast<size_t>(-1);
+    std::vector<size_t> to(j.vecs.size(), none);
+    size_t n = 0;
+    for (size_t i = 0; i < j.vecs.size(); i++) if (!gone(j.vecs[i])) to[i] = n++;
+    j.pics.erase(std::remove_if(j.pics.begin(), j.pics.end(), [&](const BakePic& p) { return p.vec >= to.size() || to[p.vec] == none; }), j.pics.end());
+    for (BakePic& p : j.pics) p.vec = to[p.vec];
+    j.vecs.erase(std::remove_if(j.vecs.begin(), j.vecs.end(), gone), j.vecs.end());
+  }
+  void bakeDropScope(BakeJob& j, const std::string& scope, const std::string& why) {
+    std::set<std::string> gone;
+    for (const BakeMic& m : j.mics) if (m.shared == scope) gone.insert(m.path);
+    j.mics.erase(std::remove_if(j.mics.begin(), j.mics.end(), [&](const BakeMic& m) { return m.shared == scope; }), j.mics.end());
+    bakeEraseVecs(j, [&](const BakeVec& v) { return gone.count(v.mic) > 0; });
+    j.mods.erase(std::remove_if(j.mods.begin(), j.mods.end(), [&](const BakeMod& v) { return gone.count(v.ps) > 0; }), j.mods.end());
+    j.fx_own.erase(std::remove_if(j.fx_own.begin(), j.fx_own.end(), [&](const BakeFxOwn& v) { return gone.count(v.ps) > 0; }), j.fx_own.end());
+    j.decals.erase(std::remove_if(j.decals.begin(), j.decals.end(), [&](const BakeDecal& d) { return d.shared == scope; }), j.decals.end());
+    j.notes.push_back(scope + " " + slotLabel(kAllColors) + ": " + why + ", so its shared files aren't baked this time");
+    j.shared.erase(scope);
+  }
+  void bakeShareCarry(BakeJob& j) {
+    const std::string me = bake::shareOwner(j.chr, j.color, j.only);
+    std::error_code ec;
+    std::set<std::string> scopes;
+    for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec)) {
+      const std::string s = e.path().stem().string();
+      const size_t at = s.find("_" + kAllColors + "_");
+      if (e.path().extension() == ".pak" && at != std::string::npos && at > 0) scopes.insert(s.substr(0, at));
+    }
+    for (const std::string& scope : scopes) {
+      if (j.shared.count(scope)) continue;
+      const std::filesystem::path pak = latestPak(scope + "_" + kAllColors);
+      if (!pak.empty() && !bake::shareMine(readLines(std::filesystem::path(pak).replace_extension(".txt")), me).empty()) j.shared[scope];
+    }
+    std::vector<std::pair<std::string, std::string>> broken;
+    for (auto& [scope, s] : j.shared) {
+      const std::filesystem::path pak = latestPak(scope + "_" + kAllColors);
+      if (pak.empty()) continue;
+      const std::filesystem::path manifest = std::filesystem::path(pak).replace_extension(".txt");
+      if (unbaked(manifest)) continue;
+      const std::vector<std::string> lines = readLines(manifest);
+      bool stale = false;
+      {
+        std::lock_guard<std::mutex> lk(g_bake_stale_m);
+        stale = g_bake_stale.count(scope + "_" + kAllColors) > 0;
+      }
+      if (stale) {
+        std::string who;
+        for (const std::string& o : bake::shareOthers(lines, me)) who += (who.empty() ? "" : ", ") + o;
+        if (!who.empty())
+          j.notes.push_back(scope + " " + slotLabel(kAllColors) + ": its last bake is from before a game update, so what " + who +
+                            " baked into it is gone with it (bake those again)");
+        continue;
+      }
+      s.prev = pak;
+      s.prev_manifest = lines;
+      for (const std::string& name : bake::shareMine(lines, me)) {
+        if (name.rfind("RED/Content/", 0) != 0) continue;
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos || dot < 12) continue;
+        const std::string pkg = "/Game/" + name.substr(12, dot - 12), ext = name.substr(dot);
+        bake::PakFile b{name, {}};
+        if (!gameOriginal(scope + "/" + kAllColors, pkg, ext.c_str(), b.data)) { broken.push_back({scope, "the game's own " + pkg.substr(pkg.rfind('/') + 1) + " isn't known"}); break; }
+        s.back.push_back(std::move(b));
+      }
+    }
+    for (const auto& [scope, why] : broken) bakeDropScope(j, scope, why);
   }
   // The job onto a worker (it becomes g_bake); false if there's no thread
   bool bakeLaunch(std::unique_ptr<BakeJob> j) {
@@ -5959,6 +8345,12 @@ namespace {
     j->sig = (std::filesystem::path(exe).parent_path().parent_path().parent_path() / "Content" / "Paks" / "pakchunk0-WindowsNoEditor.sig").wstring();
     const int order = bakeOrder();
     j->pak = bakedDir() / (j->chr + "_" + j->color + "_" + std::to_string(order) + ".pak");
+    if (!j->equip_chr.empty()) j->pak2 = bakedDir() / (j->equip_chr + "_Color01_" + std::to_string(order + 1) + ".pak");
+    try { bakeShareCarry(*j); } catch (...) { for (auto it = j->shared.begin(); it != j->shared.end();) { const std::string sc = it->first; ++it; bakeDropScope(*j, sc, "its last bake couldn't be read"); } }
+    {
+      int k = order + 2;
+      for (auto& [scope, s] : j->shared) { s.order = k; s.pak = bakedDir() / (scope + "_" + kAllColors + "_" + std::to_string(k) + ".pak"); k++; }
+    }
     g_encoding++;
     try { j->job = std::async(std::launch::async, bakeWorker, j.get()); }
     catch (...) { g_encoding--; return false; }
@@ -5973,7 +8365,7 @@ namespace {
   void bakeStart(const Target& t) {  // Game thread
     if (g_bake || g_export || g_encoding != 0) { g_status = "Busy with an export, bake or picture. Try again in a moment."; return; }
     if (!pak_mount::found()) { g_status = "Can't bake: the game's pak mount wasn't found (see combo_log.txt)."; return; }
-    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved) { g_status = "Save first: the bake takes the saved recolor."; return; }
+    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved || g_cap_unsaved || !g_cap_restore.empty()) { g_status = "Save first: the bake takes the saved recolor."; return; }
     const ULONGLONG t0 = GetTickCount64();
     const std::string slot = t.chr + "/" + t.color;
     auto j = std::make_unique<BakeJob>();
@@ -5989,61 +8381,120 @@ namespace {
     std::set<std::string> kinds;
     std::map<std::string, std::string> texs_taken;  // game texture -> the part it's baked from
     const std::map<std::string, std::string> copies = bakedCopies(t.chr, t.color);
+    std::map<std::string, std::string> equip_copies;
     for (const Target& o : g_targets) {
       if (o.chr != t.chr || o.color != t.color || !kinds.insert(o.kind).second) continue;
       BakePart bp;
       bp.kind = o.kind;
-      if (!gatherPart(o, bp.gather)) { j->notes.push_back(partName(o.kind) + ": not ready (open it once)"); continue; }
-      const bool edited = std::any_of(bp.gather.ed.begin(), bp.gather.ed.end(), [](const Edit& e) { return e.has_lit || e.has_shadow; }) ||
-                          (bp.gather.paint && !bp.gather.paint->empty());
-      if (!edited) continue;
+      bp.equip = !equipOf(o.kind).empty();
+      const std::string echr = bp.equip ? codeOf(o.chr) + "_E" + equipOf(o.kind) : std::string();
+      if (bp.equip && !j->equip_chr.empty() && j->equip_chr != echr) {
+        j->notes.push_back(partLabel(o.chr, o.kind) + ": another weapon skin is baked with this slot (bake again with only this one equipped)");
+        continue;
+      }
+      const auto setupEquip = [&]() {
+        if (!j->equip_chr.empty()) return true;
+        j->equip_chr = echr;
+        j->equip_dir = narrow(materialDir(j->equip_chr, "Color01"));
+        j->equip_label = partLabel(o.chr, o.kind);
+        equip_copies = bakedCopies(j->equip_chr, "Color01");
+        std::string err;
+        if (bakeReadEquip(*j, err)) return true;
+        j->notes.push_back(j->equip_label + ": " + err);
+        j->equip_chr.clear();
+        j->equip_dir.clear();
+        return false;
+      };
+      const std::vector<VecGroup> rows = g_vecs_for == partKey(o) ? g_vecs : vecsOf(o);
+      const auto addVecs = [&]() {
+        for (const VecGroup& g : rows) {
+          if (!g.edited) continue;
+          for (size_t i = 0; i < g.mids.size(); i++) {
+            UObject* m = g.mids[i];
+            UObject* src = isDynamic(m) ? parentOf(m) : m;
+            if (g.label == kDecalLabel) {
+              auto d = g_decal_of.find(m);
+              if (d == g_decal_of.end() || !d->second.first) { j->notes.push_back(partLabel(o.chr, o.kind) + ": " + kDecalLabel + ": its decal texture wasn't found"); continue; }
+              bakeAddDecal(*j, o.kind, partLabel(o.chr, o.kind) + " " + kDecalLabel, packageOf(d->second.first), packageOf(src), g.cur);
+              continue;
+            }
+            if (isPicture(g.paramOf(i))) {
+              auto s = g_pic_live.find({m, g.paramOf(i).substr(1)});
+              bakeAddPicture(*j, g.label, s == g_pic_live.end() ? packageOf(src) : s->second.mic_pkg, g.paramOf(i).substr(1), g.cur);
+              continue;
+            }
+            bakeAddVec(*j, g.label, packageOf(src), g.paramOf(i), g.cur);
+          }
+        }
+        if (std::none_of(rows.begin(), rows.end(), [](const VecGroup& g) { return g.label == kDecalLabel; })) {
+          std::map<std::string, std::array<float, 4>> saved;
+          for (const std::string& l : readLines(editsFile(o))) readVecLine(l, saved);
+          if (auto d = saved.find(kDecalLabel); d != saved.end() &&
+              !bakeMapDecals(*j, o.kind, bp.equip ? j->equip_dir : j->slot_dir, partLabel(o.chr, o.kind) + " " + kDecalLabel, d->second.data()))
+            j->notes.push_back(partLabel(o.chr, o.kind) + " " + kDecalLabel + ": show " + partLabel(o.chr, o.kind) + " once in the editor (its decal isn't known yet)");
+        }
+      };
+      const bool ready = gatherPart(o, bp.gather);
+      const bool edited = ready && (std::any_of(bp.gather.ed.begin(), bp.gather.ed.end(), [](const Edit& e) { return e.has_lit || e.has_shadow; }) ||
+                                    (bp.gather.paint && !bp.gather.paint->empty()));
+      if (!edited) {
+        if (!ready && !o.no_part) j->notes.push_back(partLabel(o.chr, o.kind) + ": not ready (open it once)");
+        const bool any_row = std::any_of(rows.begin(), rows.end(), [](const VecGroup& g) { return g.edited; }) || [&]() {
+          std::map<std::string, std::array<float, 4>> saved;
+          for (const std::string& l : readLines(editsFile(o))) readVecLine(l, saved);
+          return saved.count(kDecalLabel) > 0;
+        }();
+        if (bp.equip && any_row && !setupEquip()) continue;
+        addVecs();
+        continue;
+      }
+      if (bp.equip && !setupEquip()) continue;
       std::string n, k;
       UObject* mic = o.mids.empty() ? nullptr : colorSource(o.mids.front(), n, k);
-      if (!mic) { j->notes.push_back(partName(o.kind) + ": its color material wasn't found"); continue; }
-      bool ok = true;
+      if (!mic) { j->notes.push_back(partLabel(o.chr, o.kind) + ": its color material wasn't found"); continue; }
+      bool ok = true, said = false;
       for (const char* param : {"BaseMap", "SssMap"}) {
         BakeTex bt;
         bt.base = std::strcmp(param, "BaseMap") == 0;
         bt.path = packageOf(micTexture(mic, param));
         if (bt.path.empty() && !bt.base) continue;  // (a part with no shadow texture of its own)
         if (bt.path.find("/SL_baked/") != std::string::npos) {  // Wearing our last bake: the game texture it came from
-          auto c = copies.find(bt.path);
-          if (c == copies.end()) { j->notes.push_back(partName(o.kind) + ": wears a bake whose record is gone"); ok = false; break; }
+          const auto& known = bp.equip ? equip_copies : copies;
+          auto c = known.find(bt.path);
+          if (c == known.end()) { j->notes.push_back(partLabel(o.chr, o.kind) + " is wearing a baked recolor that StriveLabs has no record of (a bake pak copied into the game's ~mods folder does this): take that pak out, then bake"); said = true; ok = false; break; }
           bt.path = c->second;
         }
         if (auto taken = texs_taken.find(bt.path); taken != texs_taken.end()) {  // Another part (or its other map) is the same texture: baked once, from the first
-          j->notes.push_back(partName(o.kind) + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
+          j->notes.push_back(partLabel(o.chr, o.kind) + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
           continue;
         }
-        texs_taken[bt.path] = partName(o.kind);
+        texs_taken[bt.path] = partLabel(o.chr, o.kind);
         if (bt.path.rfind("/Game/", 0) != 0 || !pak_mount::readFile(gameFile(bt.path, ".uasset"), bt.tex.uasset) ||
             !pak_mount::readFile(gameFile(bt.path, ".uexp"), bt.tex.uexp)) { ok = false; break; }
         pak_mount::readFile(gameFile(bt.path, ".ubulk"), bt.tex.ubulk);  // (none for a small texture)
         bp.texs.push_back(std::move(bt));
       }
-      if (!ok) { j->notes.push_back(partName(o.kind) + ": its textures couldn't be read"); continue; }
-      // its saved material colors, on the slot's own material files
-      const std::vector<VecGroup> rows = g_vecs_for == keyOf(o) ? g_vecs : vecsOf(o);
-      for (const VecGroup& g : rows) {
-        if (!g.edited) continue;
-        if (g.label == kDecalLabel) { j->notes.push_back(partName(o.kind) + ": decal line colors aren't baked (training only)"); continue; }
-        for (size_t i = 0; i < g.mids.size(); i++) {
-          UObject* m = g.mids[i];
-          UObject* src = isDynamic(m) ? parentOf(m) : m;
-          const std::string path = packageOf(src);
-          if (path.rfind(j->slot_dir + "/", 0) != 0 || path.find('/', j->slot_dir.size() + 1) != std::string::npos) {
-            j->notes.push_back(g.label + ": its material isn't in the slot's folder (" + path + ")");
-            continue;
-          }
-          BakeVec v{path, g.paramOf(i), g.label, {}};
-          std::memcpy(v.rgba, g.cur, sizeof v.rgba);
-          if (std::none_of(j->vecs.begin(), j->vecs.end(), [&](const BakeVec& x) { return x.mic == v.mic && x.param == v.param; })) j->vecs.push_back(v);
-        }
-      }
+      if (!ok) { if (!said) j->notes.push_back(partLabel(o.chr, o.kind) + ": its textures couldn't be read"); continue; }
+      addVecs();
       j->parts.push_back(std::move(bp));
     }
+    std::set<std::string> powered_kinds;
+    for (const Target& o : g_targets) {
+      if (o.chr != t.chr || o.color != t.color || !o.powered || o.mids.empty() || !powered_kinds.insert(o.kind).second) continue;
+      std::string pn, pk;
+      UObject* pmic = colorSource(o.mids.front(), pn, pk);
+      if (!pmic) continue;
+      const std::string paths[2] = {packageOf(micTexture(pmic, kSkinParams[0])), packageOf(micTexture(pmic, kSkinParams[1]))};
+      bakeAddPowered(*j, o, paths, texs_taken, copies);
+    }
     bakeAddFx(*j, slot);
-    if (j->parts.empty() && j->vecs.empty() && j->fx.empty()) { g_status = "Nothing to bake: this slot has no saved recolor."; return; }
+    if (j->parts.empty() && j->vecs.empty() && j->fx.empty() && j->decals.empty() && j->mods.empty() && j->fx_own.empty()) {
+      std::string why;
+      for (const std::string& n : j->notes) why += (why.empty() ? "" : "; ") + n;
+      g_status = why.empty() ? std::string("Nothing to bake: this slot has no saved recolor.") : "Nothing was baked. " + why + ".";
+      COMBO_LOG("bake: " + t.chr + " " + t.color + ": nothing to bake" + (why.empty() ? std::string() : ": " + why));
+      return;
+    }
     COMBO_LOG("bake: " + t.chr + " " + t.color + ": read in " + std::to_string(GetTickCount64() - t0) + " ms");
     if (!bakeLaunch(std::move(j))) g_status = "Can't bake: no worker thread.";
   }
@@ -6055,24 +8506,43 @@ namespace {
   //   part<TAB>KIND<TAB>material (its name, if in the slot's folder, else its full path)<TAB>source folder ("" own)
   //   vec<TAB>KIND<TAB>label<TAB>material name<TAB>parameter
   std::filesystem::path bakeMapFile(const std::string& chr) { return g_dir / "cache" / chr / "bake_map.txt"; }
-  std::set<std::string> g_bake_mapped;  // "CHR/KIND" recorded this session
+  std::map<std::string, size_t> g_bake_mapped;  // "CHR/KIND" recorded this session
   void recordBakeMap(const Target& o) {
-    if (o.mids.empty() || g_bake_mapped.count(o.chr + "/" + o.kind)) return;
+    if (o.mids.empty()) return;
+    size_t decals = 0;
+    for (const auto& [dk, d] : g_decals) if (dk.second == partKey(o) && d.tex) decals++;
+    if (auto was = g_bake_mapped.find(o.chr + "/" + o.kind); was != g_bake_mapped.end() && was->second >= decals) return;
     std::string n, k;
     UObject* mic = colorSource(o.mids.front(), n, k);
     if (!mic) return;
+    const bool equip = !equipOf(o.kind).empty();
     const std::string dir = narrow(materialDir(o.chr, o.color)) + "/";
-    auto rel = [&](const std::string& path) { return path.rfind(dir, 0) == 0 && path.find('/', dir.size()) == std::string::npos ? path.substr(dir.size()) : path; };
+    const std::string own = equip ? narrow(materialDir(codeOf(o.chr) + "_E" + equipOf(o.kind), "Color01")) + "/" : dir;
+    auto in = [](const std::string& path, const std::string& d) { return path.rfind(d, 0) == 0 && path.find('/', d.size()) == std::string::npos; };
+    auto rel = [&](const std::string& path) { return in(path, own) ? path.substr(own.size()) : equip && in(path, dir) ? "^" + path.substr(dir.size()) : path; };
     std::vector<std::string> lines;
     lines.push_back("part\t" + o.kind + "\t" + rel(packageOf(mic)) + "\t" + o.src);
-    const std::vector<VecGroup> rows = g_vecs_for == keyOf(o) ? g_vecs : vecsOf(o);
+    const std::vector<VecGroup> rows = g_vecs_for == partKey(o) ? g_vecs : vecsOf(o);
     for (const VecGroup& g : rows) {
       if (g.label == kDecalLabel) continue;
       for (size_t i = 0; i < g.mids.size(); i++) {
         UObject* src = isDynamic(g.mids[i]) ? parentOf(g.mids[i]) : g.mids[i];
-        const std::string r = rel(packageOf(src));
-        if (r.empty() || r[0] == '/') continue;  // (a material outside the slot's folder: not baked anyway)
-        lines.push_back("vec\t" + o.kind + "\t" + g.label + "\t" + r + "\t" + g.paramOf(i));
+        std::string r = rel(packageOf(src));
+        if (isPicture(g.paramOf(i)))
+          if (auto s = g_pic_live.find({g.mids[i], g.paramOf(i).substr(1)}); s != g_pic_live.end()) r = rel(s->second.mic_pkg);
+        if (r.empty()) continue;
+        const std::string line = "vec\t" + o.kind + "\t" + g.label + "\t" + r + "\t" + g.paramOf(i);
+        if (!isPicture(g.paramOf(i)) || std::find(lines.begin(), lines.end(), line) == lines.end()) lines.push_back(line);
+      }
+    }
+    for (const auto& [dk, d] : g_decals) {
+      if (dk.second != partKey(o) || !d.tex) continue;
+      const std::string tex = gameTexture(packageOf(d.tex));
+      if (tex.empty()) continue;
+      for (UObject* m : d.mids) {
+        UObject* src = isDynamic(m) ? parentOf(m) : m;
+        const std::string line = "decal\t" + o.kind + "\t" + rel(tex) + "\t" + rel(packageOf(src));
+        if (src && std::find(lines.begin(), lines.end(), line) == lines.end()) lines.push_back(line);
       }
     }
     // merged into the file: this part's lines replace its old ones
@@ -6082,12 +8552,42 @@ namespace {
       if (b == std::string::npos || l.substr(a + 1, b - a - 1) != o.kind) keep.push_back(l);
     }
     keep.insert(keep.end(), lines.begin(), lines.end());
-    std::error_code ec;
-    std::filesystem::create_directories(bakeMapFile(o.chr).parent_path(), ec);
-    std::ofstream f(bakeMapFile(o.chr), std::ios::trunc);
-    f << "# StriveLabs: what each part of " << o.chr << " is drawn from, for baking (written when the editor has it open)\n";
-    for (const std::string& l : keep) if (!l.empty() && l[0] != '#') f << l << "\n";
-    g_bake_mapped.insert(o.chr + "/" + o.kind);
+    writeBakeMap(o.chr, keep);
+    g_bake_mapped[o.chr + "/" + o.kind] = decals;
+  }
+  std::string effectPackage(const std::string& chr, const std::string& effect) {
+    for (const auto& [slot, s] : g_fx_slots) {
+      if (chrOf(slot) != chr) continue;
+      for (const FxColor& f : s.list)
+        for (const FxCopy& c : f.copies)
+          if (c.effect == effect && c.k.alive())
+            if (UObject* ps = systemOf(c.module)) return packageOf(ps);
+    }
+    const std::string head = "fxe\t" + effect + "\t";
+    for (const std::string& l : readLines(bakeMapFile(chr)))
+      if (l.rfind(head, 0) == 0 && l.size() > head.size()) return l.substr(head.size());
+    return {};
+  }
+  void recordEffectFiles() {
+    static std::set<std::string> said;
+    std::map<std::string, std::map<std::string, std::string>> found;
+    for (const auto& [slot, s] : g_fx_slots)
+      for (const FxColor& f : s.list)
+        for (const FxCopy& c : f.copies) {
+          if (c.named || c.effect.empty() || said.count(chrOf(slot) + "\t" + c.effect) || !c.k.alive()) continue;
+          if (UObject* ps = systemOf(c.module)) found[chrOf(slot)][c.effect] = packageOf(ps);
+        }
+    for (const auto& [chr, effects] : found) {
+      std::vector<std::string> keep;
+      for (const std::string& l : readLines(bakeMapFile(chr))) {
+        const size_t a = l.find('\t'), b = a == std::string::npos ? a : l.find('\t', a + 1);
+        if (l.rfind("fxe\t", 0) == 0 && b != std::string::npos && effects.count(l.substr(a + 1, b - a - 1))) continue;
+        keep.push_back(l);
+      }
+      for (const auto& [e, p] : effects) { keep.push_back("fxe\t" + e + "\t" + p); said.insert(chr + "\t" + e); }
+      std::error_code ec;
+      writeBakeMap(chr, keep);
+    }
   }
 
   // A material file's texture parameters: name -> the texture's package ("/Game/.../SOL_base")
@@ -6120,7 +8620,7 @@ namespace {
   }
 
   // The parts with something saved in a slot's folder of saves ("Color01_MAIN.txt", "Color01_DI_paint.slpn")
-  std::set<std::string> savedKinds(const std::string& chr, const std::string& color) {
+  std::set<std::string> savedKinds(const std::string& chr, const std::string& color, bool powered = false) {
     std::set<std::string> out;
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(g_dir / "saved" / chr, ec)) {
@@ -6130,8 +8630,8 @@ namespace {
       std::string kind;
       if (n.size() > 11 && n.compare(n.size() - 11, 11, "_paint.slpn") == 0) kind = n.substr(0, n.size() - 11);
       else if (n.size() > 4 && n.compare(n.size() - 4, 4, ".txt") == 0) kind = n.substr(0, n.size() - 4);
-      if (kind.empty() || kind == "effects" || kind == "captured") continue;
-      out.insert(kind);
+      if (kind.empty() || kind == "effects" || kind == "captured" || poweredKind(kind) != powered) continue;
+      out.insert(powered ? kind.substr(0, kind.size() - kPoweredTail.size()) : kind);
     }
     return out;
   }
@@ -6141,10 +8641,12 @@ namespace {
   void bakeAddFx(BakeJob& j, const std::string& slot);
 
   // A slot baked from its files and the character's recorded map. nullptr (and why) if it can't be.
-  std::unique_ptr<BakeJob> bakeFromFiles(const std::string& chr, const std::string& color, std::string& err) {
+  std::unique_ptr<BakeJob> bakeFromFiles(const std::string& chr, const std::string& color, std::string& err, const std::string& only = {},
+                                         std::vector<std::string>* later = nullptr) {
     auto j = std::make_unique<BakeJob>();
     j->chr = chr;
     j->color = color;
+    j->only = only;
     j->follow = g_follow;
     j->slot_dir = narrow(materialDir(chr, color));
     const std::string slot = chr + "/" + color;
@@ -6152,49 +8654,109 @@ namespace {
     // the character's map
     std::map<std::string, std::pair<std::string, std::string>> parts;           // kind -> (material, source folder)
     std::map<std::string, std::vector<std::array<std::string, 3>>> vec_map;     // kind -> (label, material, parameter)
+    std::map<std::string, std::vector<std::array<std::string, 2>>> decal_map;
     for (const std::string& l : readLines(bakeMapFile(chr))) {
       std::vector<std::string> f;
       for (size_t a = 0;;) { const size_t b = l.find('\t', a); f.push_back(l.substr(a, b == std::string::npos ? std::string::npos : b - a)); if (b == std::string::npos) break; a = b + 1; }
       if (f.size() >= 3 && f[0] == "part") parts[f[1]] = {f[2], f.size() > 3 ? f[3] : std::string()};
       if (f.size() >= 5 && f[0] == "vec") vec_map[f[1]].push_back({f[2], f[3], f[4]});
+      if (f.size() >= 4 && f[0] == "decal") decal_map[f[1]].push_back({f[2], f[3]});
     }
     const std::map<std::string, std::string> copies = bakedCopies(chr, color);
+    std::map<std::string, std::string> equip_copies;
     std::map<std::string, std::string> texs_taken;
     for (const std::string& kind : savedKinds(chr, color)) {
+      if (!only.empty() && kind != only) continue;
+      const bool equip = !equipOf(kind).empty();
+      bool slot_rows_only = false;
+      std::string base = j->slot_dir;
+      if (equip) {
+        const std::string echr = codeOf(chr) + "_E" + equipOf(kind);
+        if (!j->equip_chr.empty() && j->equip_chr != echr) {
+          if (!later) { j->notes.push_back(partLabel(chr, kind) + ": another weapon skin is baked with this slot"); continue; }
+          later->push_back(kind);
+          slot_rows_only = true;
+          base = narrow(materialDir(echr, "Color01"));
+        } else if (j->equip_chr.empty()) {
+          j->equip_chr = echr;
+          j->equip_dir = narrow(materialDir(echr, "Color01"));
+          j->equip_label = partLabel(chr, kind);
+          equip_copies = bakedCopies(echr, "Color01");
+          std::string e2;
+          if (!bakeReadEquip(*j, e2)) {
+            j->notes.push_back(j->equip_label + ": " + e2);
+            j->equip_chr.clear();
+            j->equip_dir.clear();
+            continue;
+          }
+        }
+        if (!slot_rows_only) base = j->equip_dir;
+      }
+      auto resolve = [&](const std::string& name) {
+        return name.empty() || name[0] == '/' ? name : name[0] == '^' ? j->slot_dir + "/" + name.substr(1) : base + "/" + name;
+      };
+      auto wanted = [&](const std::string& name) {
+        const bool slot_file = !name.empty() && name[0] == '^';
+        return slot_rows_only ? slot_file : !(equip && !only.empty() && slot_file);
+      };
       auto pm = parts.find(kind);
-      if (pm == parts.end()) { j->notes.push_back(partName(kind) + ": open " + chr + " in the editor once (what it's drawn from isn't known yet)"); continue; }
+      if (pm == parts.end()) { j->notes.push_back(partLabel(chr, kind) + ": open " + chr + " in the editor once (what it's drawn from isn't known yet)"); continue; }
       Target o = fromKey(slot + "/" + kind);
       o.src = pm->second.second;
       {  // its saved material colors, through the map (these need nothing read from the editor's cache)
         std::map<std::string, std::array<float, 4>> saved;
-        for (const std::string& l : readLines(editsFile(o))) readVecLine(l, saved);
+        std::map<std::string, VecMeta> metas;
+        for (const std::string& l : readLines(editsFile(o))) { readVecLine(l, saved); readVecMeta(l, metas); }
         for (const auto& [label, rgba] : saved) {
+          if (label == kDecalLabel) {
+            const auto& ds = decal_map[kind];
+            if (ds.empty() && !slot_rows_only) j->notes.push_back(partLabel(chr, kind) + " " + kDecalLabel + ": open " + partLabel(chr, kind) + " once in the editor (its decal isn't known yet)");
+            for (const auto& d : ds)
+              if (wanted(d[1])) bakeAddDecal(*j, kind, partLabel(chr, kind) + " " + kDecalLabel, resolve(d[0]), resolve(d[1]), rgba.data());
+            continue;
+          }
           bool mapped = false;
           for (const auto& v : vec_map[kind]) {
             if (v[0] != label) continue;
             mapped = true;
-            BakeVec bv{j->slot_dir + "/" + v[1], v[2], label, {}};
-            std::memcpy(bv.rgba, rgba.data(), sizeof bv.rgba);
-            if (std::none_of(j->vecs.begin(), j->vecs.end(), [&](const BakeVec& x) { return x.mic == bv.mic && x.param == bv.param; })) j->vecs.push_back(bv);
+            if (!wanted(v[1])) continue;
+            if (isPicture(v[2])) bakeAddPicture(*j, label, resolve(v[1]), v[2].substr(1), rgba.data());
+            else bakeAddVec(*j, label, resolve(v[1]), v[2], rgba.data());
           }
-          if (!mapped) j->notes.push_back(label + ": not in the slot's own materials (or the map is from before it)");
+          if (const auto mt = metas.find(label); !mapped && mt != metas.end()) {
+            auto leaf = [](const std::string& p) { const size_t s = p.find_last_of("/^"); return s == std::string::npos ? p : p.substr(s + 1); };
+            std::set<std::string> rows;
+            for (const auto& v : vec_map[kind])
+              if (!saved.count(v[0]) && mt->second.params.count(v[2]) && mt->second.mats.count(leaf(v[1]))) rows.insert(v[0]);
+            if (rows.size() == 1) {
+              mapped = true;
+              for (const auto& v : vec_map[kind]) {
+                if (v[0] != *rows.begin() || !wanted(v[1])) continue;
+                if (isPicture(v[2])) bakeAddPicture(*j, label, resolve(v[1]), v[2].substr(1), rgba.data());
+                else bakeAddVec(*j, label, resolve(v[1]), v[2], rgba.data());
+              }
+            }
+          }
+          if (!mapped && !slot_rows_only) j->notes.push_back(label + ": not in the map of what " + partLabel(chr, kind) + " is drawn from (open it once in the editor)");
         }
       }
+      if (slot_rows_only) continue;
       BakePart bp;
       bp.kind = kind;
-      if (!gatherPart(o, bp.gather)) { j->notes.push_back(partName(kind) + ": its textures aren't ready (open it once in the editor)"); continue; }
+      bp.equip = equip;
+      if (!gatherPart(o, bp.gather)) { j->notes.push_back(partLabel(chr, kind) + ": its textures aren't ready (open it once in the editor)"); continue; }
       const bool edited = std::any_of(bp.gather.ed.begin(), bp.gather.ed.end(), [](const Edit& e) { return e.has_lit || e.has_shadow; }) ||
                           (bp.gather.paint && !bp.gather.paint->empty());
       // its color material: one of the slot's files, or (another folder's) read as it is
       BakeMic src;
       const std::string& mname = pm->second.first;
-      if (mname.empty()) { j->notes.push_back(partName(kind) + ": its material isn't known yet (open it once in the editor)"); continue; }
+      if (mname.empty()) { j->notes.push_back(partLabel(chr, kind) + ": its material isn't known yet (open it once in the editor)"); continue; }
       if (mname[0] != '/') {
-        auto it = std::find_if(j->mics.begin(), j->mics.end(), [&](const BakeMic& m) { return m.path == j->slot_dir + "/" + mname; });
-        if (it == j->mics.end()) { j->notes.push_back(partName(kind) + ": its material " + mname + " isn't in the slot's folder"); continue; }
+        auto it = std::find_if(j->mics.begin(), j->mics.end(), [&](const BakeMic& m) { return m.path == resolve(mname); });
+        if (it == j->mics.end()) { j->notes.push_back(partLabel(chr, kind) + ": its material " + mname + " isn't in the slot's folder"); continue; }
         src = *it;
       } else if (!pak_mount::readFile(gameFile(mname, ".uasset"), src.uasset) || !pak_mount::readFile(gameFile(mname, ".uexp"), src.uexp)) {
-        j->notes.push_back(partName(kind) + ": its material couldn't be read");
+        j->notes.push_back(partLabel(chr, kind) + ": its material couldn't be read");
         continue;
       }
       if (edited) {
@@ -6207,26 +8769,58 @@ namespace {
           if (tp == texs.end()) { if (bt.base) ok = false; break; }
           bt.path = tp->second;
           if (bt.path.find("/SL_baked/") != std::string::npos) {
-            auto c = copies.find(bt.path);
-            if (c == copies.end()) { ok = false; break; }
+            const auto& known = equip ? equip_copies : copies;
+            auto c = known.find(bt.path);
+            if (c == known.end()) { ok = false; break; }
             bt.path = c->second;
           }
           if (auto taken = texs_taken.find(bt.path); taken != texs_taken.end()) {
-            j->notes.push_back(partName(kind) + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
+            j->notes.push_back(partLabel(chr, kind) + ": " + bt.path.substr(bt.path.rfind('/') + 1) + " is " + taken->second + "'s texture too, baked from " + taken->second + "'s colors");
             continue;
           }
-          texs_taken[bt.path] = partName(kind);
+          texs_taken[bt.path] = partLabel(chr, kind);
           if (bt.path.rfind("/Game/", 0) != 0 || !pak_mount::readFile(gameFile(bt.path, ".uasset"), bt.tex.uasset) ||
               !pak_mount::readFile(gameFile(bt.path, ".uexp"), bt.tex.uexp)) { ok = false; break; }
           pak_mount::readFile(gameFile(bt.path, ".ubulk"), bt.tex.ubulk);
           bp.texs.push_back(std::move(bt));
         }
-        if (!ok) { j->notes.push_back(partName(kind) + ": its textures couldn't be read"); continue; }
+        if (!ok) { j->notes.push_back(partLabel(chr, kind) + ": its textures couldn't be read"); continue; }
       }
       if (edited) j->parts.push_back(std::move(bp));
     }
+    if (!only.empty()) {
+      auto slotOwn = [&](const std::string& mic) { const BakeMic* m = bakeMicOf(*j, mic); return m && !m->equip && m->shared.empty(); };
+      for (const BakeDecal& d : j->decals)
+        if (!d.equip && d.shared.empty()) j->notes.push_back(d.label + ": its texture is set in the slot's own folder (bake the slot with this weapon skin equipped)");
+      j->decals.erase(std::remove_if(j->decals.begin(), j->decals.end(), [&](const BakeDecal& d) { return !d.equip && d.shared.empty(); }), j->decals.end());
+      bakeEraseVecs(*j, [&](const BakeVec& v) { return slotOwn(v.mic); });
+      if (j->parts.empty() && j->vecs.empty() && j->decals.empty()) { err = j->notes.empty() ? "nothing saved to bake" : j->notes.front(); return nullptr; }
+      return j;
+    }
+    for (const std::string& kind : savedKinds(chr, color, true)) {
+      const std::string label = partLabel(chr, kind) + ", " + lookName(chr);
+      auto pm = parts.find(kind);
+      if (pm == parts.end() || pm->second.first.empty()) { j->notes.push_back(label + ": open " + chr + " in the editor once (what it's drawn from isn't known yet)"); continue; }
+      BakeMic src;
+      const std::string& mname = pm->second.first;
+      if (mname[0] != '/') {
+        auto it = std::find_if(j->mics.begin(), j->mics.end(), [&](const BakeMic& m) { return m.path == j->slot_dir + "/" + mname; });
+        if (it == j->mics.end()) { j->notes.push_back(label + ": its material " + mname + " isn't in the slot's folder"); continue; }
+        src = *it;
+      } else if (!pak_mount::readFile(gameFile(mname, ".uasset"), src.uasset) || !pak_mount::readFile(gameFile(mname, ".uexp"), src.uexp)) {
+        j->notes.push_back(label + ": its material couldn't be read");
+        continue;
+      }
+      const auto texs = micTexturesOf(src);
+      std::string paths[2];
+      for (int m = 0; m < 2; m++)
+        if (auto tp = texs.find(kSkinParams[m]); tp != texs.end()) paths[m] = tp->second;
+      Target o = fromKey(slot + "/" + kind);
+      o.src = pm->second.second;
+      bakeAddPowered(*j, o, paths, texs_taken, copies);
+    }
     bakeAddFx(*j, slot);
-    if (j->parts.empty() && j->vecs.empty() && j->fx.empty()) {
+    if (j->parts.empty() && j->vecs.empty() && j->fx.empty() && j->decals.empty() && j->mods.empty() && j->fx_own.empty()) {
       err = j->notes.empty() ? "nothing saved to bake" : j->notes.front();
       return nullptr;
     }
@@ -6236,11 +8830,12 @@ namespace {
   // ---- Bake all: every slot with a save, one after another ----
   std::deque<std::pair<std::string, std::string>> g_bake_queue;
   std::vector<std::string> g_bake_all_ok, g_bake_all_not;
+  std::vector<std::string> g_bake_all_notice;
   bool g_bake_all = false;
   void bakeAllStart(const std::set<std::string>& only) {  // (the slots ticked in the list, "SOL/Color01")
     if (g_bake || g_export || !g_bake_queue.empty()) { g_status = "Busy with an export or bake. Try again in a moment."; return; }
     if (!pak_mount::found()) { g_status = "Can't bake: the game's pak mount wasn't found (see combo_log.txt)."; return; }
-    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved) { g_status = "Save first: the bake takes the saved recolors."; return; }
+    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved || g_cap_unsaved || !g_cap_restore.empty()) { g_status = "Save first: the bake takes the saved recolors."; return; }
     std::error_code ec;
     for (const auto& c : std::filesystem::directory_iterator(g_dir / "saved", ec)) {
       if (!c.is_directory(ec)) continue;
@@ -6252,31 +8847,39 @@ namespace {
           colors.insert(n.substr(0, 7));
       }
       for (const std::string& col : colors)
-        if (only.count(chr + "/" + col) && (!savedKinds(chr, col).empty() || std::filesystem::exists(fxFile(chr, col), ec))) g_bake_queue.push_back({chr, col});
+        if (only.count(chr + "/" + col) && (!savedKinds(chr, col).empty() || !savedKinds(chr, col, true).empty() || std::filesystem::exists(fxFile(chr, col), ec) ||
+                                            std::filesystem::exists(capFile(chr + "/" + col), ec)))
+          g_bake_queue.push_back({chr, col});
     }
     g_bake_all_ok.clear();
     g_bake_all_not.clear();
+    g_bake_all_notice.clear();
     g_bake_all = !g_bake_queue.empty();
     g_status = g_bake_all ? "Baking " + std::to_string(g_bake_queue.size()) + (g_bake_queue.size() == 1 ? " slot..." : " slots...") : "Nothing ticked to bake.";
     COMBO_LOG("bake all: " + std::to_string(g_bake_queue.size()) + " slots");
   }
   void bakeAllTick() {  // (from bakeTick: the next slot once the last one's done)
     if (g_bake || g_bake_queue.empty() || g_encoding != 0) return;
-    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved) {  // (edited meanwhile: the rest would mix in unsaved changes)
-      for (const auto& [c, col] : g_bake_queue) g_bake_all_not.push_back(c + " " + col + ": not baked, there were unsaved changes (save, then bake it)");
+    if (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_vec_unsaved || g_cap_unsaved || !g_cap_restore.empty()) {  // (edited meanwhile: the rest would mix in unsaved changes)
+      for (const auto& [c, col] : g_bake_queue) g_bake_all_not.push_back(c + " " + col.substr(0, col.find('\t')) + ": not baked, there were unsaved changes (save, then bake it)");
       g_bake_queue.clear();
       g_status = "Stopped: save your changes first.";
       return;
     }
-    const auto [chr, color] = g_bake_queue.front();
+    const auto [chr, entry] = g_bake_queue.front();
     g_bake_queue.pop_front();
+    const size_t tab = entry.find('\t');
+    const std::string color = entry.substr(0, tab), only = tab == std::string::npos ? std::string() : entry.substr(tab + 1);
     std::string err;
     std::unique_ptr<BakeJob> j;
-    try { j = bakeFromFiles(chr, color, err); } catch (const std::bad_alloc&) { err = "out of memory"; } catch (...) { if (err.empty()) err = "its files couldn't be read"; }
+    std::vector<std::string> later;
+    try { j = bakeFromFiles(chr, color, err, only, only.empty() ? &later : nullptr); } catch (const std::bad_alloc&) { err = "out of memory"; } catch (...) { if (err.empty()) err = "its files couldn't be read"; }
+    for (auto k = later.rbegin(); k != later.rend(); ++k) g_bake_queue.push_front({chr, color + "\t" + *k});
+    const std::string who = chr + " " + color + (only.empty() ? std::string() : " (" + partLabel(chr, only) + ")");
     if (!j) {
-      g_bake_all_not.push_back(chr + " " + color + ": " + err);
-      COMBO_LOG("bake all: " + chr + " " + color + ": " + err);
-    } else if (!bakeLaunch(std::move(j))) g_bake_all_not.push_back(chr + " " + color + ": no worker thread");
+      g_bake_all_not.push_back(who + ": " + err);
+      COMBO_LOG("bake all: " + who + ": " + err);
+    } else if (!bakeLaunch(std::move(j))) g_bake_all_not.push_back(who + ": no worker thread");
     g_status = "Baking saved slots, " + std::to_string(g_bake_queue.size()) + " left...";
     g_view_dirty = true;
   }
@@ -6357,6 +8960,7 @@ namespace {
     static std::set<std::string> said;
     static int every = 0;
     if (!g_open || ++every % 120) return;
+    try { recordEffectFiles(); } catch (...) {}
     for (const Target& o : g_targets) {
       if (o.mids.empty()) continue;
       try { recordBakeMap(o); } catch (...) {}
@@ -6379,7 +8983,7 @@ namespace {
       g_bake_all = false;
       showBakeResult(g_bake_all_not.empty(), "Baked " + std::to_string(g_bake_all_ok.size()) + (g_bake_all_ok.size() == 1 ? " slot" : " slots") +
                      (g_bake_all_not.empty() ? "." : ", " + std::to_string(g_bake_all_not.size()) + " not.") + " Reload instance to see it.",
-                     g_bake_all_ok, g_bake_all_not);
+                     g_bake_all_ok, g_bake_all_not, [] { std::string n; for (const std::string& s : g_bake_all_notice) n += (n.empty() ? "" : " ") + s; return n; }());
       g_status = "Baked the saved slots (see the result).";
     }
     if (!g_bake || !g_bake->job.valid() || g_bake->job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
@@ -6389,6 +8993,17 @@ namespace {
     std::string notes;
     for (const std::string& n : j.notes) notes += "; " + n;
     if (!ok) {
+      if (!j.pak2.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(j.pak2, ec);
+        std::filesystem::remove(std::filesystem::path(j.pak2).replace_extension(".sig"), ec);
+        std::filesystem::remove(std::filesystem::path(j.pak2).replace_extension(".tmp"), ec);
+      }
+      for (const auto& [scope, s] : j.shared) {
+        if (s.pak.empty()) continue;
+        std::error_code ec;
+        for (const char* ext : {".pak", ".sig", ".tmp"}) std::filesystem::remove(std::filesystem::path(s.pak).replace_extension(ext), ec);
+      }
       g_status = "Not baked (see the result).";
       COMBO_LOG("bake: " + j.chr + " " + j.color + ": failed: " + j.error + notes);
       std::vector<std::string> why = j.notes;
@@ -6399,10 +9014,66 @@ namespace {
       const int order = std::atoi(j.pak.stem().string().substr(j.pak.stem().string().rfind('_') + 1).c_str());
       std::wstring w = j.pak.wstring();
       for (wchar_t& c : w) if (c == L'\\') c = L'/';
-      const bool mounted = pak_mount::mount(w, order);
-      if (mounted) g_baked_slots.insert(j.chr + "/" + j.color);
+      bool mounted = !j.wrote1 || pak_mount::mount(w, order);
+      if (mounted && j.wrote1) g_baked_slots.insert(j.chr + "/" + j.color);
+      if (j.wrote2) {
+        std::wstring w2 = j.pak2.wstring();
+        for (wchar_t& c : w2) if (c == L'\\') c = L'/';
+        const bool mounted2 = pak_mount::mount(w2, order + 1);
+        if (mounted2) g_baked_slots.insert(j.equip_chr + "/Color01");
+        mounted = mounted && mounted2;
+        { std::lock_guard<std::mutex> lk(g_bake_stale_m); g_bake_stale.erase(j.equip_chr + "_Color01"); }
+        std::ofstream m(std::filesystem::path(j.pak2).replace_extension(".txt"), std::ios::trunc);
+        m << "# StriveLabs bake: " << j.equip_chr << " Color01\n";
+        if (const std::string b = gameBuild(); !b.empty()) m << "game\t" << b << "\n";
+        for (const std::string& d : j.done2) m << "baked\t" << d << "\n";
+        for (const auto& [from, to] : j.moved2) m << "moved\t" << from << "\t" << to << "\n";
+        if (!j.wrote1) for (const std::string& n : j.notes) m << "not baked\t" << n << "\n";
+        COMBO_LOG("bake: " + j.equip_chr + " Color01: " + narrow(j.pak2.filename().wstring()) + (mounted2 ? " mounted" : " NOT mounted") + " at " + std::to_string(order + 1));
+      }
+      int top = j.wrote2 ? order + 1 : order;
+      std::vector<std::string> share_done, share_notice;
+      for (const auto& [scope, s] : j.shared) {
+        if (!s.wrote) continue;
+        std::wstring ws = s.pak.wstring();
+        for (wchar_t& c : ws) if (c == L'\\') c = L'/';
+        const bool ms = pak_mount::mount(ws, s.order);
+        if (ms) g_baked_slots.insert(scope + "/" + kAllColors);
+        mounted = mounted && ms;
+        top = (std::max)(top, s.order);
+        bool scope_stale = false;
+        { std::lock_guard<std::mutex> lk(g_bake_stale_m); scope_stale = g_bake_stale.erase(scope + "_" + kAllColors) > 0; }
+        if (scope_stale) {
+          std::error_code ec;
+          const std::string prefix = scope + "_" + kAllColors + "_";
+          std::vector<std::filesystem::path> old;
+          for (const auto& e : std::filesystem::directory_iterator(bakedDir(), ec))
+            if (e.path().extension() == ".pak" && e.path().stem().string().rfind(prefix, 0) == 0 && e.path() != s.pak) old.push_back(e.path());
+          for (const auto& o : old)
+            for (const char* ext : {".pak", ".sig", ".txt"}) std::filesystem::remove(std::filesystem::path(o).replace_extension(ext), ec);
+        }
+        {
+          std::ofstream m(std::filesystem::path(s.pak).replace_extension(".txt"), std::ios::trunc);
+          m << "# StriveLabs bake: " << scope << " " << kAllColors << "\n";
+          if (const std::string b = gameBuild(); !b.empty()) m << "game\t" << b << "\n";
+          for (const std::string& l : s.manifest) m << l << "\n";
+        }
+        COMBO_LOG("bake: " + scope + " " + kAllColors + ": " + narrow(s.pak.filename().wstring()) + (ms ? " mounted" : " NOT mounted") + " at " + std::to_string(s.order) +
+                  " (" + std::to_string(s.done.size()) + " from " + j.chr + " " + j.color + ")");
+        for (const std::string& d : s.done) share_done.push_back(scope + " " + slotLabel(kAllColors) + ": " + d);
+        if (s.done.empty()) continue;
+        std::vector<std::string> labels;
+        for (const std::string& l : s.labels) if (std::find(labels.begin(), labels.end(), l) == labels.end()) labels.push_back(l);
+        std::string what;
+        for (size_t i = 0; i < labels.size() && i < 4; i++) what += (i ? ", " : "") + labels[i];
+        if (labels.size() > 4) what += " and " + std::to_string(labels.size() - 4) + " more";
+        if (what.empty()) what = "Some of it";
+        share_notice.push_back(what + (scope == "Shared" ? " is in files every character can use. This recolor of them shows wherever they're used"
+                                                         : " is in files every color of " + scope + " shares. This recolor of them shows on all of them") +
+                               ", and baking them again from another color replaces it. It's in the baked list as " + scope + " " + slotLabel(kAllColors) + ".");
+      }
       bool was_stale = false;  // (baked again after a game update: the old bake was never put on, so it goes now)
-      { std::lock_guard<std::mutex> lk(g_bake_stale_m); was_stale = g_bake_stale.erase(j.chr + "_" + j.color) > 0; }
+      { std::lock_guard<std::mutex> lk(g_bake_stale_m); was_stale = j.wrote1 && g_bake_stale.erase(j.chr + "_" + j.color) > 0; }
       if (was_stale) {
         std::error_code ec;
         const std::string prefix = j.chr + "_" + j.color + "_";
@@ -6414,28 +9085,55 @@ namespace {
       }
       {
         std::ofstream o(bakedDir() / "order.txt", std::ios::trunc);
-        o << order << "\n";
-        std::ofstream m(std::filesystem::path(j.pak).replace_extension(".txt"), std::ios::trunc);
-        m << "# StriveLabs bake: " << j.chr << " " << j.color << "\n";
-        if (const std::string b = gameBuild(); !b.empty()) m << "game\t" << b << "\n";  // (the game's build it was made on)
-        for (const std::string& d : j.done) m << "baked\t" << d << "\n";
-        for (const auto& [from, to] : j.moved) m << "moved\t" << from << "\t" << to << "\n";
-        for (const std::string& n : j.notes) m << "not baked\t" << n << "\n";
+        o << top << "\n";
+        if (j.wrote1) {
+          std::ofstream m(std::filesystem::path(j.pak).replace_extension(".txt"), std::ios::trunc);
+          m << "# StriveLabs bake: " << j.chr << " " << j.color << "\n";
+          if (const std::string b = gameBuild(); !b.empty()) m << "game\t" << b << "\n";  // (the game's build it was made on)
+          for (const std::string& d : j.done) m << "baked\t" << d << "\n";
+          for (const auto& [from, to] : j.moved) m << "moved\t" << from << "\t" << to << "\n";
+          for (const std::string& n : j.notes) m << "not baked\t" << n << "\n";
+        }
       }
       std::string list;
       for (size_t i = 0; i < j.done.size(); i++) list += (i ? ", " : "") + j.done[i];
-      COMBO_LOG("bake: " + j.chr + " " + j.color + ": " + narrow(j.pak.filename().wstring()) + (mounted ? " mounted" : " NOT mounted") + " at " +
-                std::to_string(order) + ": " + list + notes);
+      COMBO_LOG("bake: " + j.chr + " " + j.color + ": " + (j.wrote1 ? narrow(j.pak.filename().wstring()) + (mounted ? " mounted" : " NOT mounted") + " at " +
+                std::to_string(order) : std::string("nothing of the slot's own") + (j.wrote2 ? ", " + j.equip_chr : std::string())) + ": " + list + notes);
+      for (const std::string& p : j.pic_log) COMBO_LOG("bake: " + j.chr + " " + j.color + ": " + p);
+      std::string notice = !j.wrote2 ? std::string()
+          : j.equip_label + " has one material for every color of " + codeOf(j.chr) + ". This recolor shows on all of them, and baking " + j.equip_label +
+            " again from another color replaces it. It's in the baked list as " + j.equip_chr + " Color01.";
+      for (const std::string& n : share_notice) notice += (notice.empty() ? "" : " ") + n;
+      const std::vector<std::string> held = mounted ? bakeHeld(j) : std::vector<std::string>();
+      std::string held_list;
+      for (const std::string& h : held) held_list += (held_list.empty() ? "" : ", ") + h;
+      if (!held.empty()) COMBO_LOG("bake: " + j.chr + " " + j.color + ": shows after a game restart: " + held_list + " (held for saved effect colors)");
       if (g_bake_all) {
-        g_bake_all_ok.push_back(j.chr + " " + j.color + (j.notes.empty() ? "" : " (" + std::to_string(j.notes.size()) + " left out: see its .txt in baked/)"));
+        g_bake_all_ok.push_back(j.chr + " " + j.color + (j.wrote1 || j.equip_label.empty() ? std::string() : " (" + j.equip_label + ")") +
+                                (j.notes.empty() ? "" : " (" + std::to_string(j.notes.size()) + " left out: see its .txt in baked/)") +
+                                (held.empty() ? "" : " (restart the game to see all of it)"));
+        if (j.wrote2) {
+          const std::string n = j.equip_label + " (" + j.equip_chr + " Color01) has one material for every color of " + codeOf(j.chr) +
+                                ": the last color baked with it is the one that shows.";
+          if (std::find(g_bake_all_notice.begin(), g_bake_all_notice.end(), n) == g_bake_all_notice.end()) g_bake_all_notice.push_back(n);
+        }
+        for (const std::string& n : share_notice)
+          if (std::find(g_bake_all_notice.begin(), g_bake_all_notice.end(), n) == g_bake_all_notice.end()) g_bake_all_notice.push_back(n);
         g_bake.reset();
         g_view_dirty = true;
         return;
       }
       g_status = "Baked " + j.chr + " " + j.color + " (see the result).";
-      showBakeResult(true, mounted ? "Baked " + j.chr + " " + j.color + ". Reload instance to see it."
-                                   : "Baked " + j.chr + " " + j.color + ", but it couldn't be put on now: it loads the next time the game starts.",
-                     j.done, j.notes);
+      std::vector<std::string> shown_done = j.done;
+      for (const std::string& d : j.done2) shown_done.push_back(j.equip_label + ": " + d);
+      shown_done.insert(shown_done.end(), share_done.begin(), share_done.end());
+      if (!held.empty())
+        shown_done.insert(shown_done.begin(), "Shows after a game restart: " + held_list + " (the editor keeps " + (held.size() == 1 ? "it" : "them") +
+                                              " loaded for your saved effect colors). The rest shows after Reload instance.");
+      showBakeResult(true, !mounted ? "Baked " + j.chr + " " + j.color + ", but it couldn't be put on now: it loads the next time the game starts."
+                           : held.empty() ? "Baked " + j.chr + " " + j.color + ". Reload instance to see it."
+                                          : "Baked " + j.chr + " " + j.color + ". Restart the game to see all of it.",
+                     shown_done, j.notes, notice);
     }
     g_bake.reset();
     g_view_dirty = true;
@@ -6529,7 +9227,7 @@ namespace {
   }
   UObject* standIn(UObject* hidden);
   const std::vector<Bone>& bonesOf(const Target& t) {
-    if (g_bones_for == keyOf(t)) return g_bones;
+    if (g_bones_for == partKey(t)) return g_bones;
     g_bones.clear();
     std::vector<UObject*> comps;  // A hidden model being previewed, and the meshes on screen wearing it
     for (UObject* c : t.comps) comps.push_back(standIn(c) ? standIn(c) : c);
@@ -6548,8 +9246,8 @@ namespace {
         g_bones.push_back(b);
       }
     }
-    g_bones_for = keyOf(t);
-    COMBO_LOG("color editor: " + std::to_string(g_bones.size()) + " bones on " + keyOf(t));
+    g_bones_for = partKey(t);
+    COMBO_LOG("color editor: " + std::to_string(g_bones.size()) + " bones on " + partKey(t));
     return g_bones;
   }
   Vec boneAt(const Bone& b) { return socketAt(b.comp, b.name); }
@@ -6600,7 +9298,7 @@ namespace {
     const int R = mp->second->regions;
     auto it = g_parts.find(mapKey(t));
     if (it == g_parts.end()) {
-      if (!loadParts(mapKey(t), t.chr, t.kind, R, mp->second->major)) { g_parts[mapKey(t)]; return nullptr; }  // Not on disk, tried once
+      if (!loadParts(mapKey(t), t.chr, kindOf(t), R, mp->second->major)) { g_parts[mapKey(t)]; return nullptr; }  // Not on disk, tried once
       it = g_parts.find(mapKey(t));
     }
     return static_cast<int>(it->second.size()) == R ? &it->second : nullptr;
@@ -6623,21 +9321,23 @@ namespace {
   std::map<std::string, Clock::time_point> g_drawn_tried;
   std::map<std::string, std::set<std::string>> g_drawn_seen;  // by map key: the (mesh#index) already counted
   bool forgetMap(const Target& t) {
-    for (const std::string& k : g_unsaved) { const Target o = fromKey(k); if (o.chr == t.chr && o.kind == t.kind) return false; }
-    auto drop = [&](auto& by_key) { for (auto it = by_key.begin(); it != by_key.end();) it = kindOfKey(it->first, t.chr, t.kind) ? by_key.erase(it) : std::next(it); };
+    const std::string kind = kindOf(t);
+    for (const std::string& k : g_unsaved) { const Target o = fromKey(k); if (o.chr == t.chr && kindOf(o) == kind) return false; }
+    auto drop = [&](auto& by_key) { for (auto it = by_key.begin(); it != by_key.end();) it = kindOfKey(it->first, t.chr, kind) ? by_key.erase(it) : std::next(it); };
     drop(g_maps);
+    drop(g_fix_hist);
     g_old_fits.clear();
-    for (auto it = g_worn_failed.begin(); it != g_worn_failed.end();) { const Target o = fromKey(*it); it = o.chr == t.chr && o.kind == t.kind ? g_worn_failed.erase(it) : std::next(it); }
-    for (auto it = g_map_failed.begin(); it != g_map_failed.end();) it = kindOfKey(*it, t.chr, t.kind) ? g_map_failed.erase(it) : std::next(it);
+    for (auto it = g_worn_failed.begin(); it != g_worn_failed.end();) { const Target o = fromKey(*it); it = o.chr == t.chr && kindOf(o) == kind ? g_worn_failed.erase(it) : std::next(it); }
+    for (auto it = g_map_failed.begin(); it != g_map_failed.end();) it = kindOfKey(*it, t.chr, kind) ? g_map_failed.erase(it) : std::next(it);
     drop(g_drawn);
     drop(g_drawn_tried);
     drop(g_drawn_seen);
     drop(g_tpl_names);
     drop(g_names);
-    forgetOwn(t.chr, t.kind);
+    forgetOwn(t.chr, kind);
     for (auto it = g_edits_loaded.begin(); it != g_edits_loaded.end();) {
       const Target o = fromKey(*it);
-      if (o.chr != t.chr || o.kind != t.kind) { ++it; continue; }
+      if (o.chr != t.chr || kindOf(o) != kind) { ++it; continue; }
       g_edits.erase(*it);
       g_vec_saved.erase(*it);
       it = g_edits_loaded.erase(it);
@@ -6676,6 +9376,14 @@ namespace {
       }
     }
     std::vector<Target> found = groupParts(seen);
+    for (Target& t : found) {
+      std::string n, k;
+      UObject* own = t.mids.empty() ? nullptr : colorSource(t.mids.front(), n, k);
+      t.no_part = own && !micTexture(own, "BaseMap");
+      static std::set<std::string> said;
+      if (t.no_part && said.insert(n).second) COMBO_LOG("color editor: " + n + " sets no BaseMap of its own: " + keyOf(t) + " gets no tab");
+    }
+    std::vector<std::pair<size_t, UObject*>> shared;
     if (!extra.empty()) {  // Ones whose color texture no part uses become parts of their own (Sol's DI wing)
       std::set<UObject*> used;
       for (const Target& t : found)
@@ -6688,6 +9396,25 @@ namespace {
         for (const Target& old : g_targets)
           for (size_t k = 0; k < old.mids.size(); k++)
             if (old.mids[k] == x.m) tex = old.orig[k].first;
+        if (tex && used.count(tex))
+          for (Target& t : found) {
+            if (t.pawn != x.owner || t.chr != x.chr || t.color != x.color) continue;
+            if (std::find(t.mids.begin(), t.mids.end(), x.m) != t.mids.end()) break;
+            if (std::any_of(shared.begin(), shared.end(), [&](const auto& s) { return s.second == x.m; })) break;
+            const bool same = std::any_of(t.mids.begin(), t.mids.end(), [&](UObject* mid) {
+              UObject* base = getTexture(mid, STR("BaseMap"));
+              for (const Target& old : g_targets)
+                for (size_t k = 0; k < old.mids.size(); k++)
+                  if (old.mids[k] == mid) base = old.orig[k].first;
+              return base == tex;
+            });
+            if (!same) continue;
+            shared.push_back({static_cast<size_t>(&t - found.data()), x.m});
+            static std::set<std::string> said;
+            if (said.insert(keyOf(t) + narrow(x.mic->GetName())).second)
+              COMBO_LOG("color editor: " + keyOf(t) + " also colors " + narrow(x.mic->GetName()) + " (another mesh drawn with the same texture)");
+            break;
+          }
         if (!tex || used.count(tex)) continue;  // The same texture as a part means an effect copy, edited with it
         own.push_back(x);
       }
@@ -6735,6 +9462,8 @@ namespace {
         std::vector<UObject*> all;  // (the fighter's meshes: every part's)
         for (const Target& o : found)
           if (o.pawn == t.pawn) all.insert(all.end(), o.comps.begin(), o.comps.end());
+        for (UObject* c : fighterParts())
+          if (c && c->GetOuterPrivate() == t.pawn && std::find(all.begin(), all.end(), c) == all.end()) all.push_back(c);
         return all;
       }(), [&](UObject* m) { return std::any_of(found.begin(), found.end(), [&](const Target& o) { return std::find(o.mids.begin(), o.mids.end(), m) != o.mids.end(); }); });
     // The fight's other live copies of the same color materials, on no mesh (a smear's "sol_wep" is one of
@@ -6761,10 +9490,12 @@ namespace {
       }
       if (added) COMBO_LOG("color editor: " + std::to_string(added) + " more live copies of the color materials (effects)");
     }
+    for (const auto& [index, m] : shared)
+      if (index < found.size() && std::find(found[index].mids.begin(), found[index].mids.end(), m) == found[index].mids.end()) found[index].mids.push_back(m);
     // A model kept hidden is decided when first found (a preview of ours shows it later, and the body or weapon
     // may just be hidden for a moment).
     for (Target& t : found) {
-      t.kept_hidden = t.kind != "MAIN" && t.kind != "WEP" && std::none_of(t.comps.begin(), t.comps.end(), isVisible);
+      t.kept_hidden = t.kind != "MAIN" && unequipped(t.kind) != "WEP" && std::none_of(t.comps.begin(), t.comps.end(), isVisible);
       for (const Target& old : g_targets)
         if (keyOf(old) == keyOf(t) && old.pawn == t.pawn) t.kept_hidden = old.kept_hidden;
     }
@@ -6774,17 +9505,45 @@ namespace {
     for (const Shown& sh : scanTextures()) { ours_now.insert(sh.base); ours_now.insert(sh.sss); }
     ours_now.insert(g_hl.base); ours_now.insert(g_hl.sss); ours_now.insert(g_hl_off.base); ours_now.insert(g_hl_off.sss);
     ours_now.erase(nullptr);
+    std::set<UObject*> powered_own;
+    for (const Target& old : g_targets)
+      for (const auto& [pb, ps] : old.orig_p) { powered_own.insert(pb); powered_own.insert(ps); }
+    powered_own.erase(nullptr);
     for (Target& t : found)
       for (UObject* mid : t.mids) {
         std::pair<UObject*, UObject*> o{getTexture(mid, STR("BaseMap")), getTexture(mid, STR("SssMap"))};
-        if (ours_now.count(o.first)) o.first = chainTexture(parentOf(mid), "BaseMap");  // (a copy made while ours was on: the game's from its instances)
-        if (ours_now.count(o.second)) o.second = chainTexture(parentOf(mid), "SssMap");
+        if (ours_now.count(o.first) || powered_own.count(o.first)) o.first = chainTexture(parentOf(mid), "BaseMap");  // (a copy made while ours was on: the game's from its instances)
+        if (ours_now.count(o.second) || powered_own.count(o.second)) o.second = chainTexture(parentOf(mid), "SssMap");
         for (const Target& old : g_targets)
           for (size_t i = 0; i < old.mids.size(); i++)
             if (old.mids[i] == mid) o = old.orig[i];
         if (outlineOnly(mid)) o = {nullptr, gameSss(mid)};  // An outline has no color texture. Its shadow one comes from its instance
         t.orig.push_back(o);
       }
+    for (Target& t : found) {
+      std::string pn, pk;
+      UObject* pmic = t.mids.empty() ? nullptr : colorSource(t.mids.front(), pn, pk);
+      UObject* pbase = pmic ? micTexture(pmic, kSkinParams[0]) : nullptr;
+      UObject* psss = pmic ? micTexture(pmic, kSkinParams[1]) : nullptr;
+      t.powered = pbase && psss;
+      if (!t.powered) continue;
+      for (UObject* mid : t.mids) {
+        std::pair<UObject*, UObject*> o{getTexture(mid, kSkinParamsW[0]), getTexture(mid, kSkinParamsW[1])};
+        if (ours_now.count(o.first)) o.first = chainTexture(parentOf(mid), kSkinParams[0]);
+        if (ours_now.count(o.second)) o.second = chainTexture(parentOf(mid), kSkinParams[1]);
+        for (const Target& old : g_targets)
+          for (size_t i = 0; i < old.mids.size() && i < old.orig_p.size(); i++)
+            if (old.mids[i] == mid) o = old.orig_p[i];
+        if (outlineOnly(mid)) o = {nullptr, chainTexture(parentOf(mid), kSkinParams[1])};
+        t.orig_p.push_back(o);
+      }
+      static std::set<std::string> said;
+      if (said.insert(keyOf(t)).second)
+        COMBO_LOG("color editor: " + keyOf(t) + " has a powered-up look (GIO_Skin_Base " + narrow(pbase->GetName()) + ", GIO_Skin_Sss " + narrow(psss->GetName()) + ", on " +
+                  std::to_string(std::count_if(t.orig_p.begin(), t.orig_p.end(), [&](const auto& o) { return o.first && o.first == t.orig_p.front().first; })) + " of " +
+                  std::to_string(t.mids.size()) + " materials, GIO_Skin_Sss on " +
+                  std::to_string(std::count_if(t.orig_p.begin(), t.orig_p.end(), [&](const auto& o) { return o.second && o.second == t.orig_p.front().second; })) + ")");
+    }
     {  // Coverage check, once per part this session: every slot on its meshes and whether it takes the recolor. MISSED: it
        // reads one of this fighter's color textures (any part's) but won't take the edit.
       static std::set<std::string> said;
@@ -6827,8 +9586,9 @@ namespace {
                   std::to_string(missed) + " MISSED");
       }
     }
-    const std::string was = target() ? keyOf(*target()) : std::string();
+    const std::string was = shownPart() ? partKey(*shownPart()) : std::string();
     g_targets = std::move(found);
+    g_targets_gen++;
     for (Target& t : g_targets) {  // Where each material and mesh sits in the object array now, checked before the smears use them
       t.items.clear();
       for (UObject* o : t.mids) t.items.push_back(o ? reinterpret_cast<const uint8_t*>(o->GetObjectItem()) : nullptr);
@@ -6849,13 +9609,17 @@ namespace {
     const int me = combo_trials::playerChara();
     int mine = -1, same = -1;
     for (int i = 0; i < static_cast<int>(g_targets.size()); i++) {
-      if (keyOf(g_targets[i]) == was) same = i;
+      if (partKey(g_targets[i]) == was) same = i;
       if (mine < 0 && me >= 0 && me < static_cast<int>(std::size(kCodes)) && codeOf(g_targets[i].chr) == kCodes[me] && g_targets[i].kind == "MAIN") mine = i;
     }
     if (mine < 0)  // No "MAIN", so the player's character's first part
       for (int i = 0; mine < 0 && i < static_cast<int>(g_targets.size()); i++)
-        if (me >= 0 && me < static_cast<int>(std::size(kCodes)) && codeOf(g_targets[i].chr) == kCodes[me]) mine = i;
+        if (me >= 0 && me < static_cast<int>(std::size(kCodes)) && codeOf(g_targets[i].chr) == kCodes[me] && !g_targets[i].no_part) mine = i;
     g_target = same >= 0 ? same : mine >= 0 ? mine : 0;
+    if (g_target < static_cast<int>(g_targets.size()) && g_targets[static_cast<size_t>(g_target)].no_part)
+      for (int i = 0; i < static_cast<int>(g_targets.size()); i++)
+        if (!g_targets[static_cast<size_t>(i)].no_part) { g_target = i; break; }
+    if (same < 0) g_powered_look = false;
     COMBO_LOG("color editor: " + std::to_string(g_targets.size()) + " fighter parts/colors" + (target() ? ", editing " + keyOf(*target()) : std::string()));
     g_view_dirty = true;
   }
@@ -7200,9 +9964,12 @@ namespace {
     UObject* mesh = nullptr;    // its own mesh
     std::vector<UObject*> mats; // and materials
     UObject* hidden = nullptr;  // the hidden model's mesh it wears now
+    bool forced = false;
   };
   struct Preview {
     UObject* pawn = nullptr;
+    int forced_calls = 0;
+    std::vector<Kept> late;
     std::vector<Dressed> dressed;
     std::vector<UObject*> held;  // The normal model's materials and meshes, off every mesh meanwhile, kept from garbage collection
   } g_preview;
@@ -7243,7 +10010,7 @@ namespace {
   // one, and it showed the game's colors. One that's dynamic and draws the part's own texture is kept here, apart
   // from the part: each update, while it's alive, it wears what the part wears now (ours, or the game's own after a
   // reset), and once it's gone it's dropped. Logged when found.
-  struct Swap { Kept mat; std::string key; UObject* base = nullptr; UObject* sss = nullptr; bool part_sss = true; };  // (its own textures; part_sss: it shares the part's shadow texture, as in show())
+  struct Swap { Kept mat; std::string key; UObject* base = nullptr; UObject* sss = nullptr; bool part_sss = true; UObject* pbase = nullptr; UObject* psss = nullptr; };  // (its own textures; part_sss: it shares the part's shadow texture, as in show())
   std::vector<Swap> g_swaps;
   std::map<std::pair<std::string, UObject*>, Kept> g_swap_seen;  // (part, material) looked at, while that material lives
   std::set<std::string> g_swap_primed;                           // Parts whose materials at the start were recorded (discover's)
@@ -7269,6 +10036,12 @@ namespace {
           const auto own = std::find_if(t.orig.begin(), t.orig.end(), [&](const auto& o) { return b && o.first == b; });
           if (own == t.orig.end()) continue;  // Another texture: not this part's
           g_swaps.push_back({keep(m), key, own->first, own->second, own->second == t.orig.front().second});
+          if (t.powered && !t.orig_p.empty()) {
+            UObject* pb = getTexture(m, kSkinParamsW[0]);
+            UObject* ps = getTexture(m, kSkinParamsW[1]);
+            g_swaps.back().pbase = pb && pb == t.orig_p.front().first ? pb : nullptr;
+            g_swaps.back().psss = ps && ps == t.orig_p.front().second ? ps : nullptr;
+          }
           COMBO_LOG("color editor: " + key + ": the game put " + narrow(m->GetName()) + " (" + (parentOf(m) ? narrow(parentOf(m)->GetName()) : std::string("?")) +
                     ") on " + narrow(comp->GetName()) + " slot " + std::to_string(i) + ", drawing the part's texture: it wears the recolor while it's there");
         }
@@ -7279,6 +10052,12 @@ namespace {
       UObject* want_s = sh != g_shown.end() && sh->second.sss ? sh->second.sss : w.sss;
       if (getTexture(w.mat.obj, STR("BaseMap")) != want_b) setTexture(w.mat.obj, STR("BaseMap"), want_b);
       if (w.part_sss && want_s && getTexture(w.mat.obj, STR("SssMap")) != want_s) setTexture(w.mat.obj, STR("SssMap"), want_s);
+      if (!w.pbase && !w.psss) continue;
+      auto sp = g_shown.find(w.key + kPoweredTail);
+      UObject* want_pb = sp != g_shown.end() && sp->second.base ? sp->second.base : w.pbase;
+      UObject* want_ps = sp != g_shown.end() && sp->second.sss ? sp->second.sss : w.psss;
+      if (w.pbase && getTexture(w.mat.obj, kSkinParamsW[0]) != want_pb) setTexture(w.mat.obj, kSkinParamsW[0], want_pb);
+      if (w.psss && getTexture(w.mat.obj, kSkinParamsW[1]) != want_ps) setTexture(w.mat.obj, kSkinParamsW[1], want_ps);
     }
   }
   void learnMove() {  // Each update, learns from the game showing a hidden model itself, never our preview (that's off here)
@@ -7316,7 +10095,23 @@ namespace {
       }
     }
   }
+  void setHiddenInGame(UObject* c, bool hidden) {
+    static UFunction* f = fn(STR("/Script/Engine.SceneComponent:SetHiddenInGame"));
+    if (!f || !c) return;
+    alignas(8) uint8_t p[8] = {static_cast<uint8_t>(hidden), 0};
+    c->ProcessEvent(f, p);
+  }
+  int hiddenInGame(UObject* c) {
+    if (!c) return -1;
+    static FBoolProperty* p = CastField<FBoolProperty>(c->GetPropertyByNameInChain(STR("bHiddenInGame")));
+    return p ? (p->GetPropertyValueInContainer(c) ? 1 : 0) : -1;
+  }
+  void previewBeforeDraw() {
+    for (const Kept& k : g_preview.late)
+      if (k.alive() && hiddenInGame(k.obj) == 1) setHiddenInGame(k.obj, false);
+  }
   void dress(const Dressed& d) {
+    if (d.forced) { if (hiddenInGame(d.comp) == 1) setHiddenInGame(d.comp, false); return; }
     if (!d.hidden) { if (isVisible(d.comp)) setVisible(d.comp, false); return; }  // Left out of the preview, so it's hidden
     UObject* hm = meshOf(d.hidden);
     if (hm && meshOf(d.comp) != hm) setMesh(d.comp, hm);
@@ -7325,8 +10120,22 @@ namespace {
   }
   void keepPreview() {  // Called each update, before and after the game's own, because the game may put its own back
     for (const Dressed& d : g_preview.dressed) dress(d);
+    if (g_preview.pawn && g_preview.forced_calls >= 0 && ++g_preview.forced_calls == 120) {
+      g_preview.forced_calls = -1;
+      const Vec at = actorVec(g_preview.pawn, STR("/Script/Engine.Actor:K2_GetActorLocation"));
+      for (const Dressed& d : g_preview.dressed) {
+        if (!d.forced) continue;
+        const Vec loc = actorVec(d.comp, STR("/Script/Engine.SceneComponent:K2_GetComponentLocation"));
+        COMBO_LOG("color editor: preview, " + (meshOf(d.comp) ? narrow(meshOf(d.comp)->GetName()) : std::string("?")) + " shown in place: " +
+                  (isVisible(d.comp) ? "visible" : "NOT visible") + ", " + (drawnLately(d.comp) ? "drawn" : "NOT drawn") + ", at " +
+                  std::to_string(static_cast<int>(loc.x - at.x)) + " " + std::to_string(static_cast<int>(loc.y - at.y)) + " " + std::to_string(static_cast<int>(loc.z - at.z)) + " from the fighter");
+      }
+    }
   }
+  void probeEnd(const std::string& status);
   void startPreview(const Target& t) {
+    if (g_probe.on) { COMBO_LOG("color editor: what draws this: a hidden part was shown in place during it, every slot put back"); probeEnd("What draws this was stopped: a hidden part is shown in place."); }
+    g_probe_wanted = false;
     g_preview = Preview{};
     g_preview.pawn = t.pawn;
     std::vector<UObject*> shown;  // The normal model's meshes on screen that the move hides, once that's known
@@ -7406,8 +10215,32 @@ namespace {
         }
       }
     }
-    if (unmatched) COMBO_LOG("color editor: " + std::to_string(unmatched) + " hidden meshes have no match on screen");
-    if (hides)
+    bool in_place = false;
+    if (unmatched && g_preview.dressed.empty()) {
+      std::string names;
+      for (const Target& o : g_targets)
+        if (o.pawn == t.pawn && o.kept_hidden)
+          for (UObject* h : o.comps) {
+            if (isVisible(h) || std::any_of(g_preview.dressed.begin(), g_preview.dressed.end(), [&](const Dressed& d) { return d.comp == h; })) continue;
+            if (hiddenInGame(h) != 1) {
+              COMBO_LOG("color editor: preview, " + (meshOf(h) ? narrow(meshOf(h)->GetName()) : std::string("?")) + " isn't hidden by the hidden-in-game switch (" + std::to_string(hiddenInGame(h)) + "), left alone");
+              continue;
+            }
+            Dressed d;
+            d.comp = h;
+            d.hidden = h;
+            d.forced = true;
+            g_preview.dressed.push_back(d);
+            g_preview.late.push_back(keep(h));
+            setHiddenInGame(h, false);
+            names += " " + (meshOf(h) ? narrow(meshOf(h)->GetName()) : std::string("?"));
+          }
+      in_place = !g_preview.dressed.empty();
+      if (in_place) COMBO_LOG("color editor: preview, nothing on screen can wear them, so they're shown in place:" + names);
+    }
+    if (!in_place) g_preview.forced_calls = -1;
+    if (unmatched && !in_place) COMBO_LOG("color editor: " + std::to_string(unmatched) + " hidden meshes have no match on screen");
+    if (hides && !in_place)
       for (UObject* c : shown)
         if (std::none_of(g_preview.dressed.begin(), g_preview.dressed.end(), [&](const Dressed& d) { return d.comp == c; })) {
           Dressed d;  // Wears nothing. It's hidden while previewing, as the move does
@@ -7423,6 +10256,7 @@ namespace {
     if (!g_preview.pawn) return;
     if (on_stage)
       for (const Dressed& d : g_preview.dressed) {
+        if (d.forced) { if (hiddenInGame(d.comp) == 0) setHiddenInGame(d.comp, true); continue; }
         if (!d.hidden) { setVisible(d.comp, true); continue; }  // It was on screen when the preview began
         setMesh(d.comp, d.mesh);
         for (size_t i = 0; i < d.mats.size(); i++) setMaterial(d.comp, static_cast<int>(i), d.mats[i]);
@@ -7491,7 +10325,7 @@ namespace {
   // not shown now count too. hidden holds the mesh name prefixes of a model the game keeps hidden ("dky_").
   // What only that model draws is counted separately.
   Drawn countDrawn(std::filesystem::path file, std::set<std::string> slots, std::vector<std::pair<std::string, int>> seen, std::shared_ptr<CharMap> m,
-                    std::vector<std::filesystem::path> pngs, std::filesystem::path kept, std::vector<std::string> hidden) {
+                    std::vector<std::filesystem::path> pngs, std::filesystem::path kept, std::vector<std::string> hidden, std::set<std::string> pairs) {
     Drawn d;
     if (!pngs.empty()) {  // Worked out now and kept for next time
       d.variety = textureVariety(pngs);
@@ -7552,12 +10386,12 @@ namespace {
         }
       for (uint32_t p : pairs) d.touch.push_back({static_cast<int>(p >> 16), static_cast<int>(p & 0xFFFF)});
     }
-    if (uv.empty() || slots.empty()) return d;
+    if (uv.empty() || (slots.empty() && pairs.empty())) return d;
     std::vector<uint8_t> mask(static_cast<size_t>(W) * H, 0);  // Bit 0 means drawn, bit 1 means drawn by a mesh that isn't the hidden model's
     for (const UvSlot& u : uv) {
-      if (!slots.count(u.name)) continue;
       std::string lm = u.mesh;
       for (auto& ch : lm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      if (!slots.count(u.name) && !pairs.count(lm + "#" + u.name)) continue;
       const uint8_t bit = std::any_of(hidden.begin(), hidden.end(), [&](const std::string& p) { return lm.rfind(p, 0) == 0; }) ? 1 : 3;
       for (size_t k = 0; k + 5 < u.tri.size(); k += 6) {
         float x[3], y[3];
@@ -7645,7 +10479,7 @@ namespace {
             if (UObject* mesh = meshOf(h)) {
               std::string n = narrow(mesh->GetName());
               for (auto& ch : n) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-              if (n.find('_') != std::string::npos && pre.insert(n.substr(0, n.find('_') + 1)).second && name.empty()) name = partName(o.kind);
+              if (n.find('_') != std::string::npos && pre.insert(n.substr(0, n.find('_') + 1)).second && name.empty()) name = partLabel(o.chr, o.kind);
             }
     std::string own = codeOf(t.chr) + "_";
     for (auto& ch : own) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -7711,7 +10545,7 @@ namespace {
     g_drawn_job_slots = slots_file;
     std::vector<std::filesystem::path> pngs;  // How many of the part's color slot textures differ. Worked out once, then kept in a file
     {
-      const std::filesystem::path colors = g_dir / "cache" / t.chr / ("colors_" + t.kind + ".txt"), kept = g_dir / "cache" / t.chr / ("variety_" + t.kind + ".txt");
+      const std::filesystem::path colors = g_dir / "cache" / t.chr / ("colors_" + kindOf(t) + ".txt"), kept = g_dir / "cache" / t.chr / ("variety_" + kindOf(t) + ".txt");
       std::error_code e1, e2;
       const auto tc = std::filesystem::last_write_time(colors, e1), tk = std::filesystem::last_write_time(kept, e2);
       if (e2 || e1 || tk < tc) {
@@ -7724,7 +10558,19 @@ namespace {
     }
     g_drawn_job_only.clear();
     std::vector<std::string> hidden = hiddenPrefixes(t, &g_drawn_job_only);
-    g_drawn_job = std::async(std::launch::async, countDrawn, file, std::move(slots), std::move(seen), mp->second, std::move(pngs), g_drawn_job_variety, std::move(hidden));
+    std::set<std::string> pairs;
+    {
+      std::ifstream f(g_dir / "atlas" / (t.chr + "_slots.txt"));
+      std::string line;
+      while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t a = line.find('\t'), b = a == std::string::npos ? a : line.find('\t', a + 1);
+        if (b == std::string::npos || line.compare(0, a, t.kind) != 0 || a != t.kind.size()) continue;
+        pairs.insert(line.substr(a + 1, b - a - 1) + "#" + line.substr(b + 1));
+      }
+    }
+    g_drawn_job = std::async(std::launch::async, countDrawn, file, std::move(slots), std::move(seen), mp->second, std::move(pngs), g_drawn_job_variety, std::move(hidden),
+                             std::move(pairs));
   }
   // ---- Rows. Regions that look exactly the same in the shown color (and carry the same edit) are one row, and
   // an edit to it goes to all of them (they differ only in other colors). Drawn ones lead. ------------------
@@ -7738,15 +10584,28 @@ namespace {
     if (drawn && drawn->size() < static_cast<size_t>(R)) drawn = nullptr;  // Not used if counted for a map with fewer regions than this view's
     auto mp = g_maps.find(mapKey(t));
     const uint32_t least = mp != g_maps.end() ? drawnMin(*mp->second) : 32;
-    std::map<std::tuple<uint32_t, uint32_t, int, uint32_t, uint32_t>, int> first;  // look and edit -> leading region
+    auto pieceOf = [&](int r) { return mp != g_maps.end() && r >= 0 && static_cast<size_t>(r) < mp->second->piece.size() ? static_cast<int>(mp->second->piece[static_cast<size_t>(r)]) : 0; };
+    std::map<std::tuple<uint32_t, uint32_t, int, uint32_t, uint32_t, int>, int> first;  // look and edit -> leading region
     const int n = (std::min)(R, static_cast<int>((std::min)(g_worn->lit.size(), g_worn->shadow.size())));
-    for (int pass = 0; pass < 2; pass++)
+    const std::vector<RefLook>* refs = nullptr;
+    if (auto er = g_equip_refs.find(keyOf(t)); er != g_equip_refs.end() && mp != g_maps.end() && er->second.map == mp->second.get() && !er->second.looks.empty() &&
+        std::all_of(er->second.looks.begin(), er->second.looks.end(), [&](const RefLook& l) { return l.lit.size() >= static_cast<size_t>(n) && l.shadow.size() >= static_cast<size_t>(n); }))
+      refs = &er->second.looks;
+    auto refAlike = [&](int a, int b, int lim) {
+      if (!refs) return true;
+      for (const RefLook& l : *refs)
+        for (int sh : {16, 8, 0})
+          if (std::abs(static_cast<int>(l.lit[static_cast<size_t>(a)] >> sh & 0xFF) - static_cast<int>(l.lit[static_cast<size_t>(b)] >> sh & 0xFF)) > lim ||
+              std::abs(static_cast<int>(l.shadow[static_cast<size_t>(a)] >> sh & 0xFF) - static_cast<int>(l.shadow[static_cast<size_t>(b)] >> sh & 0xFF)) > lim) return false;
+      return true;
+    };
+    for (int pass = 0; pass < 2 && !refs; pass++)
       for (int r = 0; r < n; r++) {
         const bool on_model = !drawn || (*drawn)[static_cast<size_t>(r)] >= least;
         if (on_model != (pass == 0)) continue;
         const Edit e = r < static_cast<int>(ed.size()) ? ed[static_cast<size_t>(r)] : Edit{};
         const auto k = std::make_tuple(g_worn->lit[static_cast<size_t>(r)], g_worn->shadow[static_cast<size_t>(r)],
-                                       (e.has_lit ? 1 : 0) | (e.has_shadow ? 2 : 0) | (e.derive ? 4 : 0), e.has_lit ? e.lit : 0u, e.has_shadow ? e.shadow : 0u);
+                                       (e.has_lit ? 1 : 0) | (e.has_shadow ? 2 : 0) | (e.derive ? 4 : 0), e.has_lit ? e.lit : 0u, e.has_shadow ? e.shadow : 0u, pieceOf(r));
         lead[static_cast<size_t>(r)] = first.emplace(k, r).first->second;
       }
     // A gradient painted in small steps (Sol's iris) is one row too. Small regions that touch, each within 48 of
@@ -7768,15 +10627,16 @@ namespace {
       for (int r = 0; r < R; r++) up[static_cast<size_t>(r)] = lead[static_cast<size_t>(r)];  // The exact twins first
       bool any = false;
       // When a part's slots are nearly all one picture, its regions are that picture's own shades, big ones too.
-      const bool one_picture = dr->second.variety <= 2;
+      const bool one_picture = dr->second.variety <= 2 && equipOf(t.kind).empty();
       for (const auto& [a, b] : dr->second.touch) {
-        if (a >= n || b >= n) continue;
+        if (a >= n || b >= n || pieceOf(a) != pieceOf(b)) continue;
         if (!one_picture && (a < maj || b < maj)) continue;
         if (!one_picture && (lead[static_cast<size_t>(a)] < maj || lead[static_cast<size_t>(b)] < maj)) continue;  // Skipped when either is in a big region's row
         if ((*drawn)[static_cast<size_t>(a)] < least || (*drawn)[static_cast<size_t>(b)] < least) continue;
         const Edit ea = a < static_cast<int>(ed.size()) ? ed[static_cast<size_t>(a)] : Edit{}, eb = b < static_cast<int>(ed.size()) ? ed[static_cast<size_t>(b)] : Edit{};
         if (ea.has_lit != eb.has_lit || ea.has_shadow != eb.has_shadow || ea.derive != eb.derive) continue;  // A region recolored on its own stays apart
         if (!close_to(g_worn->lit[static_cast<size_t>(a)], g_worn->lit[static_cast<size_t>(b)]) || !close_to(g_worn->shadow[static_cast<size_t>(a)], g_worn->shadow[static_cast<size_t>(b)])) continue;
+        if (!refAlike(a, b, 48)) continue;
         const int ra = root(a), rb = root(b);
         if (ra != rb) { up[static_cast<size_t>((std::max)(ra, rb))] = (std::min)(ra, rb); any = true; }
       }
@@ -7809,13 +10669,15 @@ namespace {
       for (int r : rows) {
         const Edit er = r < static_cast<int>(ed.size()) ? ed[static_cast<size_t>(r)] : Edit{};
         int best = -1;
+
         for (int q : roots) {  // Biggest first, so the first that fits wins
           const Edit eq = q < static_cast<int>(ed.size()) ? ed[static_cast<size_t>(q)] : Edit{};
-          if (er.has_lit != eq.has_lit || er.has_shadow != eq.has_shadow || er.derive != eq.derive) continue;
+          if (er.has_lit != eq.has_lit || er.has_shadow != eq.has_shadow || er.derive != eq.derive || pieceOf(r) != pieceOf(q)) continue;
           const int lim = side.count(static_cast<uint64_t>((std::min)(r, q)) << 32 | static_cast<uint32_t>((std::max)(r, q))) ? 16 : 10;
           if ((er.has_lit && !within(er.lit, eq.lit, lim)) || (er.has_shadow && !within(er.shadow, eq.shadow, lim))) continue;  // Recolored apart, so they stay apart
           if (r < big_n && q >= big_n) continue;  // A big region never goes under a small one's row
-          if (within(g_worn->lit[static_cast<size_t>(r)], g_worn->lit[static_cast<size_t>(q)], lim) && within(g_worn->shadow[static_cast<size_t>(r)], g_worn->shadow[static_cast<size_t>(q)], lim)) { best = q; break; }
+          if (within(g_worn->lit[static_cast<size_t>(r)], g_worn->lit[static_cast<size_t>(q)], lim) && within(g_worn->shadow[static_cast<size_t>(r)], g_worn->shadow[static_cast<size_t>(q)], lim) &&
+              refAlike(r, q, lim)) { best = q; break; }
         }
         if (best < 0) roots.push_back(r); else to[static_cast<size_t>(r)] = best;
       }
@@ -7854,7 +10716,7 @@ namespace {
   std::vector<int> partsOf(const Target& t) {
     std::vector<int> out;
     for (int i = 0; i < static_cast<int>(g_targets.size()); i++)
-      if (g_targets[static_cast<size_t>(i)].pawn == t.pawn) out.push_back(i);
+      if (g_targets[static_cast<size_t>(i)].pawn == t.pawn && !g_targets[static_cast<size_t>(i)].no_part) out.push_back(i);
     return out;
   }
 
@@ -7868,12 +10730,19 @@ namespace {
     v.cam_info = g_cam_info;
     v.selected = g_selected;
     v.status = g_status;
+    v.hidden_effects.assign(g_hidden.begin(), g_hidden.end());
+    v.on_screen = g_on_screen;
     v.exporting = g_export && g_export->mode != 3;  // Not when the other parts are being made again. That's quiet, and a new change drops it
     v.mapping = g_mapping ? std::clamp((g_mapping->view + (g_mapping->scanning ? 0.5f : 0.0f)) / kViews, 0.0f, 1.0f) : -1.0f;
     v.setup = g_setup_busy;
-    v.setup_part = target() ? partName(target()->kind) : std::string();
+    v.setup_part = target() ? partLabel(target()->chr, target()->kind) : std::string();
+    if (const Target* p = shownPart()) {
+      v.powered = p->powered;
+      v.look = g_powered_look && p->powered ? 1 : 0;
+    }
     if (Target* t = target()) {
       v.title = t->chr + "  " + slotLabel(t->color);
+      v.pick_file = pickFile(t->chr);
       for (int i : partsOf(*t)) {
         if (i == g_target) v.part = static_cast<int>(v.parts.size());
         v.parts.push_back(g_targets[static_cast<size_t>(i)].kind);
@@ -7884,13 +10753,18 @@ namespace {
         for (const Target& o : g_targets)
           if (o.pawn == t->pawn && o.kind != t->kind && !o.kept_hidden && !hiddenPrefixes(o, nullptr).empty() &&
               std::any_of(o.comps.begin(), o.comps.end(), [&](UObject* c) { return std::find(t->comps.begin(), t->comps.end(), c) != t->comps.end(); })) {
-            v.drawn_from = partName(o.kind);
+            v.drawn_from = partLabel(o.chr, o.kind);
             break;
           }
       for (const Target& o : g_targets)
         if (o.pawn != t->pawn) v.can_switch = true;
       if (g_reading) v.progress = std::clamp(g_reading->next / 99.0f, 0.0f, 1.0f);
       auto mp = g_maps.find(mapKey(*t));
+      {
+        std::lock_guard<std::mutex> lk(g_fix_m);
+        v.region_changes = g_fix_changed.count(mapKey(*t)) > 0;
+        if (!g_fix_note.empty()) { g_status = g_fix_note; g_fix_note.clear(); }
+      }
       if (g_worn && g_worn_key == keyOf(*t) && mp != g_maps.end()) {
         const auto& ed = g_edits[keyOf(*t)];
         const std::vector<Part>* parts = partsFor(*t);
@@ -7915,13 +10789,18 @@ namespace {
           const auto pr = pairOf(r, ed);
           rv.lit = pr.first; rv.shadow = pr.second;
           rv.orig_lit = g_worn->lit[r]; rv.orig_shadow = g_worn->shadow[r];
-          rv.share = mp->second->share[r];
+          rv.share = static_cast<size_t>(r) < g_worn->texels.size() && !g_worn->owner.empty()
+                         ? static_cast<float>(static_cast<double>(g_worn->texels[static_cast<size_t>(r)]) / static_cast<double>(g_worn->owner.size()))
+                         : mp->second->share[r];
           rv.edited = r < static_cast<int>(ed.size()) && (ed[r].has_lit || ed[r].has_shadow);
+          rv.own_shadow = r < static_cast<int>(ed.size()) && ed[r].has_shadow;
           {  // Neither the atlas nor the scan has a place for it
             const bool placed = places && r < static_cast<int>(places->size()) && !(*places)[static_cast<size_t>(r)].empty();
             rv.unseen = !placed && (parts ? (*parts)[static_cast<size_t>(r)].bone.empty() : places != nullptr);
           }
-          rv.detail = r >= mp->second->major;
+          rv.detail = r >= mp->second->major && !(static_cast<size_t>(r) < mp->second->share.size() && mp->second->share[static_cast<size_t>(r)] >= 0.0005f);
+          if (static_cast<size_t>(r) < mp->second->piece.size() && mp->second->piece[static_cast<size_t>(r)] < mp->second->piece_names.size())
+            rv.piece = mp->second->piece_names[mp->second->piece[static_cast<size_t>(r)]];
           rv.name = namesOf(*t, mp->second->regions)[static_cast<size_t>(r)];
           if (rv.name.empty()) {  // The template's name, when the user hasn't named it
             const auto& tn = templateNames(*t);
@@ -7952,7 +10831,7 @@ namespace {
           if (rv.lead < 0 || rv.lead >= RV) rv.lead = r;
           if (rv.lead == r) continue;
           RegionView& l = v.regions[static_cast<size_t>(rv.lead)];
-          if (!rv.undrawn) l.share += rv.share;  // None of an undrawn one shows
+          l.share += rv.share;
           if (!rv.undrawn && rv.only_on.empty()) l.only_on.clear();  // If the shown model draws a twin, the row isn't the hidden model's alone
           l.twins++;
           if (l.name.empty()) l.name = rv.name;
@@ -7968,6 +10847,7 @@ namespace {
           const bool on_model = rd >= tiny;
           if (drawn && rv.lead == r && !rv.detail && rd < small_row) rv.detail = true;  // A big region that's barely drawn goes with the small details
           rv.listed = rv.lead == r && (drawn ? on_model : !(rv.detail && rv.unseen));
+          rv.off_model = rv.lead == r && !rv.listed;
         }
         v.group_same = g_group_same;
         v.groups.clear();  // Only regions listed in this view. A map bigger than the worn color's leaves some out
@@ -7988,12 +10868,13 @@ namespace {
         }
         v.pick_serial = g_pick_serial;
         v.picking = g_pick_wanted || g_pick_scanning;
-        v.decal_lines = g_vecs_for == keyOf(*t) && std::any_of(g_vecs.begin(), g_vecs.end(), [](const VecGroup& g) { return g.label == kDecalLabel; });
+        v.decal_lines = g_vecs_for == partKey(*t) && std::any_of(g_vecs.begin(), g_vecs.end(), [](const VecGroup& g) { return g.label == kDecalLabel; });
         v.tex_w = g_worn ? g_worn->base.w : 0;
         v.tex_h = g_worn ? g_worn->base.h : 0;
         v.painted = hasPaint(*t);
-        v.can_undo = !g_undo[slotOf(*t)].empty();
-        v.can_redo = !g_redo[slotOf(*t)].empty();
+        auto fix_seen = [&](const std::string& hk) { return hk.rfind(t->chr + "/", 0) == 0 && (hk == mapKey(*t) || (hk.size() >= 2 && hk.compare(hk.size() - 2, 2, "/P") == 0)); };
+        v.can_undo = !g_undo[slotOf(*t)].empty() || std::any_of(g_fix_hist.begin(), g_fix_hist.end(), [&](const auto& kv) { return fix_seen(kv.first) && !kv.second.first.empty(); });
+        v.can_redo = !g_redo[slotOf(*t)].empty() || std::any_of(g_fix_hist.begin(), g_fix_hist.end(), [&](const auto& kv) { return fix_seen(kv.first) && !kv.second.second.empty(); });
         v.slots = g_slots_cache;
         v.recolor_files = g_recolor_files_cache;
         v.palettes = g_palettes_cache;
@@ -8015,8 +10896,6 @@ namespace {
           v.captured_mats.push_back(cc);
         }
         v.captured_named = g_cap_named;
-        v.hidden_effects.assign(g_hidden.begin(), g_hidden.end());
-        v.on_screen = g_on_screen;
         if (g_fx_for == t->chr + "/" + t->color)
           for (const FxColor& f : fxList()) {
             EffectColor e;
@@ -8046,12 +10925,43 @@ namespace {
             }
             v.effect_colors.push_back(e);
           }
-        if (g_vecs_for == keyOf(*t))
+        if (g_vecs_for == partKey(*t))
           for (const VecGroup& g : g_vecs) {
             MaterialColor mc;
             mc.label = g.label;
             std::memcpy(mc.rgba, g.cur, sizeof(mc.rgba));
+            {
+              const float om = vecScale(g);
+              for (int c = 0; c < 3; c++) mc.rgba[c] /= om;
+            }
             mc.edited = g.edited;
+            mc.number = isNumber(g.param);
+            if (const float* og = g.mids.empty() ? nullptr : vecOrig(g.mids.front(), g.param)) mc.base = og[0];
+            if (isPicture(g.param)) {
+              mc.picture = true;
+              mc.pic_now = std::isfinite(g.cur[0]) ? static_cast<int>(std::lround(g.cur[0])) : -1;
+              mc.pic_own = g.pic_slot;
+              mc.tip = g.pic_tip;
+              if (g.pic_row)
+                for (const matpics::Option& o : matpics::options(*g.pic_row, g_pic_masters)) {
+                  const bool own = std::find(o.members.begin(), o.members.end(), g.pic_slot) != o.members.end();
+                  std::string list;
+                  for (int c : o.members) list += (list.empty() ? "" : ", ") + std::to_string(c);
+                  mc.pic_colors.push_back(o.color);
+                  mc.pic_members.push_back(o.members);
+                  mc.pic_labels.push_back("Color " + std::to_string(o.color) + "'s" + (own ? " (the game's own)" : ""));
+                  mc.pic_tips.push_back((o.members.size() == 1 ? "Used by color " : "Used by colors ") + list + "\n" +
+                                        (o.known ? o.path : "Drawn by " + matpics::masterOf(o.path) + ", not read yet"));
+                }
+              if (mc.pic_now == 0) {
+                const std::string hash = matpics::hashOf(g.cur);
+                const std::filesystem::path file = pngFile(g.pic_mic, hash);
+                std::error_code ec;
+                if (hash.empty()) mc.pic_note = "The stored PNG id is broken. Pick the picture again.";
+                else if (file.empty() || !std::filesystem::exists(file, ec)) mc.pic_note = "The PNG " + hash + ".png isn't in " + narrow(file.parent_path().wstring()) + ". Copy it there or pick the picture again.";
+                mc.pic_file = hash.empty() ? std::string() : hash + ".png";
+              }
+            }
             v.material_colors.push_back(mc);
           }
       }
@@ -8065,7 +10975,11 @@ namespace {
 
 View view() { std::lock_guard<std::mutex> lock(g_m); return g_view; }
 bool isOpen() { std::lock_guard<std::mutex> lock(g_m); return g_view.open && !g_outside; }
-void outsideTraining() { g_outside = true; }
+void cameraForget();
+void outsideTraining() {
+  if (!g_outside.exchange(true)) cameraForget();
+  tex_upload::setActive(false);
+}
 // Game thread. While the editor scans the fighter (mapping, a pick, a selection's own scan) or runs the first-time
 // setup, the fight is held (as the pause holds it with the editor open): a scan compares frames, and a fighter
 // moving through its idle animation reads as a picture that kept changing (without it, most selection scans were
@@ -8080,13 +10994,37 @@ void select(int region) { selectMany(region < 0 ? std::vector<int>{} : std::vect
 void selectMany(const std::vector<int>& regions) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kSelect, -1, 0, {}, regions}); }
 void setPairs(const std::vector<Pick>& picks, int mode) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kPairs, -1, static_cast<uint32_t>(std::clamp(mode, 0, 2)), picks, {}}); }
 void reset(int region) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kReset, region, 0}); }
+void relinkShadow(int region) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kRelink, region, 0}); }
+void clearEffectList() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kCapClear, -1, 0}); }
 void resetColor() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kResetColor, -1, 0}); }
 void nextTarget() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kNext, -1, 0}); }
 void showPart(int id) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kPart, id, 0}); }
+void showLook(int look) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kLook, -1, look ? 1u : 0u}); }
 void remap() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kRemap, -1, 0}); }
+void moveTexels(const std::vector<float>& points, float size, int region, bool only_loose) {
+  Req q{kRegionMove, region, 0};
+  q.nums = {size, only_loose ? 1.0f : 0.0f};
+  q.nums.insert(q.nums.end(), points.begin(), points.end());
+  std::lock_guard<std::mutex> lock(g_m);
+  g_reqs.push_back(std::move(q));
+}
+void resetRegionChanges() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kRegionReset, -1, 0}); }
 // A part's name for people, like "MAIN" -> "Body", "DI_FLARE_UNIQUEC" -> "DI wing" (Sol's),
 // "BURGERSET_FRIP" -> "Burgerset frip".
+std::string lookName(const std::string& chr) { return chr == "GIO" ? "Powered up" : "Second look"; }
+std::string lookWhen(const std::string& chr) {
+  static const std::pair<const char*, const char*> kWhen[] = {
+      {"GIO", "a change that follows her tension, and her match win"},
+      {"BKN", "a super's cut-in, and the start of a round"},
+      {"ABA", "her color-change states, and one of her knockdowns"}};
+  for (const auto& [c, w] : kWhen) if (chr == c) return w;
+  return {};
+}
+std::string partLabel(const std::string& chr, const std::string& kind) {
+  return chr == "GIO" && kind == "WEP" ? std::string("Rei") : chr == "SOL" && kind == "WEP_E01" ? std::string("Iron Slab") : partName(kind);
+}
 std::string partName(const std::string& k) {
+  if (const std::string e = equipOf(k); !e.empty()) return partName(unequipped(k)) + " skin " + std::to_string(std::atoi(e.c_str()));
   if (k == "MAIN") return "Body";
   if (k == "WEP") return "Weapon";
   if (k == "DI") return "DI";
@@ -8141,6 +11079,12 @@ void setMaterialColor(int i, const float rgba[4]) {
   g_reqs.push_back(q);
 }
 void resetMaterialColor(int i) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kVecReset, i, 0}); }
+void setMaterialPicture(int i, const std::wstring& file) {
+  Req q{kPicFile, i, 0};
+  q.wtext = file;
+  std::lock_guard<std::mutex> lock(g_m);
+  g_reqs.push_back(q);
+}
 void setEffectColor(int i, const float rgb[3], const std::string& slot) {
   Req q{kFx, i, 0};
   std::memcpy(q.f, rgb, sizeof(float) * 3);
@@ -8194,11 +11138,19 @@ std::vector<BakeCandidate> bakeCandidates() {  // (UI thread, when the list open
       b.chr = chr;
       b.color = col;
       for (const std::string& k : savedKinds(chr, col)) {
-        b.parts += (b.parts.empty() ? "" : ", ") + partName(k);
-        if (!mapped.count(k)) b.missing += (b.missing.empty() ? "" : ", ") + partName(k);
+        b.parts += (b.parts.empty() ? "" : ", ") + partLabel(chr, k);
+        if (!mapped.count(k)) b.missing += (b.missing.empty() ? "" : ", ") + partLabel(chr, k);
+      }
+      for (const std::string& k : savedKinds(chr, col, true)) {
+        b.parts += (b.parts.empty() ? "" : ", ") + partLabel(chr, k) + " (" + lookName(chr) + ")";
+        if (!mapped.count(k)) b.missing += (b.missing.empty() ? "" : ", ") + partLabel(chr, k) + " (" + lookName(chr) + ")";
       }
       const uintmax_t fx = std::filesystem::file_size(fxFile(chr, col), ec);
       b.effects = !ec && fx > 0;
+      if (!b.effects) {
+        const uintmax_t cap = std::filesystem::file_size(capFile(chr + "/" + col), ec);
+        b.effects = !ec && cap > 0;
+      }
       if (b.parts.empty() && !b.effects) continue;
       out.push_back(std::move(b));
     }
@@ -8267,14 +11219,18 @@ void discardAndClose() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back
 void cancelClose() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kCancelClose, -1, 0}); }
 void restoreRecovery(bool restore) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kRecovery, -1, restore ? 1u : 0u}); }
 void undo() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kUndo, -1, 0}); }
+namespace {
+  int regionAtDs(const DsCache& d, float u, float v) {
+    if (d.w <= 0 || d.h <= 0 || u < 0 || v < 0 || u >= 1 || v >= 1) return -1;
+    const int x = std::clamp(static_cast<int>(u * d.w), 0, d.w - 1), y = std::clamp(static_cast<int>(v * d.h), 0, d.h - 1);
+    const uint16_t r = d.owner[static_cast<size_t>(y) * d.w + x];
+    return r == 0xFFFF ? -1 : r;
+  }
+}
 int textureRegionAt(float u, float v) {
   std::lock_guard<std::mutex> lk(g_prev_m);
   if (!g_prev_ds || g_prev_px.empty()) return -1;  // Uses the regions as the picture shows them, so a thin line widened there is picked there
-  const DsCache& d = *g_prev_ds;
-  if (d.w <= 0 || d.h <= 0 || u < 0 || v < 0 || u >= 1 || v >= 1) return -1;
-  const int x = std::clamp(static_cast<int>(u * d.w), 0, d.w - 1), y = std::clamp(static_cast<int>(v * d.h), 0, d.h - 1);
-  const uint16_t r = d.owner[static_cast<size_t>(y) * d.w + x];
-  return r == 0xFFFF ? -1 : r;
+  return regionAtDs(*g_prev_ds, u, v);
 }
 void listAllEffects() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kListEffects, -1, 0}); }
 void onScreen(bool on) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kOnScreen, on ? 1 : 0, 0}); }
@@ -8326,6 +11282,34 @@ void pickAt(float x, float y) {
   q.f[1] = y;
   g_reqs.push_back(q);
 }
+void probeAt(float x, float y) {
+  std::lock_guard<std::mutex> lock(g_m);
+  Req q{kProbeAt, -1, 0};
+  q.f[0] = x;
+  q.f[1] = y;
+  g_reqs.push_back(q);
+}
+bool probeWanted(int& id, int& frame, float& x, float& y) {
+  std::lock_guard<std::mutex> lk(g_probe_m);
+  if (!g_probe.on || g_probe.frame < 0 || g_probe.grabbed || g_probe.failed || nowMs() - g_probe.ms < 50.0) return false;
+  id = g_probe.id;
+  frame = g_probe.frame;
+  x = g_probe.xy[0];
+  y = g_probe.xy[1];
+  return true;
+}
+void probeGrabbed(int id, int frame, const uint8_t* px) {
+  std::lock_guard<std::mutex> lk(g_probe_m);
+  if (!g_probe.on || id != g_probe.id || frame != g_probe.frame || frame < 0 || static_cast<size_t>(frame) >= g_probe.shots.size()) return;
+  std::memcpy(g_probe.shots[static_cast<size_t>(frame)].data(), px, 75);
+  g_probe.grabbed = true;
+}
+void probeFailed(int id, const std::string& why) {
+  std::lock_guard<std::mutex> lk(g_probe_m);
+  if (!g_probe.on || id != g_probe.id) return;
+  g_probe.why = why;
+  g_probe.failed = true;
+}
 void redo() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kRedo, -1, 0}); }
 void exportRecolor() { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kExportRecolor, -1, 0}); }
 void importRecolor(const std::string& file) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kImportRecolor, -1, 0, {}, {}, file}); }
@@ -8367,7 +11351,9 @@ void menuUpdate(bool in_fight) {
   }
 }
 void menuRelease() { menuRelease_(); }
+void probeStopForFight();
 void battleGone() {
+  tex_upload::setActive(false);
   // The same training fight, only stalled: nothing's over. (The engine's address can be reused by a new fight, so the
   // fighters' meshes must still be the ones found.)
   if (asw_engine::get() && asw_engine::get() == g_fight && !g_targets.empty() && std::all_of(g_targets.begin(), g_targets.end(), [](const Target& t) {
@@ -8377,7 +11363,8 @@ void battleGone() {
         return true;
       }))
     return;
-  if (!asw_engine::get()) soloCameraOff();  // (fight gone: the free camera goes too. A pause keeps it; dllmain turns it off outside training)
+  probeStopForFight();
+  if (!asw_engine::get()) { soloCameraOff(); cameraForget(); }  // (fight gone: the free camera goes too. A pause keeps it; dllmain turns it off outside training)
   {  // Textures ticked for this fight's fighter don't go on the next one's
     std::lock_guard<std::mutex> lk(g_tex_pick_m);
     g_tex_pick.clear();
@@ -8726,6 +11713,7 @@ std::atomic<double> g_view_ms{0};    // When it was last set. It ends once the b
 float g_view_pose[7] = {};           // location, pitch yaw roll, field of view (FMinimalViewInfo's first fields)
 void __fastcall viewPointHook(void* self, uint8_t* view, int pass) {
   g_get_view_point(self, view, pass);
+  if (!g_preview.late.empty()) previewBeforeDraw();
   if (!view || !g_view_on || nowMs() - g_view_ms > 250.0) return;
   std::memcpy(view, g_view_pose, sizeof(g_view_pose));
   view[0x30] &= ~1;                               // Clear bConstrainAspectRatio for no black bars
@@ -8947,6 +11935,8 @@ void paintStep(const Target& t, int steps) {  // One undo step made of the canva
   if (steps <= 0) return;
   auto& u = g_undo[slotOf(t)];
   u.push_back(Snap{keyOf(t), {}, {}, {}, steps});
+  u.back().seq = ++g_undo_seq;
+  for (auto& [hk, h] : g_fix_hist) if (hk.rfind(t.chr + "/", 0) == 0) h.second.clear();
   if (u.size() > 100) u.erase(u.begin());
   g_redo[slotOf(t)].clear();
   g_snap_kind = -1;
@@ -9175,26 +12165,40 @@ bool importMatColorsNow(const Target& t, const std::filesystem::path& file) {
     std::vector<std::string> col;
     for (size_t a = 0, b; a <= l.size(); a = b + 1) { b = l.find('\t', a); if (b == std::string::npos) b = l.size(); col.push_back(l.substr(a, b - a)); }
     if (col.size() < 4) continue;
+    if (isPicture(col[2])) {
+      float v[4] = {};
+      if (matpics::importLine(col[3], col.size() > 4 ? col[4] : std::string(), v)) rows[col[1]] = {v[0], v[1], v[2], v[3]};
+      continue;
+    }
     std::array<float, 4> c{};
     if (sscanf_s(col[3].c_str(), "%f %f %f %f", &c[0], &c[1], &c[2], &c[3]) != 4) continue;
+    if (isNumber(col[2])) { if (std::isfinite(c[0])) rows[col[1]] = {c[0], 0.0f, 0.0f, 1.0f}; continue; }
     if (std::all_of(c.begin(), c.end(), [](float f) { return std::isfinite(f) && f >= 0.0f && f <= 1000.0f; })) rows[col[1]] = c;
   }
   if (rows.empty()) { g_status = fname + " has no material colors in it."; COMBO_LOG("color editor: " + g_status); return false; }
   int set = 0;
   bool undo = false;
+  std::string missing;
   for (VecGroup& g : g_vecs) {
     auto it = rows.find(g.label);
     if (it == rows.end() || g.label == kDecalLabel) continue;
-    if (std::equal(it->second.begin(), it->second.end(), g.cur, [](float a, float b) { return std::fabs(a - b) <= 1e-4f * (std::max)(1.0f, std::fabs(b)); })) continue;  // (the file has 6 digits)
+    if (isPicture(g.param) ? std::equal(it->second.begin(), it->second.end(), g.cur)
+                           : std::equal(it->second.begin(), it->second.end(), g.cur, [](float a, float b) { return std::fabs(a - b) <= 1e-4f * (std::max)(1.0f, std::fabs(b)); })) continue;  // (the file has 6 digits)
     if (!undo) { pushUndo(t, kVec, -1); g_snap_kind = -1; undo = true; }  // (its own step, never merged with the next)
     std::memcpy(g.cur, it->second.data(), sizeof(g.cur));
     g.edited = true;
-    g_vec_saved[keyOf(t)][g.label] = it->second;
+    g_vec_saved[partKey(t)][g.label] = it->second;
     for (size_t k = 0; k < g.mids.size(); k++) vecSet(g.mids[k], g.paramOf(k), g.cur);
     set++;
+    if (isPicture(g.param) && std::lround(g.cur[0]) == 0) {
+      const std::filesystem::path png = pngFile(g.pic_mic, matpics::hashOf(g.cur));
+      std::error_code ec;
+      if (png.empty() || !std::filesystem::exists(png, ec)) missing += (missing.empty() ? "" : ", ") + g.label + " (" + matpics::hashOf(g.cur) + ".png)";
+    }
   }
-  if (set) markUnsaved(t);
+  if (set) markUnsavedVecs(t);
   g_status = set ? "Imported " + fname + " (" + std::to_string(set) + " material colors)." : fname + " has no changes to import (the material colors).";
+  if (!missing.empty()) g_status += " Its PNG pictures aren't in this PC's saves folder: " + missing + ".";
   COMBO_LOG("color editor: " + g_status);
   return set > 0;
 }
@@ -9206,7 +12210,7 @@ bool importTexturesNow(const Target& t, const std::filesystem::path& file) {  //
   bool many = false;
   const Target* named = texPartOf(t, file, named_m, many);  // The part a new export's name says
   if (many) { g_status = fname + ": which part? Its name fits more than one."; COMBO_LOG("color editor: " + g_status); return false; }
-  if (named && named != &t) { g_status = fname + " is " + partName(named->kind) + "'s texture: show that part first."; COMBO_LOG("color editor: " + g_status); return false; }
+  if (named && named != &t) { g_status = fname + " is " + partLabel(named->chr, named->kind) + "'s texture: show that part first."; COMBO_LOG("color editor: " + g_status); return false; }
   finishStrokes();
   const Worn& w = *g_worn;
   PaintPart* pp = paintFor(t, w.base.w, w.base.h);
@@ -9315,6 +12319,8 @@ bool importTexturesNow(const Target& t, const std::filesystem::path& file) {  //
     auto& u = g_undo[slotOf(t)];
     if (changed) u.push_back(Snap{keyOf(t), ed_before, {}, {}, 1, true});
     else { Snap sn = snapOf(t); sn.ed = ed_before; u.push_back(std::move(sn)); }
+    u.back().seq = ++g_undo_seq;
+    for (auto& [hk, h] : g_fix_hist) if (hk.rfind(t.chr + "/", 0) == 0) h.second.clear();
     if (u.size() > 100) u.erase(u.begin());
     g_redo[slotOf(t)].clear();
     g_snap_kind = -1;
@@ -9329,16 +12335,7 @@ bool importTexturesNow(const Target& t, const std::filesystem::path& file) {  //
   COMBO_LOG("color editor: " + g_status + (regions ? " The regions took its colors." : ""));
   return changed || regions;
 }
-void previewTick(const Target& t) {
-  if (g_prev_job.valid()) {
-    if (g_prev_job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
-    g_prev_job.get();
-  }
-  if (g_prev_key != keyOf(t)) {
-    g_prev_key = keyOf(t);
-    { std::lock_guard<std::mutex> lk(g_prev_m); g_prev_want = g_prev_key; }
-    previewClear();
-  }
+bool dsTick(const Target& t) {
   const Worn& w = *g_worn;
   auto mp = g_maps.find(mapKey(t));
   const int major = mp == g_maps.end() ? 0x7FFF : mp->second->major;
@@ -9365,11 +12362,48 @@ void previewTick(const Target& t) {
     ds->h = H;
     g_ds = ds;
     g_ds_for = g_worn_serial;
-    g_prev_sig = 0;
+    return true;
   }
+  return false;
+}
+std::vector<std::array<int, 3>> regionOffsets(const Worn& w, const std::vector<Edit>& ed, bool shadow) {
+  const int R = static_cast<int>(w.lit.size());
+  std::vector<std::array<int, 3>> off(static_cast<size_t>(R), {0, 0, 0});
+  for (int r = 0; r < R; r++) {
+    const auto pr = pairOfW(w, g_follow, r, ed);
+    const uint32_t want = shadow ? pr.second : pr.first, own = shadow ? w.shadow[r] : w.lit[r];
+    for (int c = 0; c < 3; c++) off[r][c] = int(want >> (16 - 8 * c) & 0xFF) - int(own >> (16 - 8 * c) & 0xFF);
+  }
+  return off;
+}
+std::shared_ptr<const paint::Image> atViewSize(const paint::Image& full) {
+  if (full.w <= 0 || !g_ds || g_ds->w <= 0 || full.w / g_ds->w <= 0) return nullptr;
+  const int cf = full.w / g_ds->w;
+  auto view_img = std::make_shared<paint::Image>();
+  view_img->w = g_ds->w;
+  view_img->h = g_ds->h;
+  view_img->px.resize(static_cast<size_t>(view_img->w) * view_img->h * 4);
+  for (int yy = 0; yy < view_img->h; yy++)
+    for (int xx = 0; xx < view_img->w; xx++)
+      std::memcpy(&view_img->px[(static_cast<size_t>(yy) * view_img->w + xx) * 4],
+                  &full.px[(static_cast<size_t>(yy * cf + cf / 2) * full.w + (xx * cf + cf / 2)) * 4], 4);
+  return view_img;
+}
+void previewTick(const Target& t) {
+  if (g_prev_job.valid()) {
+    if (g_prev_job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    g_prev_job.get();
+  }
+  if (g_prev_key != keyOf(t)) {
+    g_prev_key = keyOf(t);
+    { std::lock_guard<std::mutex> lk(g_prev_m); g_prev_want = g_prev_key; }
+    previewClear();
+  }
+  const Worn& w = *g_worn;
+  if (dsTick(t)) g_prev_sig = 0;
   const int map = g_texview_map;
   const DecalTint* tint = nullptr;
-  for (const auto& [key, d] : g_decals) if (key.second == keyOf(t)) { tint = &d; break; }
+  for (const auto& [key, d] : g_decals) if (key.second == partKey(t)) { tint = &d; break; }
   const DecalPix* dpx = tint ? &g_decal_pix[tint->tex] : nullptr;
   const bool decal = map == 2 && dpx && dpx->img.w > 0;
   const auto& ed = g_edits[keyOf(t)];
@@ -9421,31 +12455,14 @@ void previewTick(const Target& t) {
   }
   const bool shadow = map == 1;
   const int R = static_cast<int>(w.lit.size());
-  std::vector<std::array<int, 3>> off(static_cast<size_t>(R), {0, 0, 0});
-  for (int r = 0; r < R; r++) {
-    const auto pr = pairOfW(w, g_follow, r, ed);
-    const uint32_t want = shadow ? pr.second : pr.first, own = shadow ? w.shadow[r] : w.lit[r];
-    for (int c = 0; c < 3; c++) off[r][c] = int(want >> (16 - 8 * c) & 0xFF) - int(own >> (16 - 8 * c) & 0xFF);
-  }
+  std::vector<std::array<int, 3>> off = regionOffsets(w, ed, shadow);
   std::vector<uint8_t> sel(static_cast<size_t>(R), 0);
   for (int r : g_selected) if (r >= 0 && r < R) sel[r] = 1;
   const bool any = !g_selected.empty() && !plain;
   std::shared_ptr<const paint::Image> comp;  // the part with its paint, sampled at the view's size (for the worker)
   if (painted) {
     if (!paintRefresh(*pp, t)) g_prev_sig = 0;  // Put off while the region colors move, and asked again next time
-    const paint::Image& full = pp->comp[shadow ? 1 : 0];
-    if (full.w > 0 && g_ds && g_ds->w > 0 && full.w / g_ds->w > 0) {
-      const int cf = full.w / g_ds->w;
-      auto view_img = std::make_shared<paint::Image>();
-      view_img->w = g_ds->w;
-      view_img->h = g_ds->h;
-      view_img->px.resize(static_cast<size_t>(view_img->w) * view_img->h * 4);
-      for (int yy = 0; yy < view_img->h; yy++)
-        for (int xx = 0; xx < view_img->w; xx++)
-          std::memcpy(&view_img->px[(static_cast<size_t>(yy) * view_img->w + xx) * 4],
-                      &full.px[(static_cast<size_t>(yy * cf + cf / 2) * full.w + (xx * cf + cf / 2)) * 4], 4);
-      comp = view_img;
-    }
+    comp = atViewSize(pp->comp[shadow ? 1 : 0]);
   }
   g_prev_job = std::async(std::launch::async, [ds = g_ds, off = std::move(off), sel = std::move(sel), any, shadow, R, key = keyOf(t), comp]() {
     const int cf = comp && comp->w == ds->w ? 1 : 0;  // The composed picture, at the view's size
@@ -9506,6 +12523,12 @@ void cameraOff() {
   g_keep_dist = 0.0f;
   stopFocus(target());
   stopMapping(target());
+}
+void cameraForget() {
+  if (!g_view_hooked && g_cam_pc && g_cam_orig && asw_engine::get() && asw_engine::get() == g_fight && viewTarget() == g_cam_actor) setViewTarget(g_cam_pc, g_cam_orig);
+  g_view_on = false;
+  g_cam_pc = g_cam_actor = g_cam_orig = nullptr;
+  g_cam.ready = false;
 }
 // The selection's middle and box from a probe's samples, using the middle 90% so strays are left out.
 FocusHit hitOf(const std::vector<ScanSample>& s, int w, int h) {
@@ -9656,6 +12679,7 @@ namespace {
   }
   // The meshes and material slots wearing the part now, as drawnTick finds them
   struct Wear { UObject* comp = nullptr; std::string mesh; int slot = 0; };
+  int slotIndex(UObject* comp, const std::string& slot);
   std::vector<Wear> wearing(const Target& t) {
     std::vector<Wear> out;
     for (UObject* c : liveComps(t)) {
@@ -9667,6 +12691,31 @@ namespace {
                                 !(outlineOnly(material(c, i)) && !colorSource(material(c, i), n0, k0)))
           out.push_back({c, mesh, i});
     }
+    static std::map<std::string, std::set<std::string>> tables;
+    auto tb = tables.find(t.chr);
+    if (tb == tables.end()) {
+      tb = tables.emplace(t.chr, std::set<std::string>()).first;
+      std::ifstream f(g_dir / "atlas" / (t.chr + "_slots.txt"));
+      std::string line;
+      while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) tb->second.insert(line);
+      }
+    }
+    if (!tb->second.empty() && !out.empty())
+      for (UObject* c : fighterParts()) {
+        if (!c || c->GetOuterPrivate() != t.pawn) continue;
+        const std::string mesh = meshNameOf(c);
+        const AtlasMesh* am = mesh.empty() ? nullptr : atlasMesh(t.chr, mesh);
+        if (!am) continue;
+        for (size_t s = 0; s < am->slot_names.size() && s < am->slots.size(); s++) {
+          if (!tb->second.count(t.kind + "\t" + mesh + "\t" + am->slot_names[s])) continue;
+          if (std::any_of(out.begin(), out.end(), [&](const Wear& w) { return w.mesh == mesh && w.slot == static_cast<int>(s); })) continue;
+          const int at = slotIndex(shownComp(c), am->slot_names[s]);
+          if (at != static_cast<int>(s)) continue;
+          out.push_back({shownComp(c), mesh, static_cast<int>(s)});
+        }
+      }
     return out;
   }
   int slotIndex(UObject* comp, const std::string& slot) {  // The mesh's material index for a slot name, -1 if it hasn't one
@@ -9692,7 +12741,7 @@ namespace {
     auto it = g_by_hand.find(key);
     if (it == g_by_hand.end()) {
       std::error_code ec;
-      it = g_by_hand.emplace(key, std::filesystem::exists(byHandFile(key, t.chr, t.kind), ec)).first;
+      it = g_by_hand.emplace(key, std::filesystem::exists(byHandFile(key, t.chr, kindOf(t)), ec)).first;
     }
     return it->second;
   }
@@ -9722,6 +12771,191 @@ namespace {
     std::vector<std::vector<Place>> by_region;
   };
   std::map<std::string, PlacesFor> g_places;  // by map key
+  struct FixChange { uint32_t at; uint16_t before, after; };
+  struct FixStep { int id = 0; std::vector<FixChange> ch; };
+  struct Fixes {
+    std::weak_ptr<CharMap> map;
+    bool aside = false;
+    std::unordered_map<uint32_t, std::pair<uint16_t, uint16_t>> now;
+    std::vector<FixStep> steps;
+  };
+  std::map<std::string, Fixes> g_fixes;
+  int g_fix_id = 0;
+  std::filesystem::path fixesFileOfKey(const std::string& mk) {
+    const size_t a = mk.find('/'), b = mk.rfind('/');
+    return fixesFile(mk.substr(0, a), b > a ? mk.substr(a + 1, b - a - 1) : std::string(), ownOfKey(mk));
+  }
+  Fixes& fixesOf(const std::string& mk, const std::shared_ptr<CharMap>& m) {
+    Fixes& fx = g_fixes[mk];
+    if (fx.map.lock() == m) return fx;
+    fx = Fixes{};
+    fx.map = m;
+    std::vector<RegionFix> list;
+    std::error_code ec;
+    const auto file = fixesFileOfKey(mk);
+    const bool main_ok = readFixes(file, *m, list);
+    if (!main_ok) {
+      fx.aside = std::filesystem::exists(file, ec);
+      if (!readFixes(carriedFile(file), *m, list)) list.clear();
+    }
+    for (const RegionFix& x : list) {
+      if (x.at >= m->owner.size()) continue;
+      const uint16_t shown = x.now == kHeldOut ? static_cast<uint16_t>(0xFFFF) : x.now;
+      if (m->owner[x.at] == shown && x.orig != x.now) fx.now[x.at] = {x.orig, x.now};
+    }
+    return fx;
+  }
+  size_t applyFixChanges(const std::string& mk, const std::vector<FixChange>& ch, bool forward) {
+    auto mp = g_maps.find(mk);
+    if (mp == g_maps.end() || !mp->second) return 0;
+    const std::shared_ptr<CharMap> old = mp->second;
+    Fixes& fx = fixesOf(mk, old);
+    auto nm = std::make_shared<CharMap>(*old);
+    const size_t N = nm->owner.size();
+    size_t done = 0;
+    for (const FixChange& c : ch) {
+      const uint16_t from = forward ? c.before : c.after, to = forward ? c.after : c.before;
+      if (c.at >= N || from == to || (to != kHeldOut && to != 0xFFFF && to >= nm->regions)) continue;
+      auto it = fx.now.find(c.at);
+      const uint16_t cur = it != fx.now.end() ? it->second.second : nm->owner[c.at];
+      if (cur != from) continue;
+      const uint16_t orig = it != fx.now.end() ? it->second.first : cur;
+      if (to == orig) { if (it != fx.now.end()) fx.now.erase(it); }
+      else if (it != fx.now.end()) it->second.second = to;
+      else fx.now.emplace(c.at, std::make_pair(orig, to));
+      nm->owner[c.at] = to == kHeldOut ? static_cast<uint16_t>(0xFFFF) : to;
+      done++;
+    }
+    if (!done) return 0;
+    nm->held.clear();
+    std::vector<RegionFix> list;
+    list.reserve(fx.now.size());
+    for (const auto& [at, v] : fx.now) {
+      list.push_back({at, v.first, v.second});
+      if (v.second == kHeldOut) nm->held.push_back(at);
+    }
+    std::sort(nm->held.begin(), nm->held.end());
+    std::sort(list.begin(), list.end(), [](const RegionFix& x, const RegionFix& y) { return x.at < y.at; });
+    const auto file = fixesFileOfKey(mk);
+    if (fx.aside) {
+      std::error_code ec;
+      std::filesystem::path aside = withSuffix(file, ".old");
+      for (int n = 2; std::filesystem::exists(aside, ec) && n < 100; n++) aside = withSuffix(file, (".old" + std::to_string(n)).c_str());
+      std::filesystem::rename(file, aside, ec);
+      fx.aside = false;
+      COMBO_LOG("color editor: " + mk + "'s region changes were made on another region map, kept as " + aside.filename().string());
+    }
+    const bool saved = writeFixes(file, *nm, list);
+    for (auto& [k, e] : g_equip_refs) if (e.map == old.get()) e.map = nm.get();
+    for (auto& [k, d] : g_drawn) if (d.map == old.get()) d.map = nm.get();
+    if (g_drawn_job_map == old.get()) g_drawn_job_map = nm.get();
+    if (auto pf = g_places.find(mk); pf != g_places.end() && pf->second.map.lock() == old) pf->second.map = nm;
+    fx.map = nm;
+    mp->second = nm;
+    {
+      const std::string pre = mk.substr(0, mk.find('/') + 1);
+      for (auto& [k, kept] : g_menu_tex)
+        if (k.rfind(pre, 0) == 0) kept.edits = (std::filesystem::file_time_type::max)();
+    }
+    {
+      std::lock_guard<std::mutex> lk(g_fix_m);
+      if (fx.now.empty()) g_fix_changed.erase(mk); else g_fix_changed.insert(mk);
+    }
+    g_reown = mk;
+    g_view_dirty = true;
+    COMBO_LOG("color editor: " + mk + ": " + std::to_string(done) + " texels changed region, " + std::to_string(fx.now.size()) + " differ from the map" +
+              (saved ? "" : " (the file couldn't be written)"));
+    if (!saved) g_status = "Couldn't save the region changes (a file in use?).";
+    return done;
+  }
+  void regionRequest(const Target& t, const Req& q) {
+    const std::string mk = mapKey(t);
+    auto mp = g_maps.find(mk);
+    if (mp == g_maps.end() || !mp->second || !g_worn) return;
+    const std::shared_ptr<CharMap> m = mp->second;
+    const Worn& w = *g_worn;
+    const int W = m->w, H = m->h;
+    if (W <= 0 || H <= 0 || w.owner.size() != m->owner.size() || m->owner.size() != static_cast<size_t>(W) * H) return;
+    Fixes& fx = fixesOf(mk, m);
+    std::vector<FixChange> ch;
+    if (q.kind == kRegionReset) {
+      ch.reserve(fx.now.size());
+      for (const auto& [at, v] : fx.now) ch.push_back({at, v.second, v.first});
+    } else {
+      if (q.nums.size() < 4 || q.region >= m->regions) return;
+      const uint16_t target = q.region < 0 ? kHeldOut : static_cast<uint16_t>(q.region);
+      const float rad = std::clamp(q.nums[0], 1.0f, 256.0f) * 0.5f;
+      const bool only_loose = q.nums[1] != 0;
+      std::vector<std::pair<float, float>> pts;
+      for (size_t i = 2; i + 1 < q.nums.size() && pts.size() < 20000; i += 2)
+        if (std::isfinite(q.nums[i]) && std::isfinite(q.nums[i + 1]))
+          pts.push_back({std::clamp(q.nums[i], -1.0f, 2.0f) * W, std::clamp(q.nums[i + 1], -1.0f, 2.0f) * H});
+      if (pts.empty()) return;
+      float lo_x = pts[0].first, hi_x = lo_x, lo_y = pts[0].second, hi_y = lo_y;
+      for (const auto& [px, py] : pts) { lo_x = (std::min)(lo_x, px); hi_x = (std::max)(hi_x, px); lo_y = (std::min)(lo_y, py); hi_y = (std::max)(hi_y, py); }
+      const int bx0 = std::clamp(static_cast<int>(std::floor(lo_x - rad)), 0, W - 1), bx1 = std::clamp(static_cast<int>(std::floor(hi_x + rad)), 0, W - 1);
+      const int by0 = std::clamp(static_cast<int>(std::floor(lo_y - rad)), 0, H - 1), by1 = std::clamp(static_cast<int>(std::floor(hi_y + rad)), 0, H - 1);
+      const int bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
+      std::vector<uint8_t> cov(static_cast<size_t>(bw) * bh, 0);
+      auto mark = [&](float ax, float ay, float cx, float cy) {
+        const int sx0 = std::clamp(static_cast<int>(std::floor((std::min)(ax, cx) - rad)), bx0, bx1), sx1 = std::clamp(static_cast<int>(std::floor((std::max)(ax, cx) + rad)), bx0, bx1);
+        const int sy0 = std::clamp(static_cast<int>(std::floor((std::min)(ay, cy) - rad)), by0, by1), sy1 = std::clamp(static_cast<int>(std::floor((std::max)(ay, cy) + rad)), by0, by1);
+        const float dx = cx - ax, dy = cy - ay, len2 = dx * dx + dy * dy;
+        for (int y = sy0; y <= sy1; y++)
+          for (int x = sx0; x <= sx1; x++) {
+            const float px = x + 0.5f - ax, py = y + 0.5f - ay;
+            const float k = len2 > 0 ? std::clamp((px * dx + py * dy) / len2, 0.0f, 1.0f) : 0.0f;
+            const float ex = px - k * dx, ey = py - k * dy;
+            if (ex * ex + ey * ey <= rad * rad) cov[static_cast<size_t>(y - by0) * bw + (x - bx0)] = 1;
+          }
+        for (const auto& [ex, ey] : {std::pair<float, float>{ax, ay}, std::pair<float, float>{cx, cy}}) {
+          const int ix = static_cast<int>(std::floor(ex)), iy = static_cast<int>(std::floor(ey));
+          if (ix >= bx0 && ix <= bx1 && iy >= by0 && iy <= by1) cov[static_cast<size_t>(iy - by0) * bw + (ix - bx0)] = 1;
+        }
+      };
+      if (pts.size() == 1) mark(pts[0].first, pts[0].second, pts[0].first, pts[0].second);
+      for (size_t i = 0; i + 1 < pts.size(); i++) mark(pts[i].first, pts[i].second, pts[i + 1].first, pts[i + 1].second);
+      for (int y = 0; y < bh; y++)
+        for (int x = 0; x < bw; x++) {
+          if (!cov[static_cast<size_t>(y) * bw + x]) continue;
+          const uint32_t p = static_cast<uint32_t>(static_cast<size_t>(y + by0) * W + (x + bx0));
+          auto it = fx.now.find(p);
+          const uint16_t cur = it != fx.now.end() ? it->second.second : m->owner[p];
+          if (cur == target) continue;
+          const uint16_t seen = cur == kHeldOut ? static_cast<uint16_t>(0xFFFF) : cur != 0xFFFF ? cur : w.owner[p];
+          if (target == kHeldOut) {
+            if (seen == 0xFFFF) continue;
+          } else {
+            if (only_loose && seen != 0xFFFF) continue;
+            if (cur == 0xFFFF && seen == target) continue;
+          }
+          ch.push_back({p, cur, target});
+        }
+    }
+    if (ch.empty()) { g_status = q.kind == kRegionReset ? "No region changes on this part." : "Nothing to move there."; return; }
+    if (q.kind != kRegionReset && fx.now.size() + ch.size() > kFixMax) { g_status = "Too many texels moved on this part: undo some, or use Reset regions."; return; }
+    if (!applyFixChanges(mk, ch, true)) return;
+    Fixes& fy = g_fixes[mk];
+    fy.steps.push_back({++g_fix_id, std::move(ch)});
+    if (fy.steps.size() > 100) fy.steps.erase(fy.steps.begin());
+    auto& fh = g_fix_hist[mk];
+    fh.first.push_back({g_fix_id, ++g_undo_seq});
+    if (fh.first.size() > 100) fh.first.erase(fh.first.begin());
+    fh.second.clear();
+    g_redo[slotOf(t)].clear();
+    g_snap_kind = -1;
+  }
+  bool regionStep(int id, bool forward) {
+    for (auto& [mk, fx] : g_fixes)
+      for (const FixStep& st : fx.steps)
+        if (st.id == id) {
+          const std::string key = mk;
+          const std::vector<FixChange> ch = st.ch;
+          applyFixChanges(key, ch, forward);
+          return true;
+        }
+    return false;
+  }
 // Each region's places, worked out when the part's regions or what wears it change. Null when the part isn't all
 // in an atlas, and then it's mapped by scanning as before.
 const std::vector<std::vector<Place>>* placesFor(const Target& t) {
@@ -9826,6 +13060,362 @@ bool atlasCovers(const Target& t) { return coveredBy(t, wearing(t), nullptr); }
     out[1] = v[1] + 2.0f * (u[2] * c1[0] - u[0] * c1[2]);
     out[2] = v[2] + 2.0f * (u[0] * c1[1] - u[1] * c1[0]);
   }
+  using part_preview::PickVert;
+  using part_preview::PickInf;
+  using part_preview::PickSlot;
+  using part_preview::PickBone;
+  using part_preview::PickMesh;
+  using part_preview::readPick;
+  struct PickXf { bool ok = false; float q[4] = {}, loc[3] = {}, sc[3] = {}; };
+  struct GeoHit { bool hit = false; float t = 0, u = 0, v = 0; std::string mesh, slot, kind; size_t tris = 0; UObject* comp = nullptr; };
+  void pickMesh(const PickMesh& pm, const std::string& mesh, const std::vector<PickXf>& xf, const float ro[3], const float rd[3], GeoHit& best) {
+    std::vector<float> wp;
+    for (const PickSlot& s : pm.slots) {
+      wp.assign(s.verts.size() * 3, std::numeric_limits<float>::quiet_NaN());
+      for (size_t i = 0; i < s.verts.size(); i++) {
+        const PickVert& v = s.verts[i];
+        const float P[3] = {s.plo[0] + (v.p[0] + 32768) / 65535.0f * s.pspan[0], s.plo[1] + (v.p[1] + 32768) / 65535.0f * s.pspan[1],
+                            s.plo[2] + (v.p[2] + 32768) / 65535.0f * s.pspan[2]};
+        float acc[3] = {0, 0, 0}, wsum = 0;
+        for (uint32_t k = s.first[i]; k < s.first[i + 1]; k++) {
+          const PickInf& f = s.inf[k];
+          const float w = f.w / 65535.0f;
+          if (w <= 0 || f.b >= xf.size() || f.b >= pm.bones.size() || !xf[f.b].ok) continue;
+          const PickBone& bn = pm.bones[f.b];
+          const PickXf& x = xf[f.b];
+          const float d[3] = {P[0] - bn.pos[0], P[1] - bn.pos[1], P[2] - bn.pos[2]};
+          float l[3], wv[3];
+          rotateBy(bn.inv, d, l);
+          const float ls[3] = {l[0] * x.sc[0], l[1] * x.sc[1], l[2] * x.sc[2]};
+          rotateBy(x.q, ls, wv);
+          for (int c = 0; c < 3; c++) acc[c] += w * (wv[c] + x.loc[c]);
+          wsum += w;
+        }
+        if (wsum > 0) for (int c = 0; c < 3; c++) wp[i * 3 + c] = acc[c] / wsum;
+      }
+      for (size_t k = 0; k + 2 < s.tris.size(); k += 3) {
+        const uint32_t i0 = s.tris[k], i1 = s.tris[k + 1], i2 = s.tris[k + 2];
+        const float* a = &wp[i0 * 3];
+        const float* b = &wp[i1 * 3];
+        const float* c = &wp[i2 * 3];
+        if (!std::isfinite(a[0]) || !std::isfinite(b[0]) || !std::isfinite(c[0])) continue;
+        best.tris++;
+        const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const float p[3] = {rd[1] * e2[2] - rd[2] * e2[1], rd[2] * e2[0] - rd[0] * e2[2], rd[0] * e2[1] - rd[1] * e2[0]};
+        const float det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
+        if (std::fabs(det) < 1e-12f) continue;
+        const float inv = 1.0f / det;
+        const float tv[3] = {ro[0] - a[0], ro[1] - a[1], ro[2] - a[2]};
+        const float u = (tv[0] * p[0] + tv[1] * p[1] + tv[2] * p[2]) * inv;
+        if (u < 0 || u > 1) continue;
+        const float q[3] = {tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]};
+        const float v = (rd[0] * q[0] + rd[1] * q[1] + rd[2] * q[2]) * inv;
+        if (v < 0 || u + v > 1) continue;
+        const float tt = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
+        if (tt <= 0.5f || (best.hit && tt >= best.t)) continue;
+        const float w0 = 1.0f - u - v;
+        const PickVert& v0 = s.verts[i0];
+        const PickVert& v1 = s.verts[i1];
+        const PickVert& v2 = s.verts[i2];
+        best.hit = true;
+        best.t = tt;
+        best.u = s.lo[0] + (w0 * v0.uv[0] + u * v1.uv[0] + v * v2.uv[0]) / 65535.0f * s.span[0];
+        best.v = s.lo[1] + (w0 * v0.uv[1] + u * v1.uv[1] + v * v2.uv[1]) / 65535.0f * s.span[1];
+        best.mesh = mesh;
+        best.slot = s.name;
+        best.kind = s.kind;
+      }
+    }
+  }
+  std::map<std::string, std::map<std::string, PickMesh>> g_pick_data;
+  struct GeoWait { bool on = false; UObject* pawn = nullptr; std::string kind; float u = 0, v = 0; Clock::time_point until; };
+  GeoWait g_geo_wait;
+  bool geoPick(const Target& t, float fx, float fy, GeoHit& best) {
+    auto it = g_pick_data.find(t.chr);
+    if (it == g_pick_data.end()) {
+      it = g_pick_data.emplace(t.chr, std::map<std::string, PickMesh>()).first;
+      const std::vector<uint8_t> b = readBytes(g_dir / "atlas" / (t.chr + "_pick.bin"));
+      if (!b.empty() && !readPick(b, it->second)) it->second.clear();
+      COMBO_LOG("color editor: pick data for " + t.chr + ": " + (b.empty() ? std::string("no file") : std::to_string(it->second.size()) + " meshes"));
+    }
+    if (it->second.empty()) return false;
+    if (g_vw <= 0.0f || g_vh <= 0.0f) readViewport();
+    std::array<float, 6> ray{};
+    if (g_vw <= 0.0f || g_vh <= 0.0f || !toRay(fx * g_vw, fy * g_vh, ray)) {
+      COMBO_LOG("color editor: pick by the model: no view ray, so the scan is used");
+      return false;
+    }
+    std::set<UObject*> done;
+    int meshes = 0;
+    std::string names;
+    UObject* hit_comp = nullptr;
+    for (UObject* c : fighterParts()) {
+      if (!c || c->GetOuterPrivate() != t.pawn) continue;
+      UObject* sc = shownComp(c);
+      if (!sc || !done.insert(sc).second || !isVisible(sc)) continue;
+      UObject* m = meshOf(sc);
+      if (!m) continue;
+      const std::string name = lowered(narrow(m->GetName()));
+      auto pm = it->second.find(name);
+      if (pm == it->second.end()) continue;
+      std::vector<PickXf> xf(pm->second.bones.size());
+      for (size_t i = 0; i < xf.size(); i++) {
+        if (!pm->second.bones[i].used) continue;
+        PickXf& x = xf[i];
+        x.ok = boneWorld(sc, pm->second.bones[i].name, x.q, x.loc, x.sc) && std::fabs(x.sc[0]) >= 0.01f && std::fabs(x.sc[1]) >= 0.01f && std::fabs(x.sc[2]) >= 0.01f;
+      }
+      const float before = best.hit ? best.t : -1.0f;
+      pickMesh(pm->second, name, xf, ray.data(), ray.data() + 3, best);
+      if (best.hit && best.t != before) hit_comp = sc;
+      meshes++;
+      names += " " + name;
+    }
+    best.comp = hit_comp;
+    COMBO_LOG("color editor: pick by the model at " + std::to_string(static_cast<int>(fx * g_vw)) + "," + std::to_string(static_cast<int>(fy * g_vh)) + " of " +
+              std::to_string(static_cast<int>(g_vw)) + "x" + std::to_string(static_cast<int>(g_vh)) + ": " + std::to_string(meshes) + " meshes," + names + ", " +
+              std::to_string(best.tris) + " triangles: " +
+              (best.hit ? best.mesh + " " + best.slot + " (" + best.kind + ") at " + std::to_string(best.u) + " " + std::to_string(best.v) + ", " + std::to_string(static_cast<int>(best.t)) + " away"
+                        : std::string("nothing under it")));
+    if (best.hit && hit_comp)
+      for (int i = 0, n = numMaterials(hit_comp); i < n && i < 16; i++) {
+        UObject* m = material(hit_comp, i);
+        if (!m) { COMBO_LOG("color editor: pick: " + best.mesh + " slot " + std::to_string(i) + ": no material"); continue; }
+        std::string part = "of no part";
+        for (const Target& o : g_targets)
+          if (o.pawn == t.pawn && std::find(o.mids.begin(), o.mids.end(), m) != o.mids.end()) { part = "takes the recolor of " + o.kind; break; }
+        UObject* b = getTexture(m, STR("BaseMap"));
+        UObject* s = getTexture(m, STR("SssMap"));
+        COMBO_LOG("color editor: pick: " + best.mesh + " slot " + std::to_string(i) + ": " + narrow(m->GetName()) + " (parent " + (parentOf(m) ? narrow(parentOf(m)->GetName()) : std::string("none")) +
+                  (isDynamic(m) ? ", dynamic" : ", not dynamic") + ") BaseMap " + (b ? narrow(b->GetName()) : std::string("-")) + " SssMap " + (s ? narrow(s->GetName()) : std::string("-")) +
+                  (outlineOnly(m) ? ", outline only" : "") + ": " + part);
+      }
+    return best.hit;
+  }
+  void geoSelect(const Target& t, float u, float v) {
+    const Worn& w = *g_worn;
+    const int W = w.base.w, H = w.base.h;
+    if (W <= 0 || H <= 0 || w.owner.size() != static_cast<size_t>(W) * H) return;
+    const int tx = std::clamp(static_cast<int>(std::floor((u - std::floor(u)) * W)), 0, W - 1), ty = std::clamp(static_cast<int>(std::floor((v - std::floor(v)) * H)), 0, H - 1);
+    int found = -1, dist = 1 << 30;
+    for (int dy = -3; dy <= 3; dy++)
+      for (int dx = -3; dx <= 3; dx++) {
+        const int x = tx + dx, y = ty + dy;
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const uint16_t r = w.owner[static_cast<size_t>(y) * W + x];
+        if (r == 0xFFFF || dx * dx + dy * dy >= dist) continue;
+        dist = dx * dx + dy * dy;
+        found = r;
+      }
+    if (found < 0) {
+      g_status = "No color region at that spot.";
+      COMBO_LOG("color editor: pick by the model: texel " + std::to_string(tx) + "," + std::to_string(ty) + " of " + keyOf(t) + " is in no region");
+      return;
+    }
+    auto mp = g_maps.find(mapKey(t));
+    const std::vector<int> lead = leadersOf(t, mp != g_maps.end() ? mp->second->regions : 0);
+    const int row = found < static_cast<int>(lead.size()) ? lead[static_cast<size_t>(found)] : found;
+    g_pick_choices.assign(1, row);
+    g_picked = row;
+    g_pick_serial++;
+    g_pick_quiet = true;
+    std::string on;
+    if (mp != g_maps.end() && static_cast<size_t>(found) < mp->second->piece.size() && mp->second->piece[static_cast<size_t>(found)] < mp->second->piece_names.size())
+      on = mp->second->piece_names[mp->second->piece[static_cast<size_t>(found)]];
+    g_status = "Picked region " + std::to_string(row + 1) + (on.empty() ? std::string(".") : " (" + on + ").");
+    COMBO_LOG("color editor: pick by the model: texel " + std::to_string(tx) + "," + std::to_string(ty) + " of " + keyOf(t) + " is region " + std::to_string(found + 1) +
+              ", row " + std::to_string(row + 1) + (on.empty() ? std::string() : ", piece " + on));
+  }
+  void geoTake(const Target& t, const GeoHit& h) {
+    if (!h.kind.empty() && h.kind[0] == '!') {
+      const size_t bar = h.kind.find('|');
+      const std::string mat = bar == std::string::npos ? std::string() : h.kind.substr(bar + 1);
+      const std::string what = h.mesh + (mat.empty() ? std::string() : " (" + mat + ")");
+      int owner = -1;
+      g_geo_wait.on = false;
+      std::vector<UObject*> hit_mats;
+      if (h.comp)
+        for (int k = 0, n = numMaterials(h.comp); k < n && k < 64; k++) {
+          UObject* m = material(h.comp, k);
+          if (!m) continue;
+          const std::string name = lowered(isDynamic(m) && parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName()));
+          if (mat.empty() || name == lowered(mat)) hit_mats.push_back(m);
+        }
+      for (size_t i = 0; i < g_targets.size() && owner < 0 && !hit_mats.empty(); i++) {
+        const Target& o = g_targets[i];
+        if (o.pawn != t.pawn || o.look_p || o.no_part) continue;
+        for (const VecGroup& g : vecsOf(o)) {
+          const bool worn = std::any_of(hit_mats.begin(), hit_mats.end(), [&](UObject* m) { return std::find(g.mids.begin(), g.mids.end(), m) != g.mids.end(); });
+          if (worn) { owner = static_cast<int>(i); break; }
+        }
+      }
+      if (owner < 0) {
+        g_status = "That is " + what + ": it has no color regions and no part lists colors for it.";
+      } else {
+        g_status = "That is " + what + ": no color regions. Its colors are under Material colors on " + partLabel(t.chr, g_targets[static_cast<size_t>(owner)].kind) + ".";
+        if (owner != g_target) {
+          std::lock_guard<std::mutex> lock(g_m);
+          g_reqs.push_back({kPart, owner, 2});
+        }
+      }
+      COMBO_LOG("color editor: pick by the model: " + what + " has no part texture; " +
+                (owner < 0 ? std::string("no part lists its material colors") : "its material colors are listed on " + g_targets[static_cast<size_t>(owner)].kind));
+      return;
+    }
+    int idx = -1;
+    for (size_t i = 0; i < g_targets.size(); i++)
+      if (g_targets[i].pawn == t.pawn && !g_targets[i].look_p && !g_targets[i].no_part && g_targets[i].kind == h.kind) { idx = static_cast<int>(i); break; }
+    if (idx < 0) {
+      g_status = "That is on " + partLabel(t.chr, h.kind) + ", which isn't in this fighter's parts now.";
+      return;
+    }
+    if (idx == g_target) { geoSelect(t, h.u, h.v); return; }
+    g_geo_wait = GeoWait{true, t.pawn, h.kind, h.u, h.v, Clock::now() + std::chrono::seconds(15)};
+    {
+      std::lock_guard<std::mutex> lock(g_m);
+      g_reqs.push_back({kPart, idx, 2});
+    }
+    g_status = "That is on " + partLabel(t.chr, h.kind) + ": switching to it...";
+  }
+  void probeRestore() {
+    for (ProbeSlot& s : g_probe.slots) {
+      if (s.comp.alive() && s.orig.alive() && material(s.comp.obj, s.slot) != s.orig.obj) setMaterial(s.comp.obj, s.slot, s.orig.obj);
+      probeLetGo(s);
+    }
+  }
+  void probeEnd(const std::string& status) {
+    probeRestore();
+    { std::lock_guard<std::mutex> lk(g_probe_m); g_probe.on = false; g_probe.frame = -1; g_probe.grabbed = false; }
+    g_status = status;
+    g_view_dirty = true;
+  }
+  void probeTick(const Target* t, bool ready) {
+    static UObject* marker = nullptr;
+    if (g_probe_wanted && t && ready && !g_probe.on && !g_pick_scanning && !g_scan_on) {
+      g_probe_wanted = false;
+      if (!marker) marker = loadAsset(L"/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial");
+      if (!marker) {
+        g_status = "Couldn't look: the engine's default material isn't loaded.";
+        COMBO_LOG("color editor: what draws this: the engine's default material couldn't be loaded");
+        g_view_dirty = true;
+        return;
+      }
+      std::vector<ProbeSlot> slots;
+      std::set<UObject*> done;
+      for (UObject* c : fighterParts()) {
+        if (!c || c->GetOuterPrivate() != t->pawn) continue;
+        UObject* sc = shownComp(c);
+        if (!sc || !done.insert(sc).second || !isVisible(sc)) continue;
+        const std::string mesh = meshNameOf(c);
+        for (int i = 0, n = numMaterials(sc); i < n && i < 16 && slots.size() < 48; i++) {
+          UObject* m = material(sc, i);
+          if (!m || m == marker) continue;
+          ProbeSlot s;
+          s.comp = keep(sc);
+          s.orig = keep(m);
+          s.slot = i;
+          s.mesh = mesh;
+          s.mat = isDynamic(m) && parentOf(m) ? narrow(parentOf(m)->GetName()) : narrow(m->GetName());
+          for (const Target& o : g_targets)
+            if (o.pawn == t->pawn && std::find(o.mids.begin(), o.mids.end(), m) != o.mids.end()) { s.by = partLabel(o.chr, o.kind); break; }
+          if (s.by.empty())
+            if (auto known = g_decal_of.find(m); known != g_decal_of.end()) s.by = known->second.second + "'s \"" + kDecalLabel + "\" row (material " + narrow(m->GetName()) + ")";
+          if (s.by.empty())
+            if (auto ow = g_vec_owner.find(m); ow != g_vec_owner.end() && !isDecal(m)) {
+              const size_t cut = ow->second.rfind('/');
+              s.by = "the Material colors of " + partLabel(t->chr, cut == std::string::npos ? ow->second : ow->second.substr(cut + 1));
+            }
+          slots.push_back(std::move(s));
+        }
+      }
+      if (slots.empty()) { g_status = "Nothing of the fighter is on screen."; g_view_dirty = true; return; }
+      {
+        std::lock_guard<std::mutex> lk(g_probe_m);
+        g_probe.shots.assign(slots.size() + 2, {});
+        g_probe.slots = std::move(slots);
+        g_probe.id++;
+        g_probe.frame = 0;
+        g_probe.grabbed = g_probe.failed = false;
+        g_probe.why.clear();
+        g_probe.ms = nowMs();
+        g_probe.pawn = t->pawn;
+        g_probe.since = Clock::now();
+        g_probe.on = true;
+      }
+      g_blinks_left = 0;
+      COMBO_LOG("color editor: what draws this: looking at " + std::to_string(static_cast<int>(g_probe.xy[0] * 1000)) + "," + std::to_string(static_cast<int>(g_probe.xy[1] * 1000)) +
+                " (thousandths of the screen), " + std::to_string(g_probe.slots.size()) + " material slots on the fighter's visible meshes");
+      g_status = "Looking at what draws that...";
+      g_view_dirty = true;
+      return;
+    }
+    if (!g_probe.on) return;
+    bool grabbed = false, failed = false;
+    int frame = 0;
+    std::string why;
+    { std::lock_guard<std::mutex> lk(g_probe_m); grabbed = g_probe.grabbed; failed = g_probe.failed; frame = g_probe.frame; why = g_probe.why; }
+    if (failed) { COMBO_LOG("color editor: what draws this: the screen couldn't be read: " + why); probeEnd("Couldn't read the screen: " + why); return; }
+    if (!t || t->pawn != g_probe.pawn || !ready || Clock::now() - g_probe.since > std::chrono::seconds(25)) {
+      COMBO_LOG("color editor: what draws this: stopped at frame " + std::to_string(frame) + " (the fighter changed or it took too long)");
+      probeEnd("Couldn't look there.");
+      return;
+    }
+    if (!grabbed) return;
+    const int n = static_cast<int>(g_probe.slots.size());
+    if (frame >= 1 && frame <= n) {
+      ProbeSlot& s = g_probe.slots[static_cast<size_t>(frame - 1)];
+      if (s.comp.alive() && s.orig.alive()) setMaterial(s.comp.obj, s.slot, s.orig.obj);
+      probeLetGo(s);
+    }
+    if (frame <= n) {
+      const int next = frame + 1;
+      if (next >= 1 && next <= n) {
+        ProbeSlot& s = g_probe.slots[static_cast<size_t>(next - 1)];
+        if (s.comp.alive() && s.orig.alive()) {
+          probeHold(s);
+          setMaterial(s.comp.obj, s.slot, marker);
+        }
+      }
+      std::lock_guard<std::mutex> lk(g_probe_m);
+      g_probe.frame = next;
+      g_probe.grabbed = false;
+      g_probe.ms = nowMs();
+      return;
+    }
+    std::vector<std::array<uint8_t, 75>> shots;
+    { std::lock_guard<std::mutex> lk(g_probe_m); shots = g_probe.shots; }
+    auto differ = [&](size_t a, size_t b) {
+      int sum = 0;
+      for (int k = 0; k < 75; k++) sum += std::abs(static_cast<int>(shots[a][static_cast<size_t>(k)]) - static_cast<int>(shots[b][static_cast<size_t>(k)]));
+      return sum / 75.0f;
+    };
+    const float moved = differ(0, static_cast<size_t>(n) + 1);
+    const float least = (std::max)(10.0f, moved * 3.0f);
+    std::vector<std::pair<float, int>> order;
+    for (int i = 0; i < n; i++) order.push_back({differ(0, static_cast<size_t>(i) + 1), i});
+    std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    char head[160];
+    snprintf(head, sizeof(head), "color editor: what draws this: the spot's own color #%02X%02X%02X; change between the first and last untouched frames %.1f (a slot counts from %.1f)",
+             shots[0][36], shots[0][37], shots[0][38], moved, least);
+    COMBO_LOG(head);
+    for (const auto& [d, i] : order) {
+      const ProbeSlot& s = g_probe.slots[static_cast<size_t>(i)];
+      char b[64];
+      snprintf(b, sizeof(b), "%.1f", d);
+      COMBO_LOG("color editor: what draws this:   " + s.mesh + " slot " + std::to_string(s.slot) + " " + s.mat + ": changed the spot by " + b +
+                (d >= least ? " (draws it)" : "") + ", " + (s.by.empty() ? std::string("recolored by no part") : "recolored by " + s.by));
+    }
+    std::string status;
+    if (moved > 20.0f) status = "The picture was moving. Freeze the fight and try again.";
+    else if (order.empty() || order.front().first < least) status = "Nothing of the fighter draws that spot.";
+    else {
+      const ProbeSlot& s = g_probe.slots[static_cast<size_t>(order.front().second)];
+      status = "Drawn by " + s.mesh + " slot " + std::to_string(s.slot) + ", " + s.mat + (s.by.empty() ? " (no part recolors it)" : " (" + s.by + ")");
+      int more = 0;
+      for (const auto& [d, i] : order) more += d >= least ? 1 : 0;
+      if (more > 1) status += ", and " + std::to_string(more - 1) + " more over it (see the log)";
+    }
+    probeEnd(status);
+  }
   // The places' components: those drawn now, by mesh name (a hidden mesh keeps its bones wherever they were left),
   // or all of them if none is
   struct Comps { std::map<std::string, UObject*> by_mesh; std::vector<UObject*> drawn; };
@@ -9903,6 +13493,12 @@ bool atlasCovers(const Target& t) { return coveredBy(t, wearing(t), nullptr); }
 }  // namespace
 // Where the selection is on the fighter now, from the atlas (from the feet): the middle of its places on the bone
 // most of them move with, and how much of the view it takes. False if it has no places.
+void probeStopForFight() {
+  g_probe_wanted = false;
+  if (!g_probe.on) return;
+  COMBO_LOG("color editor: what draws this: the fight went away during it, every slot put back");
+  probeEnd(std::string());
+}
 bool anchorFromAtlas(const Target& t, const std::vector<std::vector<Place>>& pl, const std::vector<int>& sel, const Vec& feet, float out[3], float& frac, float& dist) {
   const auto comps = compsByMesh(t);
   std::map<std::pair<std::string, std::string>, std::vector<const Place*>> groups;  // by (mesh, bone), on meshes drawn now if any
@@ -10092,9 +13688,9 @@ void finishMapping(Target& t, const Vec& feet) {
   }
   if (placed > 0) {  // Otherwise nothing was seen (every side timed out). What was there stays, and it maps again next time
     g_parts[m.key] = std::move(parts);
-    saveParts(m.key, t.chr, t.kind);
+    saveParts(m.key, t.chr, kindOf(t));
     if (m.remap) {  // Mapped by hand: this part goes by it from now on, not the atlas
-      std::ofstream(byHandFile(m.key, t.chr, t.kind), std::ios::trunc) << "mapped with Remap\n";
+      std::ofstream(byHandFile(m.key, t.chr, kindOf(t)), std::ios::trunc) << "mapped with Remap\n";
       g_by_hand[m.key] = true;
       g_places.erase(m.key);
     }
@@ -10139,16 +13735,80 @@ void startMapping(Target& t) {
   g_view_dirty = true;
   COMBO_LOG("color editor: mapping " + m.key + ", " + std::to_string(R) + " regions in " + std::to_string(g_scan_tex.size()) + " frames");
 }
+namespace {
+  Kept g_gc_pc;
+  const void* g_gc_fight = nullptr;
+  ULONGLONG g_gc_tried = 0;
+  UObject* gameCameraPc() {
+    const void* now = asw_engine::get();
+    if (!now) return nullptr;
+    if (now != g_gc_fight || (g_gc_pc.obj && !g_gc_pc.alive())) {
+      g_gc_fight = now;
+      g_gc_pc = Kept{};
+      g_gc_tried = 0;
+    }
+    if (!g_gc_pc.obj) {
+      if (g_gc_tried && GetTickCount64() - g_gc_tried < 2000) return nullptr;
+      g_gc_tried = GetTickCount64();
+      UObject* pc = levelActor(STR("REDPlayerController_Battle"), STR("REDPlayerController_Battle_"));
+      if (!pc) return nullptr;
+      g_gc_pc = keep(pc);
+    }
+    return g_gc_pc.obj;
+  }
+}
+bool gameCameraPov(float out[7], const void** manager) {
+  UObject* pc = gameCameraPc();
+  if (!pc) return false;
+  auto ok = [](const void* p, size_t n) {
+    MEMORY_BASIC_INFORMATION mi{};
+    return p && VirtualQuery(p, &mi, sizeof(mi)) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+           reinterpret_cast<const uint8_t*>(p) + n <= reinterpret_cast<const uint8_t*>(mi.BaseAddress) + mi.RegionSize;
+  };
+  const uint8_t* mgr = *reinterpret_cast<const uint8_t* const*>(reinterpret_cast<const uint8_t*>(pc) + 0x2C0);
+  if (!ok(mgr + 0x1B00, 28)) return false;
+  std::memcpy(out, mgr + 0x1B00, 28);
+  if (manager) *manager = mgr;
+  return true;
+}
+void gameCameraPutBack() {
+  UObject* pc = gameCameraPc();
+  if (!pc) return;
+  auto ok = [](const void* p, size_t n) {
+    MEMORY_BASIC_INFORMATION mi{};
+    return p && VirtualQuery(p, &mi, sizeof(mi)) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+           reinterpret_cast<const uint8_t*>(p) + n <= reinterpret_cast<const uint8_t*>(mi.BaseAddress) + mi.RegionSize;
+  };
+  const uint8_t* mgr = *reinterpret_cast<const uint8_t* const*>(reinterpret_cast<const uint8_t*>(pc) + 0x2C0);
+  if (!ok(mgr + 0xEA0, 8) || !ok(mgr + 0x1B00, 28)) return;
+  UObject* pawn = *reinterpret_cast<UObject**>(reinterpret_cast<uint8_t*>(pc) + 0x258);
+  if (!pawn || *reinterpret_cast<UObject* const*>(mgr + 0xEA0) != pawn) return;
+  static Kept kept;
+  if (pawn != kept.obj) {
+    kept = Kept{};
+    if (!pawn->GetClassPrivate() || narrow(pawn->GetClassPrivate()->GetName()).find("PawnCamera") == std::string::npos) return;
+    kept = keep(pawn);
+  }
+  if (!kept.alive()) return;
+  static UFunction* rot_fn = fn(STR("/Script/Engine.Actor:K2_GetActorRotation"));
+  if (!rot_fn) return;
+  Vec loc, rot;
+  std::memcpy(&loc, mgr + 0x1B00, 12);
+  if (loc.x == 0.0f && loc.y == 0.0f && loc.z == 0.0f) return;
+  pawn->ProcessEvent(rot_fn, &rot);
+  setActor(pawn, loc, rot);
+}
 bool soloCamera() { return g_cam_solo_pub; }
 void soloCameraOff() {
   g_cam_keys = false;
   if (!g_cam_solo) return;
   g_cam_solo = false;
   g_cam_solo_pub = false;
-  if (!g_open) { g_cam.on = false; g_cam_info.clear(); COMBO_LOG("free camera: off"); }
+  if (!g_open || g_outside) { g_cam.on = false; g_cam_info.clear(); COMBO_LOG("free camera: off"); }
+  if (g_outside) { g_view_on = false; g_cam_pc = g_cam_actor = g_cam_orig = nullptr; g_cam.ready = false; g_keep_dist = 0.0f; }
 }
 void toggleCamera() {
-  if (g_open) {  // the editor's own camera, as its toggle does
+  if (g_open && !g_outside) {  // the editor's own camera, as its toggle does
     g_cam.on = !g_cam.on;
     g_cam.ready = false;
     g_cam_info = g_cam.on ? std::string(kCamHelp) : std::string();
@@ -10193,18 +13853,31 @@ void placeCamera(const Vec& feet) {
   }
   if (!g_view_hooked && viewTarget() != g_cam_actor) setViewTarget(g_cam_pc, g_cam_actor);
 }
-static void afterBattleUpdateBody();
+static void afterBattleUpdateBody(bool camera_only);
 void afterBattleUpdate() {
-  try { afterBattleUpdateBody(); }
+  try { afterBattleUpdateBody(false); }
   catch (...) { static int said = 0; if (said++ < 3) COMBO_LOG("color editor: an error after the battle update was caught"); }
 }
-static void afterBattleUpdateBody() {
+void replayCamera() {
+  if (!g_cam_solo) return;
+  try { afterBattleUpdateBody(true); }
+  catch (...) { static int said = 0; if (said++ < 3) COMBO_LOG("free camera: an error in a replay was caught"); soloCameraOff(); }
+}
+static void afterBattleUpdateBody(bool camera_only) {
   Timed timed{g_time.after};
-  if (g_preview.pawn && asw_engine::get() == g_fight) keepPreview();
-  if (!g_targets.empty() && asw_engine::get() == g_fight) { dressSmears(); if (!g_scan_on) effCopiesSync(); }  // A scan's coded frames on the part aren't copied onto effects  // For an effect started in the game's update, before it's drawn
-  if (g_cam_solo && g_open) { g_cam_solo = false; g_cam_solo_pub = false; }  // the editor opened: it's its camera now
-  if (g_cam_solo && !g_open && asw_engine::get() != g_solo_fight) soloCameraOff();  // a new fight
-  const bool solo = g_cam_solo && !g_open;
+  const bool open = g_open && !g_outside;
+  if (!camera_only) {
+    if (g_probe.on && (!g_open || asw_engine::get() != g_fight || Clock::now() - g_probe.since > std::chrono::seconds(30))) {
+      COMBO_LOG("color editor: what draws this: stopped from outside the editor's own update, every slot put back");
+      probeEnd(g_open ? std::string("Couldn't look there.") : std::string());
+    }
+    if (g_preview.pawn && asw_engine::get() == g_fight && !g_probe.on) keepPreview();
+    if (!g_targets.empty() && asw_engine::get() == g_fight) { dressSmears(); if (!g_scan_on) effCopiesSync(); }
+  }
+  if (g_cam_solo && open) { g_cam_solo = false; g_cam_solo_pub = false; }
+  if (g_cam_solo && !open && asw_engine::get() != g_solo_fight) soloCameraOff();
+  const bool solo = g_cam_solo && !open;
+  if (camera_only && !solo) return;
   g_cam_keys = g_cam.on && (!solo || Timeline::instance().isPaused());  // (without the editor the keys play the fight unless it's frozen)
   if (!g_cam.on) {
     g_view_on = false;
@@ -10388,6 +14061,24 @@ static void afterBattleUpdateBody() {
       }
     }
     g_view_dirty = true;
+  }
+  probeTick(t, ready);
+  if (g_pick_wanted && ready && !g_mapping && !g_pick_scanning && !g_scan_on && !g_probe.on) {
+    GeoHit gh;
+    if (geoPick(*t, g_pick_xy[0], g_pick_xy[1], gh)) {
+      g_pick_wanted = false;
+      geoTake(*t, gh);
+      g_view_dirty = true;
+    }
+  }
+  if (g_geo_wait.on && t) {
+    if (Clock::now() > g_geo_wait.until || t->pawn != g_geo_wait.pawn) {
+      g_geo_wait.on = false;
+    } else if (ready && !t->look_p && t->kind == g_geo_wait.kind) {
+      g_geo_wait.on = false;
+      geoSelect(*t, g_geo_wait.u, g_geo_wait.v);
+      g_view_dirty = true;
+    }
   }
   // ---- A pick lights every region in code for a few frames and reads them at the point clicked ----
   if (g_pick_wanted && ready && !g_mapping && !g_pick_scanning && !g_scan_on) {
@@ -10643,6 +14334,8 @@ namespace {
 
 void init(const std::filesystem::path& ue4ss_dir) {
   g_dir = ue4ss_dir / "StriveLabs_colors";
+  tex_upload::setLog([](const std::string& s) { COMBO_LOG(s); });
+  tex_upload::setQuiet(crash_log::quiet);
   {  // The test builds' folder, merged into the release one (saves, palettes and cache keep working). A file the
      // release zip put there already (the effect list, the layouts) is only dropped from the old folder if it's the
      // same; anything else stays there. The old folder goes once it's empty.
@@ -10734,12 +14427,52 @@ static bool anySavedRecolor() {
   }
   return false;
 }
+static void setLook(bool p) {
+  Target* part = shownPart();
+  if (!g_open || !part || (p && !part->powered) || p == (g_powered_look && part->powered)) return;
+  if (p && !g_edits_loaded.count(partKey(*part))) {
+    g_status = "Wait until this part is ready, then show its other look.";
+    g_view_dirty = true;
+    return;
+  }
+  if (p) {
+    std::lock_guard<std::mutex> lk(g_tex_pick_m);
+    if (!g_tex_pick.empty()) {
+      g_status = "Wait until the textures are imported, then show its other look.";
+      g_view_dirty = true;
+      return;
+    }
+  }
+  Target* t = target();
+  finishStrokes();
+  if (auto pp = g_paint.find(keyOf(*t)); pp != g_paint.end()) pp->second.base[0] = pp->second.base[1] = pp->second.comp[0] = pp->second.comp[1] = paint::Image{};
+  stopFocus(t);
+  g_picked = -1;
+  g_pick_quiet = false;
+  g_pick_choices.clear();
+  if (g_mapping) g_map_tried.erase(g_mapping->key);
+  stopMapping(t);
+  unroot(g_hl);
+  unroot(g_hl_off);
+  g_selected.clear(); g_selected_rows.clear();
+  g_blinks_left = 0;
+  g_tag_found = false;
+  g_powered_look = p;
+  t = target();
+  show(*t, edited(*t));
+  g_dirty = true;
+  g_last_change = Clock::now() - std::chrono::seconds(1);
+  g_view_dirty = true;
+  COMBO_LOG("color editor: " + partKey(*t) + (p ? ": editing its powered-up look, its textures put on BaseMap / SssMap while the editor shows it"
+                                                 : ": back to its normal look, BaseMap / SssMap wear the normal look again"));
+}
 static void updateBody(bool round_started);
 void update(bool round_started) {
   try { updateBody(round_started); }
   catch (...) { static int said = 0; if (said++ < 3) COMBO_LOG("color editor: an error in the update was caught"); }
 }
 static void updateBody(bool round_started) {
+  tex_upload::setActive(true);
   if (g_outside.exchange(false) && g_open) { std::lock_guard<std::mutex> lock(g_m); g_reqs.push_back({kToggle, -1, 0}); }
   hookEffects();  // Once, in the first fight. Each fight's own pool scan finds what was made before it
   Timed timed{g_time.update};
@@ -10773,18 +14506,29 @@ static void updateBody(bool round_started) {
       ours.insert(g_hl.base); ours.insert(g_hl.sss);
       ours.insert(g_hl_off.base); ours.insert(g_hl_off.sss);
       ours.erase(nullptr);
-      for (Target& t : g_targets)
+      for (Target& t : g_targets) {
+        const bool pw = t.powered && t.orig_p.size() == t.mids.size();
+        bool p_off = false;
         for (size_t i = 0; i < t.mids.size(); i++) {
           if (!on_stage.count(t.mids[i])) continue;
+          if (pw)
+            for (int m = 0; m < 2; m++) {
+              UObject* own = m ? t.orig_p[i].second : t.orig_p[i].first;
+              if (own && ours.count(getTexture(t.mids[i], kSkinParamsW[m]))) { setTexture(t.mids[i], kSkinParamsW[m], own); p_off = true; }
+            }
           if (!t.orig[i].first) {  // An outline has only its shadow texture
-            if (ours.count(getTexture(t.mids[i], STR("SssMap")))) setTexture(t.mids[i], STR("SssMap"), t.orig[i].second);
+            UObject* cur = getTexture(t.mids[i], STR("SssMap"));
+            if (ours.count(cur) || (pw && cur && cur == t.orig_p[i].second && cur != t.orig[i].second)) setTexture(t.mids[i], STR("SssMap"), t.orig[i].second);
             continue;
           }
-          if (ours.count(getTexture(t.mids[i], STR("BaseMap")))) {
+          UObject* cur = getTexture(t.mids[i], STR("BaseMap"));
+          if (ours.count(cur) || (pw && cur && cur == t.orig_p[i].first && cur != t.orig[i].first)) {
             setTexture(t.mids[i], STR("BaseMap"), t.orig[i].first);
             setTexture(t.mids[i], STR("SssMap"), t.orig[i].second);
           }
         }
+        if (p_off) COMBO_LOG("color editor: " + partKey(t) + "'s powered-up textures taken off (the fight ended, GIO_Skin_Base / GIO_Skin_Sss back to the game's)");
+      }
       decalOriginals(on_stage);
     }
     stopPreview(false);  // Already put back above, when its meshes were still on stage
@@ -10804,6 +14548,9 @@ static void updateBody(bool round_started) {
     g_vec_orig.clear();
     g_menu_rows.clear();
     g_vec_owner.clear();
+    g_vec_outside.clear();
+    g_vec_base.clear();
+    picForget();
     decalForget();
     for (auto it = g_paint.begin(); it != g_paint.end();) {  // Parts with nothing unsaved are read again when painted or shown
       finishStroke(it->second, fromKey(it->first));
@@ -10818,6 +14565,8 @@ static void updateBody(bool round_started) {
     g_auto_paused.clear();
     refreshDrop();
     g_targets.clear();
+    g_targets_gen++;
+    g_powered_look = false;
     for (auto& [k, s] : g_shown) unroot(s);
     g_shown.clear();
     unroot(g_hl);
@@ -10851,6 +14600,7 @@ static void updateBody(bool round_started) {
       const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
       if (ms >= 100) COMBO_LOG("color editor: request " + std::to_string(kind) + " took " + std::to_string(ms) + " ms"); } } slow_req{q.kind};
     Target* t = target();
+    Target* const part = shownPart();
     const bool ready = t && g_worn && g_worn_key == keyOf(*t);
     std::vector<Edit>* ed = ready ? &g_edits[keyOf(*t)] : nullptr;
     const int R = ready ? static_cast<int>(g_worn->lit.size()) : 0;
@@ -10873,6 +14623,13 @@ static void updateBody(bool round_started) {
       g_blinks_left = 0;
       g_tag_found = false;
       if (t) show(*t, edited(*t));  // stop a blink half way
+      if (g_powered_look) {
+        g_powered_look = false;
+        if (Target* n = target()) {
+          show(*n, edited(*n));
+          COMBO_LOG("color editor: " + partKey(*n) + ": back to its normal look, BaseMap / SssMap wear the normal look again");
+        }
+      }
       g_target = to;
     };
     if (g_export && g_export->mode == 3 && (q.kind == kReread || q.kind == kRemap || q.kind == kImportTex || q.kind == kCopySlot ||
@@ -10886,14 +14643,14 @@ static void updateBody(bool round_started) {
       for (const std::string& sl : slots) g_refresh_wait.insert(sl);
     }
     const bool look_on = g_export && g_export->mode == 2;  // A palette's look is being put on, and its result writes the slot's paint
-    const bool edit = q.kind == kPairs || q.kind == kLit || q.kind == kShadow || q.kind == kReset || q.kind == kVec || q.kind == kVecReset ||
+    const bool edit = q.kind == kPairs || q.kind == kLit || q.kind == kShadow || q.kind == kReset || q.kind == kRelink || q.kind == kVec || q.kind == kVecReset || q.kind == kPicFile ||
                       q.kind == kPaintBegin || q.kind == kPaintTo || q.kind == kPaintEnd || q.kind == kPaintFill || q.kind == kPaintClear ||
                       q.kind == kPaintShape || q.kind == kUndo || q.kind == kRedo || q.kind == kSave || q.kind == kDiscardClose ||
                       q.kind == kFx || q.kind == kFxReset || q.kind == kFxOne || q.kind == kFxOneReset || q.kind == kCap || q.kind == kCapReset || q.kind == kMat || q.kind == kMatReset ||
                       q.kind == kRecovery;
     if (g_export && ((look_on && edit) || q.kind == kReread || q.kind == kRemap || q.kind == kImportTex || q.kind == kCopySlot || q.kind == kPaletteLoad ||
                      q.kind == kImportRecolor || q.kind == kExport || q.kind == kResetColor || q.kind == kPaletteSave || q.kind == kPaletteEdit ||
-                     q.kind == kExportRecolor)) {  // They change what the export reads, and an exported recolor's look is made by the same workers
+                     q.kind == kExportRecolor || q.kind == kRegionMove || q.kind == kRegionReset)) {  // They change what the export reads, and an exported recolor's look is made by the same workers
       g_status = g_export->mode == 0 ? "Exporting, wait a moment." : "Working on the palette's look, wait a moment.";
       g_view_dirty = true;
       continue;
@@ -10904,10 +14661,10 @@ static void updateBody(bool round_started) {
     }
     if ((q.kind == kPart && q.rgb != 1) || q.kind == kRemap || q.kind == kLit || q.kind == kShadow || q.kind == kPairs ||
         q.kind == kPaintBegin || q.kind == kPaintFill || q.kind == kPaintShape || q.kind == kPickAt || (q.kind == kSelect && !q.regions.empty()) ||
-        q.kind == kReset || q.kind == kUndo || q.kind == kRedo || q.kind == kReread || q.kind == kImportTex || q.kind == kCopySlot ||
-        q.kind == kPaletteLoad || q.kind == kImportRecolor || q.kind == kResetColor || q.kind == kVec || q.kind == kVecReset || q.kind == kFx ||
+        q.kind == kReset || q.kind == kRelink || q.kind == kUndo || q.kind == kRedo || q.kind == kReread || q.kind == kImportTex || q.kind == kCopySlot ||
+        q.kind == kPaletteLoad || q.kind == kImportRecolor || q.kind == kResetColor || q.kind == kVec || q.kind == kVecReset || q.kind == kPicFile || q.kind == kFx ||
         q.kind == kFxReset || q.kind == kFxOne || q.kind == kFxOneReset || q.kind == kCap || q.kind == kCapReset || q.kind == kMat ||
-        q.kind == kMatReset || q.kind == kCamera) {
+        q.kind == kMatReset || q.kind == kCamera || q.kind == kLook || q.kind == kRegionMove || q.kind == kRegionReset) {
       g_setup_off = true;
       g_setup_home.clear();
     }
@@ -10915,6 +14672,8 @@ static void updateBody(bool round_started) {
       case kToggle:
         if (g_open && (!g_unsaved.empty() || !g_unsaved_slots.empty() || g_cap_unsaved || !g_cap_restore.empty())) { g_confirm_close = true; break; }  // Asks Save / Discard / Cancel
         g_open = !g_open;
+        if (!g_open) g_probe_wanted = false;
+        if (!g_open && g_probe.on) { COMBO_LOG("color editor: what draws this: the editor closed during it, every slot put back"); probeEnd(std::string()); }
         g_confirm_close = false;
         g_setup_off = false;
         if (g_open) g_setup_seen.clear();  // (a part cut off last time gets its visit again)
@@ -10923,9 +14682,14 @@ static void updateBody(bool round_started) {
           if (home >= 0 && home != g_target && t && g_targets[static_cast<size_t>(home)].pawn == t->pawn) { leave(home); t = target(); }
         }
         if (!g_open) refreshDrop();  // Closed, so the saved recolors' queue makes what's left
+        {
+        const bool closed_powered = !g_open && g_powered_look;
+        Target* const closed_part = shownPart();
+        const std::string closed_key = t ? keyOf(*t) : std::string();
+        const bool closed_pending = g_tex_job.valid() || g_dirty;
         if (g_open) autoStop();
         else if (!g_auto_paused.empty()) {  // Closed, so the leftover saved recolors go on now
-          g_auto_was = target() ? keyOf(*target()) : std::string();
+          g_auto_was = shownPart() ? partKey(*shownPart()) : std::string();
           g_auto_queue.swap(g_auto_paused);
           g_auto_paused.clear();
           autoNext();
@@ -10954,7 +14718,19 @@ static void updateBody(bool round_started) {
           unroot(g_hl_off);
           if (t) show(*t, edited(*t));
           g_blink_on = false;
+          if (closed_powered) {
+            if (g_auto_queue.empty()) g_powered_look = false;
+            if (closed_part) {
+              show(*closed_part, edited(*closed_part));
+              COMBO_LOG("color editor: " + partKey(*closed_part) + ": the editor closed, BaseMap / SssMap wear the normal look again");
+            }
+            if (closed_pending && !closed_key.empty()) autoQueue(closed_key);
+          }
         }
+        }
+        break;
+      case kLook:
+        setLook(q.rgb != 0);
         break;
       case kLit:
       case kShadow:
@@ -11008,15 +14784,23 @@ static void updateBody(bool round_started) {
       case kReset:
         if (ed) {
           pushUndo(*t, kReset, q.region);
-          if (q.region < 0) {
+          if (q.region < 0 && t->look_p) ed->assign(ed->size(), Edit{});
+          else if (q.region < 0) {
             ed->assign(ed->size(), Edit{});
-            g_vec_saved[keyOf(*t)].clear();
-            restoreVecs(keyOf(*t));
+            g_vec_saved[partKey(*t)].clear();
+            restoreVecs(partKey(*t));
             if (g_fx_for == t->chr + "/" + t->color) {
-              for (FxColor& f : fxList()) if (fxChanged(f)) { f.edited = false; f.per.clear(); fxApply(f); }
+              for (FxColor& f : fxList())
+                if (fxChanged(f)) {
+                  f.edited = false;
+                  f.per.clear();
+                  const float mx = (std::max)({f.orig[0], f.orig[1], f.orig[2], 1e-6f});
+                  for (int k = 0; k < 3; k++) f.rgb[k] = f.orig[static_cast<size_t>(k)] / mx;
+                  fxApply(f);
+                }
               g_fx_saved[g_fx_for].clear();
             }
-            if (g_vecs_for == keyOf(*t))
+            if (g_vecs_for == partKey(*t))
               for (VecGroup& g : g_vecs) {
                 g.edited = false;
                 if (!g.mids.empty() && vecOrig(g.mids.front(), g.param)) std::memcpy(g.cur, vecOrig(g.mids.front(), g.param), sizeof(g.cur));
@@ -11027,8 +14811,36 @@ static void updateBody(bool round_started) {
               if (r < static_cast<int>(ed->size())) (*ed)[static_cast<size_t>(r)] = Edit{};
           g_dirty = true;
           g_last_change = Clock::now() - std::chrono::seconds(1);
+          if (q.region < 0 && !t->look_p) markUnsavedVecs(*t);
+          else markUnsaved(*t);
+        }
+        break;
+      case kRelink:
+        if (ed) {
+          pushUndo(*t, kRelink, q.region);
+          for (int r : withTwins(leadersOf(*t, R), {q.region}))
+            if (r >= 0 && r < static_cast<int>(ed->size())) {
+              Edit& e = (*ed)[static_cast<size_t>(r)];
+              e.has_shadow = false;
+              e.derive = e.has_lit;
+            }
+          g_dirty = true;
+          g_last_change = Clock::now() - std::chrono::seconds(1);
           markUnsaved(*t);
         }
+        break;
+      case kCapClear:
+        g_cap.erase(std::remove_if(g_cap.begin(), g_cap.end(), [](const CapColor& c) { return !c.edited; }), g_cap.end());
+        g_matc.erase(std::remove_if(g_matc.begin(), g_matc.end(), [](const MatColor& m) { return !m.edited; }), g_matc.end());
+        g_cap_named.erase(std::remove_if(g_cap_named.begin(), g_cap_named.end(), [](const std::pair<std::string, std::string>& n) {
+                            return std::none_of(g_cap.begin(), g_cap.end(), [&](const CapColor& c) { return c.effect == n.first; });
+                          }),
+                          g_cap_named.end());
+        g_cap_tpls.clear();
+        g_cap_names.clear();
+        g_on_screen.clear();
+        g_cap_gen++;
+        g_status = g_cap.empty() && g_matc.empty() ? "Effect list cleared." : "Effect list cleared (the colors you changed stay listed).";
         break;
       case kNext:  // the other fighter's body
         {  // A texture import going on stops (what's in stays)
@@ -11045,7 +14857,7 @@ static void updateBody(bool round_started) {
           }
         if (t && target() == t)  // No "MAIN" on the other fighter, so take their first part
           for (size_t i = 0; i < g_targets.size(); i++)
-            if (g_targets[i].pawn != t->pawn) { leave(static_cast<int>(i)); break; }
+            if (g_targets[i].pawn != t->pawn && !g_targets[i].no_part) { leave(static_cast<int>(i)); break; }
         break;
       case kPart:  // another of this fighter's color materials (its target index, as published)
         if (q.rgb == 1 && (!g_open || g_setup_off)) break;  // The first-time setup's, queued before the editor closed or the user took over
@@ -11057,7 +14869,7 @@ static void updateBody(bool round_started) {
           g_tex_all = g_tex_done = 0;
         }
         if (t && q.region >= 0 && q.region < static_cast<int>(g_targets.size()) && q.region != g_target &&
-            g_targets[static_cast<size_t>(q.region)].pawn == t->pawn)
+            g_targets[static_cast<size_t>(q.region)].pawn == t->pawn && !g_targets[static_cast<size_t>(q.region)].no_part)
           leave(q.region);
         break;
       case kRemap:
@@ -11090,6 +14902,13 @@ static void updateBody(bool round_started) {
       case kPaintShape:
         if (ready && g_worn) paintRequest(*t, q);
         break;
+      case kRegionMove:
+      case kRegionReset:
+        if (ready && g_worn) {
+          finishStrokes();
+          regionRequest(*t, q);
+        }
+        break;
       case kPickAt:
         if (!g_open || !t) break;
         if (!g_cam.on) { g_cam.on = true; g_cam.ready = false; }
@@ -11097,6 +14916,18 @@ static void updateBody(bool round_started) {
         g_pick_xy[0] = std::clamp(q.f[0], 0.0f, 1.0f);
         g_pick_xy[1] = std::clamp(q.f[1], 0.0f, 1.0f);
         g_status = "Picking...";
+        break;
+      case kProbeAt:
+        if (!g_open || !t) break;
+        if (!g_cam.on) { g_status = "What draws this needs the free camera on. Turn it on, then click the spot again."; g_view_dirty = true; break; }
+        if (g_preview.pawn) { g_status = "What draws this can't run while a hidden part is shown in place. Turn that off first."; g_view_dirty = true; break; }
+        g_probe_wanted = true;
+        {
+          std::lock_guard<std::mutex> lk(g_probe_m);
+          g_probe.xy[0] = std::clamp(q.f[0], 0.0f, 1.0f);
+          g_probe.xy[1] = std::clamp(q.f[1], 0.0f, 1.0f);
+        }
+        g_status = "Looking at what draws that...";
         break;
       case kRecovery:
         if (!g_offer_recovery.empty()) {
@@ -11115,10 +14946,40 @@ static void updateBody(bool round_started) {
         finishStrokes();  // A stroke still open gets its own step before stepping back
         if (ready) {
           auto& from = (q.kind == kUndo ? g_undo : g_redo)[slotOf(*t)];
-          auto& to = (q.kind == kUndo ? g_redo : g_undo)[slotOf(*t)];
+          auto& to_list = (q.kind == kUndo ? g_redo : g_undo)[slotOf(*t)];
+          std::pair<std::vector<FixRef>, std::vector<FixRef>>* pick = nullptr;
+          for (auto& [hk, h] : g_fix_hist) {
+            if (hk.rfind(t->chr + "/", 0) != 0) continue;
+            if (hk != mapKey(*t) && (hk.size() < 2 || hk.compare(hk.size() - 2, 2, "/P") != 0)) continue;
+            const auto& lst = q.kind == kUndo ? h.first : h.second;
+            if (lst.empty()) continue;
+            if (!pick) { pick = &h; continue; }
+            const auto& best = q.kind == kUndo ? pick->first : pick->second;
+            if (lst.back().seq > best.back().seq) pick = &h;
+          }
+          std::pair<std::vector<FixRef>, std::vector<FixRef>> none;
+          auto& fh = pick ? *pick : none;
+          auto& rfrom = q.kind == kUndo ? fh.first : fh.second;
+          auto& rto = q.kind == kUndo ? fh.second : fh.first;
+          if (!rfrom.empty() && (from.empty() || rfrom.back().seq > from.back().seq)) {
+            FixRef r = rfrom.back();
+            rfrom.pop_back();
+            if (regionStep(r.id, q.kind == kRedo)) { r.seq = ++g_undo_seq; rto.push_back(r); }
+            else g_status = "That region change can't be stepped through any more.";
+            break;
+          }
+          struct SeqPush {
+            std::vector<Snap>& v;
+            void push_back(Snap s) { s.seq = ++g_undo_seq; v.push_back(std::move(s)); }
+          } to{to_list};
           if (!from.empty()) {
             const Snap s = from.back();
             from.pop_back();
+            if (s.fix > 0) {
+              if (regionStep(s.fix, q.kind == kRedo)) to.push_back(s);
+              else g_status = "That region change can't be stepped through any more.";
+              break;
+            }
             if (s.paint > 0) {  // the part's canvas steps back (or forward) that many
               auto pp = g_paint.find(s.key);
               if (pp != g_paint.end() && pp->second.ready) {
@@ -11137,7 +14998,10 @@ static void updateBody(bool round_started) {
                 g_recovery_due = true;
                 g_recovery_change = Clock::now();
                 if (s.key == keyOf(*t)) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }
-                else if (g_worn_key == s.key) g_worn_key.clear();
+                else {
+                  if (g_worn_key == s.key) g_worn_key.clear();
+                  owePowered(s.key);
+                }
               } else {
                 to.push_back(s);
               }
@@ -11164,7 +15028,7 @@ static void updateBody(bool round_started) {
         break;
       case kExportRecolor:
         g_look_note.clear();
-        if (t) g_status = exportRecolorFile(*t) + g_look_note;
+        if (t) g_status = exportRecolorFile(*part) + g_look_note;
         g_look_note.clear();
         break;
       case kPaletteSave:
@@ -11189,8 +15053,8 @@ static void updateBody(bool round_started) {
               std::filesystem::create_directories(paletteDir(t->chr) / ".trash", pec);
               std::filesystem::copy_file(path, trashFile(t->chr, file), pec);
             }
-            err = writeRecolor(*t, path, paletteMeta(name, author, note));
-            if (err.empty()) lookSaveStart(*t, path);  // The parts' finished look goes into it, on the workers
+            err = writeRecolor(*part, path, paletteMeta(name, author, note));
+            if (err.empty()) lookSaveStart(*part, path);  // The parts' finished look goes into it, on the workers
           } else {  // Only its name, author and note change. The colors stay
             std::ifstream in(path);
             std::vector<std::string> lines;
@@ -11225,11 +15089,11 @@ static void updateBody(bool round_started) {
         if (t) {
           if (!paletteName(q.text)) { g_status = "Not a palette file."; break; }
           {  // The slot's recolor is kept first, since a load replaces it. Nothing saved yet means nothing to keep
-            const std::string kept = writeRecolor(*t, trashFile(t->chr, t->color + "_before_load.stpl"), paletteMeta(t->color + " before loading " + q.text, "", ""), true);
+            const std::string kept = writeRecolor(*part, trashFile(t->chr, t->color + "_before_load.stpl"), paletteMeta(t->color + " before loading " + q.text, "", ""), true);
             (void)kept;
           }
           g_look_note.clear();
-          g_status = importRecolorPath(*t, paletteDir(t->chr) / q.text, true) + g_look_note;
+          g_status = importRecolorPath(*part, paletteDir(t->chr) / q.text, true) + g_look_note;
           g_look_note.clear();
           COMBO_LOG("color editor: palette " + q.text + " loaded onto " + keyOf(*t) + ": " + g_status);
         }
@@ -11247,20 +15111,20 @@ static void updateBody(bool round_started) {
         break;
       case kImportRecolor:
         if (t) {  // The slot's recolor is kept first, as a palette load does
-          const std::string kept = writeRecolor(*t, trashFile(t->chr, t->color + "_before_import.stpl"), paletteMeta(t->color + " before importing " + q.text, "", ""), true);
+          const std::string kept = writeRecolor(*part, trashFile(t->chr, t->color + "_before_import.stpl"), paletteMeta(t->color + " before importing " + q.text, "", ""), true);
           if (!kept.empty() && !slotFiles(t->chr, t->color).empty()) { g_status = "Couldn't keep the old recolor in .trash: not imported."; break; }
           g_look_note.clear();
-          g_status = importRecolorFile(*t, q.text) + g_look_note;
+          g_status = importRecolorFile(*part, q.text) + g_look_note;
           g_look_note.clear();
         }
         break;
       case kCopySlot:
-        if (t) g_status = copyToSlotNow(*t, q.text);
+        if (t) g_status = copyToSlotNow(*part, q.text);
         break;
       case kResetColor:  // Every part, paint and effect color of the slot back to the game's, kept first as a load does
         if (t) {
           dropLookWait(t->chr + "/" + t->color);
-          const std::string kept = writeRecolor(*t, trashFile(t->chr, t->color + "_before_reset.stpl"), paletteMeta(t->color + " before Reset whole color", "", ""), true);
+          const std::string kept = writeRecolor(*part, trashFile(t->chr, t->color + "_before_reset.stpl"), paletteMeta(t->color + " before Reset whole color", "", ""), true);
           if (!kept.empty() && !slotFiles(t->chr, t->color).empty()) { g_status = "Couldn't keep the old recolor in .trash: not reset."; break; }
           std::error_code ec;
           {
@@ -11279,7 +15143,11 @@ static void updateBody(bool round_started) {
           // Every part of the character (body, DI, weapons...), not only the shown one. A part left out would keep
           // its recolor made on the old colors.
           std::set<std::string> kinds;
-          for (const Target& o : g_targets) if (o.chr == t->chr) kinds.insert(o.kind);
+          for (const Target& o : g_targets)
+            if (o.chr == t->chr) {
+              kinds.insert(o.kind);
+              if (o.powered) kinds.insert(o.kind + kPoweredTail);
+            }
           kinds.insert(t->kind);
           if (std::any_of(g_unsaved.begin(), g_unsaved.end(), [&](const std::string& k) { return fromKey(k).chr == t->chr; })) {
             g_status = "Save or discard the changes first.";
@@ -11288,7 +15156,8 @@ static void updateBody(bool round_started) {
           std::error_code ec;
           for (const std::string& kind : kinds) {
             Target x = *t;
-            x.kind = kind;
+            x.look_p = poweredKind(kind);
+            x.kind = x.look_p ? kind.substr(0, kind.size() - kPoweredTail.size()) : kind;
             const auto cdir = g_dir / "cache" / t->chr;  // The maps the saves were made on are kept, and moved onto the new one when read
             if (auto mp = g_maps.find(mapKey(x)); mp != g_maps.end()) archiveMap(cdir, kind, *mp->second);
             archiveMapFile(cdir, kind);
@@ -11299,12 +15168,12 @@ static void updateBody(bool round_started) {
           for (const auto& e : listDir(g_dir / "cache" / t->chr))  // The decals' pixels too
             if (e.path().filename().string().rfind("decal_" + t->color + "_", 0) == 0) std::filesystem::remove(e.path(), ec);
           for (Target& o : g_targets) {  // The other parts get the game's own textures now. A saved recolor is rebuilt when the editor closes
-            if (o.chr != t->chr || keyOf(o) == keyOf(*t)) continue;
-            show(o, Shown{});
-            auto sh = g_shown.find(keyOf(o));
-            if (sh != g_shown.end()) { unroot(sh->second); g_shown.erase(sh); }
-            if (std::filesystem::exists(editsFile(o), ec) || std::filesystem::exists(paintFile(o), ec))
-              if (std::find(g_auto_paused.begin(), g_auto_paused.end(), keyOf(o)) == g_auto_paused.end()) g_auto_paused.push_back(keyOf(o));
+            if (o.chr != t->chr || (keyOf(o) == keyOf(*t) && !o.powered)) continue;
+            for (const std::string& k : dropLooks(o)) {
+              const Target x = fromKey(k);
+              if (std::filesystem::exists(editsFile(x), ec) || std::filesystem::exists(paintFile(x), ec))
+                if (std::find(g_auto_paused.begin(), g_auto_paused.end(), k) == g_auto_paused.end()) g_auto_paused.push_back(k);
+            }
           }
           g_smear_stale = true;  // Effect copies of the old textures are looked up again
           g_dirty = true;  // The shown part is put on again from what's saved, on the new colors
@@ -11405,7 +15274,12 @@ static void updateBody(bool round_started) {
           CapColor& c = g_cap[static_cast<size_t>(q.region)];
           const std::string key = c.path + "\t" + std::to_string(c.index);
           if (q.kind == kCap) { std::memcpy(c.rgb, q.f, sizeof(c.rgb)); c.edited = true; g_cap_saved[key] = {c.rgb[0], c.rgb[1], c.rgb[2]}; }
-          else { c.edited = false; g_cap_saved.erase(key); }
+          else {
+            c.edited = false;
+            g_cap_saved.erase(key);
+            const float mx = (std::max)({c.orig[0], c.orig[1], c.orig[2], 1e-6f});
+            for (int k = 0; k < 3; k++) c.rgb[k] = c.orig[static_cast<size_t>(k)] / mx;
+          }
           capApply(c);
           g_cap_unsaved = true;  // Saved with Save
           g_recovery_due = true;
@@ -11437,6 +15311,15 @@ static void updateBody(bool round_started) {
       case kHide:
         if (q.region) g_hidden.insert(q.text);
         else g_hidden.erase(q.text);
+        if (q.region && q.text == "*") {
+          int live = 0, playing = 0;
+          for (const Kept& k : g_smear_pool)
+            if (k.alive()) { live++; playing += isActive(k.obj) ? 1 : 0; }
+          std::vector<UObject*> every;
+          allOf(STR("ParticleSystemComponent"), every);
+          COMBO_LOG("color editor: hide all effects: " + std::to_string(live) + " pooled components (" + std::to_string(playing) + " playing) of " +
+                    std::to_string(every.size()) + " particle components in the game");
+        }
         break;
       case kMat:
       case kMatReset:
@@ -11447,7 +15330,11 @@ static void updateBody(bool round_started) {
           for (MatColor& m : g_matc)  // Every effect's row for this material's parameter
             if (m.mic.obj == src.mic.obj && m.param == src.param) {
               if (q.kind == kMat) { std::memcpy(m.rgb, q.f, sizeof(m.rgb)); m.edited = true; }
-              else m.edited = false;
+              else {
+                m.edited = false;
+                const float mx = (std::max)({m.orig[0], m.orig[1], m.orig[2], 1e-6f});
+                for (int k = 0; k < 3; k++) m.rgb[k] = (std::max)(m.orig[k], 0.0f) / mx;
+              }
             }
           if (q.kind == kMat) g_cap_saved[key] = {q.f[0], q.f[1], q.f[2]};
           else g_cap_saved.erase(key);
@@ -11465,7 +15352,12 @@ static void updateBody(bool round_started) {
         if (q.region >= 0 && q.region < static_cast<int>(fxList().size())) {
           FxColor& f = fxList()[static_cast<size_t>(q.region)];
           if (q.kind == kFx) { std::memcpy(f.rgb, q.f, sizeof(f.rgb)); f.edited = true; g_fx_saved[g_fx_for][f.label] = {f.rgb[0], f.rgb[1], f.rgb[2]}; }
-          else { f.edited = false; g_fx_saved[g_fx_for].erase(f.label); }
+          else {
+            f.edited = false;
+            g_fx_saved[g_fx_for].erase(f.label);
+            const float mx = (std::max)({f.orig[0], f.orig[1], f.orig[2], 1e-6f});
+            for (int k = 0; k < 3; k++) f.rgb[k] = f.orig[static_cast<size_t>(k)] / mx;
+          }
           {  // Picks up copies of effects loaded since. A drag sends many edits, so once a second is enough
             static Clock::time_point last;
             if (q.kind == kFxReset || Clock::now() - last > std::chrono::seconds(1)) { takeAllByName(f.label); last = Clock::now(); }
@@ -11510,33 +15402,63 @@ static void updateBody(bool round_started) {
         break;
       case kVec:
       case kVecReset:
-        if (ready) pushUndo(*t, q.kind, q.region);
-        if (ready && g_vecs_for == keyOf(*t))
+        if (ready && g_edits_loaded.count(partKey(*t))) {
+          const bool pic = g_vecs_for == partKey(*t) && q.region >= 0 && q.region < static_cast<int>(g_vecs.size()) && isPicture(g_vecs[static_cast<size_t>(q.region)].param);
+          pushUndo(*t, pic ? kPicFile : q.kind, q.region);
+        }
+        if (ready && g_edits_loaded.count(partKey(*t)) && g_vecs_for == partKey(*t))
           for (int i = 0; i < static_cast<int>(g_vecs.size()); i++) {
             if (q.region >= 0 && i != q.region) continue;
             VecGroup& g = g_vecs[static_cast<size_t>(i)];
             if (q.kind == kVec) {
               std::memcpy(g.cur, q.f, sizeof(g.cur));
+              {
+                const float om = vecScale(g);
+                for (int c = 0; c < 3; c++) g.cur[c] *= om;
+              }
               g.edited = true;
-              g_vec_saved[keyOf(*t)][g.label] = {g.cur[0], g.cur[1], g.cur[2], g.cur[3]};
+              g_vec_saved[partKey(*t)][g.label] = {g.cur[0], g.cur[1], g.cur[2], g.cur[3]};
               for (size_t k = 0; k < g.mids.size(); k++) vecSet(g.mids[k], g.paramOf(k), g.cur);
+              if (isPicture(g.param)) COMBO_LOG("color editor: picture " + g.pic_tip + " -> " + picChoice(g, g.cur));
             } else {
+              const bool was = g.edited;
               g.edited = false;
-              g_vec_saved[keyOf(*t)].erase(g.label);
+              g_vec_saved[partKey(*t)].erase(g.label);
               for (size_t k = 0; k < g.mids.size(); k++) vecRestore(g.mids[k], g.paramOf(k));
               if (!g.mids.empty() && vecOrig(g.mids.front(), g.param)) std::memcpy(g.cur, vecOrig(g.mids.front(), g.param), sizeof(g.cur));
+              if (isPicture(g.param) && (was || q.region == i)) COMBO_LOG("color editor: picture " + g.pic_tip + " -> " + picChoice(g, g.cur));
             }
           }
-        if (ready) markUnsaved(*t);  // Saved with Save
+        if (ready) markUnsavedVecs(*t);  // Saved with Save
+        break;
+      case kPicFile:
+        if (ready && g_edits_loaded.count(partKey(*t)) && g_vecs_for == partKey(*t) && q.region >= 0 && q.region < static_cast<int>(g_vecs.size()) &&
+            isPicture(g_vecs[static_cast<size_t>(q.region)].param)) {
+          VecGroup& g = g_vecs[static_cast<size_t>(q.region)];
+          Image img;
+          UINT iw = 0, ih = 0;
+          if (imageSize(q.wtext, iw, ih) && (iw > kImageMax || ih > kImageMax)) {
+            g_status = narrow(std::filesystem::path(q.wtext).filename().wstring()) + " is " + std::to_string(iw) + "x" + std::to_string(ih) + ". A picture can be at most " +
+                       std::to_string(kImageMax) + "x" + std::to_string(kImageMax) + ".";
+            break;
+          }
+          if (g_pic_job.valid()) { g_status = "Still reading the last picture."; break; }
+          g_pic_for = PicFor{partKey(*t), g.label, q.region};
+          const std::string mic = g.pic_mic;
+          const std::wstring src = q.wtext;
+          g_status = "Reading " + narrow(std::filesystem::path(src).filename().wstring()) + "...";
+          g_pic_job = std::async(std::launch::async, [mic, src]() { return pictureFromPng(mic, src); });
+        }
         break;
       case kImportTex:  // (the picked files go in below, each on its part)
+        setLook(false);
         break;
       case kExport:
-        if (t) exportStart(*t);  // Every part of the slot. Ones not ready yet are named
+        if (t) exportStart(*part);  // Every part of the slot. Ones not ready yet are named
         break;
       case kBake:
         try {
-          if (t) bakeStart(*t);  // The slot's saved recolor into a pak, mounted
+          if (t) bakeStart(*part);  // The slot's saved recolor into a pak, mounted
           else g_status = "No fighter to bake yet.";
         } catch (...) { g_status = "The bake failed (see combo_log.txt)."; COMBO_LOG("bake: failed with an exception"); }
         break;
@@ -11618,7 +15540,9 @@ static void updateBody(bool round_started) {
   // recolor there's nothing for it to find, so a reset costs nothing
   const bool recolor_on = g_open || std::any_of(g_targets.begin(), g_targets.end(), [](const Target& t) {
     auto sh = g_shown.find(keyOf(t));
-    return sh != g_shown.end() && sh->second.base;
+    if (sh != g_shown.end() && sh->second.base) return true;
+    auto sp = t.powered ? g_shown.find(partKey(t) + kPoweredTail) : g_shown.end();
+    return sp != g_shown.end() && sp->second.base;
   });
   const bool targets_there = all_alive && (Clock::now() - last_find < std::chrono::seconds(5) || !recolor_on);
   const bool find_on_open = g_find_due && Clock::now() - last_find >= std::chrono::seconds(5);  // (the editor just opened)
@@ -11697,11 +15621,17 @@ static void updateBody(bool round_started) {
     g_auto_done = true;
     if (g_targets.empty()) discover();
     g_auto_queue.clear();
-    g_auto_was = target() ? keyOf(*target()) : std::string();
+    g_auto_was = shownPart() ? partKey(*shownPart()) : std::string();
     std::error_code ec;
-    for (const Target& o : g_targets)
+    for (const Target& o : g_targets) {
+      if (o.no_part) continue;
       if (std::filesystem::exists(editsFile(o), ec) || std::filesystem::exists(fxFile(o.chr, o.color), ec) || std::filesystem::exists(paintFile(o), ec))
         g_auto_queue.push_back(keyOf(o));
+      if (!o.powered) continue;
+      Target x = o;
+      x.look_p = true;
+      if (std::filesystem::exists(editsFile(x), ec) || std::filesystem::exists(paintFile(x), ec)) g_auto_queue.push_back(keyOf(x));
+    }
     if (!g_auto_queue.empty()) {
       COMBO_LOG("color editor: putting on " + std::to_string(g_auto_queue.size()) + " saved recolors");
       autoNext();
@@ -11720,6 +15650,14 @@ static void updateBody(bool round_started) {
       if (std::find(g_auto_paused.begin(), g_auto_paused.end(), keyOf(o)) == g_auto_paused.end()) g_auto_paused.push_back(keyOf(o));  // (and when the editor closes, if not made by then)
       slots.insert(o.chr + "/" + o.color);
     }
+    for (const Target& o : g_targets) {
+      if (!o.powered) continue;
+      Target x = o;
+      x.look_p = true;
+      const std::string k = keyOf(x);
+      const bool has = g_edits_loaded.count(k) ? anyEdit(g_edits[k]) || hasPaint(x) : std::filesystem::exists(editsFile(x), ec) || std::filesystem::exists(paintFile(x), ec);
+      if (has && std::find(g_auto_paused.begin(), g_auto_paused.end(), k) == g_auto_paused.end()) g_auto_paused.push_back(k);
+    }
     for (const std::string& sl : slots) g_refresh_wait.insert(sl);
     {  // Their saved effect colors go on now too (the shown slot's are the editor's), as a match does
       const Target* shown = target();
@@ -11734,6 +15672,12 @@ static void updateBody(bool round_started) {
   }
   if (!g_open && !g_auto_queue.empty()) {  // A part that can't get ready (its colors couldn't be read) is skipped
     const Target* front = targetIndex(g_auto_queue.front()) >= 0 ? &g_targets[static_cast<size_t>(targetIndex(g_auto_queue.front()))] : nullptr;
+    Target front_look;
+    if (front && g_auto_queue.front() != partOfKey(g_auto_queue.front())) {
+      front_look = *front;
+      front_look.look_p = true;
+      front = &front_look;
+    }
     const bool busy = g_reading || g_map_job.valid() || g_worn_job.valid() || g_tex_job.valid();  // A slow map being made isn't given up on
     if (!front || g_map_failed.count(mapKey(*front)) || (!busy && ++g_auto_updates > 60 * 20)) {  // About 20 s of play
       if (front) COMBO_LOG("color editor: couldn't put the saved recolor on " + keyOf(*front));
@@ -11761,7 +15705,7 @@ static void updateBody(bool round_started) {
   laps.mark("fight");
   // 1. Read the character's colors (of the body or the weapon), one per frame, then build the map on a worker.
   std::string mkey = mapKey(*t);
-  const auto cached = cachedPrefixesNow(t->chr, t->kind);
+  const auto cached = cachedPrefixesNow(t->chr, kindOf(*t));
   {  // The first-time setup's "please wait": while a part is mapped (not for Remap), between parts, and while the part
      // shown, never mapped, gets ready to be
     bool pending = false;
@@ -11775,7 +15719,7 @@ static void updateBody(bool round_started) {
         if (!covers) {
           std::error_code ec;
           const auto pa = g_parts.find(mkey);  // (an empty list: not on disk)
-          pending = pa != g_parts.end() ? pa->second.empty() : !std::filesystem::exists(partsFile(mkey, t->chr, t->kind), ec);
+          pending = pa != g_parts.end() ? pa->second.empty() : !std::filesystem::exists(partsFile(mkey, t->chr, kindOf(*t)), ec);
         }
       }
     }
@@ -11797,8 +15741,8 @@ static void updateBody(bool round_started) {
     g_setup_busy_ms = GetTickCount64();
   }
   if (world && !g_export && !g_reading && !g_map_job.valid() && !g_worn_job.valid() && !g_tex_job.valid() &&
-      std::find(cached.begin(), cached.end(), prefixOf(srcOf(*t), t->kind)) != cached.end()) {  // 0. If its textures aren't the ones read, read that slot again
-    const std::string tried = t->chr + "/" + t->kind + "/" + prefixOf(srcOf(*t), t->kind);
+      std::find(cached.begin(), cached.end(), prefixOf(srcOf(*t), kindOf(*t))) != cached.end()) {  // 0. If its textures aren't the ones read, read that slot again
+    const std::string tried = t->chr + "/" + kindOf(*t) + "/" + prefixOf(srcOf(*t), kindOf(*t));
     const int st = g_reread_tried.count(tried) ? 0 : texState(*t);
     if (st == 0) g_reread_tried.insert(tried);  // Checked once a session, since skin mods don't change while the game runs
     const std::string& c = srcOf(*t);
@@ -11813,7 +15757,8 @@ static void updateBody(bool round_started) {
       g_reread_tried.insert(tried);
       g_reading = std::make_unique<Reading>();
       g_reading->chr = t->chr;
-      g_reading->kind = t->kind;
+      g_reading->kind = kindOf(*t);
+      g_reading->p = t->look_p;
       g_reading->only = g_reading->next = nn;
       COMBO_LOG("color editor: " + tried + (st == 1 ? "'s textures changed since they were read (a skin mod added or removed): read again"
                                                     : ": read again once (its textures' ids weren't kept yet)"));
@@ -11824,23 +15769,24 @@ static void updateBody(bool round_started) {
   }
   if (auto have = g_maps.find(mkey); have != g_maps.end() && !g_reading && !g_map_job.valid() && !g_worn_job.valid() && !g_tex_job.valid() &&
       !have->second->prefixes.empty() &&
-      std::find(have->second->prefixes.begin(), have->second->prefixes.end(), prefixOf(srcOf(*t), t->kind)) == have->second->prefixes.end() &&
+      std::find(have->second->prefixes.begin(), have->second->prefixes.end(), prefixOf(srcOf(*t), kindOf(*t))) == have->second->prefixes.end() &&
       !g_remapped.count(mkey)) {
     if (forgetMap(*t)) { g_remapped.insert(mkey); COMBO_LOG("color editor: " + t->color + " is new to " + mkey + "'s regions: found again with it"); }
     else g_status = "Save first to map this color.";
   }
   if (!g_maps.count(mkey) && !g_map_failed.count(mkey) && !g_map_job.valid() && !g_reading &&
-      std::find(cached.begin(), cached.end(), prefixOf(srcOf(*t), t->kind)) != cached.end()) {
+      std::find(cached.begin(), cached.end(), prefixOf(srcOf(*t), kindOf(*t))) != cached.end()) {
     g_map_job_key = mkey;  // Read in an earlier session, so it comes from disk with no reading from the game
-    g_map_job = std::async(std::launch::async, mapAndMove, g_dir / "cache" / t->chr, t->kind, cached, ownOfKey(mkey));
+    g_map_job = std::async(std::launch::async, mapAndMove, g_dir / "cache" / t->chr, kindOf(*t), cached, ownOfKey(mkey));
     g_status = "Finding the color regions...";
     g_view_dirty = true;
   }
   if (!g_maps.count(mkey) && !g_map_failed.count(mkey) && !g_map_job.valid() && !g_reading) {
     g_reading = std::make_unique<Reading>();
     g_reading->chr = t->chr;
-    g_reading->kind = t->kind;
-    g_status = "Reading " + t->chr + (t->kind == "MAIN" ? std::string() : t->kind == "WEP" ? std::string("'s weapon") : " " + t->kind) + " colors...";
+    g_reading->kind = kindOf(*t);
+    g_reading->p = t->look_p;
+    g_status = "Reading " + t->chr + (t->kind == "MAIN" ? std::string() : t->kind == "WEP" ? std::string("'s weapon") : !equipOf(t->kind).empty() ? "'s " + partLabel(t->chr, t->kind) : " " + t->kind) + (t->look_p ? " powered-up" : "") + " colors...";
     g_view_dirty = true;
   }
   if (g_reading && world) {
@@ -11853,11 +15799,13 @@ static void updateBody(bool round_started) {
       if (rd.only && nn != rd.only) { rd.next = 100; break; }  // Only that color when one is read again
       wchar_t col[16];
       swprintf_s(col, L"Color%02d", nn);
-      const auto xr = g_extra_read.find(rd.chr + "/" + rd.kind);  // A part of its own uses its material's own name
-      const std::wstring mi = xr != g_extra_read.end() ? xr->second : L"MI_" + std::wstring(rd.kind.begin(), rd.kind.end()) + L"_BASE";
+      const std::string mkind = rd.p ? rd.kind.substr(0, rd.kind.size() - kPoweredTail.size()) : rd.kind;
+      const std::string equip = equipOf(mkind), bkind = unequipped(mkind);
+      const auto xr = g_extra_read.find(rd.chr + "/" + mkind);  // A part of its own uses its material's own name
+      const std::wstring mi = xr != g_extra_read.end() ? xr->second : L"MI_" + std::wstring(bkind.begin(), bkind.end()) + L"_BASE";
       char name[16];
       snprintf(name, sizeof(name), "Color%02d", nn);
-      UObject* mic = loadAsset(materialDir(rd.chr, name) + L"/" + mi + L"." + mi);
+      UObject* mic = loadAsset((equip.empty() ? materialDir(rd.chr, name) : equipDir(rd.chr, equip, name)) + L"/" + mi + L"." + mi);
       if (!mic) continue;
       const std::string prefix = prefixOf(name, rd.kind);
       // What was there is pinned first, if nothing is yet, and never written through a pinned link. The pins are
@@ -11885,8 +15833,9 @@ static void updateBody(bool round_started) {
       rd.stuck = 0;
       bool ok = true;
       std::string ids;
-      for (const char* param : {"BaseMap", "SssMap"}) {
-        UObject* tex = micTexture(mic, param);
+      for (int m = 0; m < 2; m++) {
+        const char* param = m ? "SssMap" : "BaseMap";
+        UObject* tex = micTexture(mic, rd.p ? kSkinParams[m] : param);
         const int w = tex ? sizeOf(tex, STR("Blueprint_GetSizeX")) : 0, h = tex ? sizeOf(tex, STR("Blueprint_GetSizeY")) : 0;
         ok = ok && w > 0 && h > 0 && w <= 8192 && h <= 8192 && drawToFile(world, tex, w, h, dir / (prefix + "_" + param + ".png"));
         ids += (ids.empty() ? "" : " ") + texId(tex);
@@ -11959,28 +15908,32 @@ static void updateBody(bool round_started) {
   laps.mark("colors");
   // 2. The worn color, ready to edit (worker).
   auto mp = g_maps.find(mkey);
-  if (mp != g_maps.end() && g_edits_loaded.insert(keyOf(*t)).second) {  // The map is in, so its stamp checks the file
-    {
-      auto st = g_edit_restore.find(keyOf(*t));
-      if (st != g_edit_restore.end()) {  // A recovered copy is read as unsaved changes
-        if (loadEdits(*t, g_edits[keyOf(*t)], mp->second->regions, false, st->second)) {
-          g_unsaved.insert(keyOf(*t));
-        } else {  // Made for another region map, so it goes to the recovery folder and the real save is read instead
-          std::error_code ec;
-          std::filesystem::rename(st->second, withSuffix(st->second, ".old"), ec);
-          if (!g_paint_restore.count(keyOf(*t))) g_unsaved.erase(keyOf(*t));
-          loadEdits(*t, g_edits[keyOf(*t)], mp->second->regions);
-        }
-        g_edit_restore.erase(st);
-      } else {
-        loadEdits(*t, g_edits[keyOf(*t)], mp->second->regions);
+  auto loadSaved = [](const Target& x, const CharMap& m) {
+    auto st = g_edit_restore.find(keyOf(x));
+    if (st != g_edit_restore.end()) {  // A recovered copy is read as unsaved changes
+      if (loadEdits(x, g_edits[keyOf(x)], m.regions, false, st->second)) {
+        g_unsaved.insert(keyOf(x));
+      } else {  // Made for another region map, so it goes to the recovery folder and the real save is read instead
+        std::error_code ec;
+        std::filesystem::rename(st->second, withSuffix(st->second, ".old"), ec);
+        if (!g_paint_restore.count(keyOf(x))) g_unsaved.erase(keyOf(x));
+        loadEdits(x, g_edits[keyOf(x)], m.regions);
       }
+      g_edit_restore.erase(st);
+    } else {
+      loadEdits(x, g_edits[keyOf(x)], m.regions);
     }
+  };
+  if (t->look_p)
+    if (const Target* n = shownPart(); n && !n->look_p)
+      if (auto nm = g_maps.find(mapKey(*n)); nm != g_maps.end() && g_edits_loaded.insert(keyOf(*n)).second) loadSaved(*n, *nm->second);
+  if (mp != g_maps.end() && g_edits_loaded.insert(keyOf(*t)).second) {  // The map is in, so its stamp checks the file
+    loadSaved(*t, *mp->second);
     if (g_worn && g_worn_key == keyOf(*t)) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }  // Read again on the same worn color, so it's made now
   }
   if (mp != g_maps.end() && g_worn_key != keyOf(*t) && !g_worn_job.valid() && !g_worn_failed.count(keyOf(*t))) {
     const auto dir = g_dir / "cache" / t->chr;
-    const std::string prefix = prefixOf(srcOf(*t), t->kind);
+    const std::string prefix = prefixOf(srcOf(*t), kindOf(*t));
     g_worn_job_key = keyOf(*t);
     g_worn_job = std::async(std::launch::async, prepareWorn, mp->second, dir / (prefix + "_BaseMap.png"), dir / (prefix + "_SssMap.png"));
     g_status = "Loading " + slotLabel(t->color) + "...";
@@ -11992,7 +15945,8 @@ static void updateBody(bool round_started) {
       g_worn = w;
       g_worn_serial++;
       g_worn_key = g_worn_job_key;
-      if (g_export && g_export->mode == 0) g_status = "Exporting...";  // Still going
+      if (g_worn_job_reown) {}
+      else if (g_export && g_export->mode == 0) g_status = "Exporting...";  // Still going
       else { g_status = g_aside_note; g_aside_note.clear(); }
       { std::lock_guard<std::mutex> lk(g_tex_pick_m); const Target k = fromKey(g_worn_key); g_tex_pick_dir = newestExport(k.chr, k.color); }  // Import opens there
       if (anyEdit(g_edits[g_worn_key]) || hasPaint(targetOf(g_worn_key))) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }  // Paint alone counts too
@@ -12000,11 +15954,80 @@ static void updateBody(bool round_started) {
       g_status = "Couldn't get this color ready.";
       g_worn_failed.insert(g_worn_job_key);  // Not tried every frame. It's tried again once its map is found again
     }
+    g_worn_job_reown = false;
     g_view_dirty = true;
+  }
+  if (!g_reown.empty() && g_worn && g_worn_key == keyOf(*t) && !g_worn_job.valid() && mp != g_maps.end()) {
+    if (mapKey(*t) == g_reown) {
+      g_worn_job_key = g_worn_key;
+      g_worn_job_reown = true;
+      g_worn_job = std::async(std::launch::async, reownWorn, g_worn, mp->second);
+    }
+    g_reown.clear();
   }
   laps.mark("worn color");
   const bool ready = g_worn && g_worn_key == keyOf(*t);
-  if (ready && g_vecs_for != keyOf(*t)) { buildVecs(*t); g_view_dirty = true; }
+  if (ready && world && mp != g_maps.end() && !equipOf(t->kind).empty() && !t->look_p) {
+    EquipRefs& e = g_equip_refs[keyOf(*t)];
+    const bool ref_busy = e.job.valid() && e.job.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+    if (e.map != mp->second.get() && !ref_busy) { e = EquipRefs{}; e.map = mp->second.get(); }
+    if (!e.asked && !ref_busy) {
+      const std::string own = equipOf(t->kind), bkind = unequipped(t->kind);
+      const auto dir = g_dir / "cache" / t->chr / "equip_ref";
+      std::error_code ec;
+      std::filesystem::create_directories(dir, ec);
+      const std::wstring mi = L"MI_" + std::wstring(bkind.begin(), bkind.end()) + L"_BASE";
+      for (bool drew = false; e.next <= 9 && !drew; e.next++) {
+        char num[8];
+        snprintf(num, sizeof(num), "%02d", e.next);
+        if (own == num) continue;
+        const auto fb = dir / (bkind + "_E" + num + "_BaseMap.png"), fs = dir / (bkind + "_E" + num + "_SssMap.png");
+        if (!std::filesystem::exists(fb, ec) || !std::filesystem::exists(fs, ec)) {
+          UObject* mic = loadAsset(equipDir(t->chr, num, "Color01") + L"/" + mi + L"." + mi);
+          if (!mic) continue;
+          drew = true;
+          bool ok = true;
+          for (int m = 0; m < 2 && ok; m++) {
+            UObject* tex = micTexture(mic, m ? "SssMap" : "BaseMap");
+            const int w = tex ? sizeOf(tex, STR("Blueprint_GetSizeX")) : 0, h = tex ? sizeOf(tex, STR("Blueprint_GetSizeY")) : 0;
+            ok = w > 0 && h > 0 && w <= 8192 && h <= 8192 && drawToFile(world, tex, w, h, m ? fs : fb);
+          }
+          if (!ok) { std::filesystem::remove(fb, ec); std::filesystem::remove(fs, ec); continue; }
+        }
+        e.files.push_back({fb, fs});
+      }
+      if (e.next > 9) {
+        e.asked = true;
+        COMBO_LOG("color editor: " + keyOf(*t) + " rows also follow " + std::to_string(e.files.size()) + " other weapon skin(s)");
+        if (!e.files.empty()) e.job = std::async(std::launch::async, refLooks, mp->second, std::move(e.files));
+        e.files.clear();
+      }
+    }
+    if (e.job.valid() && e.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { e.looks = e.job.get(); g_view_dirty = true; }
+  }
+  if (ready && g_vecs_for != partKey(*t) && (!t->look_p || g_edits_loaded.count(partKey(*t)))) { buildVecs(*t); g_view_dirty = true; }
+  if (g_pic_job.valid() && g_pic_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    const PicDone d = g_pic_job.get();
+    const PicFor f = g_pic_for;
+    g_pic_for = PicFor{};
+    g_view_dirty = true;
+    if (!d.ok) {
+      g_status = d.why;
+    } else if (!ready || partKey(*t) != f.part || g_vecs_for != f.part || f.region < 0 || f.region >= static_cast<int>(g_vecs.size()) ||
+               g_vecs[static_cast<size_t>(f.region)].label != f.label || !g_edits_loaded.count(partKey(*t))) {
+      g_status = d.name + " was read, but the part changed meanwhile, so it wasn't put on. Pick it again.";
+    } else {
+      VecGroup& g = g_vecs[static_cast<size_t>(f.region)];
+      pushUndo(*t, kPicFile, f.region);
+      std::memcpy(g.cur, d.v, sizeof(g.cur));
+      g.edited = true;
+      g_vec_saved[partKey(*t)][g.label] = {g.cur[0], g.cur[1], g.cur[2], g.cur[3]};
+      for (size_t k = 0; k < g.mids.size(); k++) vecSet(g.mids[k], g.paramOf(k), g.cur);
+      COMBO_LOG("color editor: picture " + g.pic_tip + " -> " + picChoice(g, g.cur) + " from " + d.name + " (" + std::to_string(d.w) + "x" + std::to_string(d.h) + ")");
+      markUnsavedVecs(*t);
+      g_status.clear();
+    }
+  }
   laps.mark("material colors");
   {  // the texture view, while the UI draws it
     const long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
@@ -12059,12 +16082,13 @@ static void updateBody(bool round_started) {
     {
       std::lock_guard<std::mutex> lk(g_tex_pick_m);
       if (!g_open && !g_tex_pick.empty()) { g_tex_pick.clear(); g_tex_added = 0; }  // (picked after the editor closed)
-      if (g_tex_added) {  // New files: a new batch if none was going
+      const bool other_look = t && t->look_p;
+      if (g_tex_added && !other_look) {  // New files: a new batch if none was going
         if (g_tex_all == 0) { g_tex_done = 0; g_tex_home = keyOf(*t); }
         g_tex_all += g_tex_added;
         g_tex_added = 0;
       }
-      if (!g_tex_pick.empty()) next = g_tex_pick.front();
+      if (!g_tex_pick.empty() && !other_look) next = g_tex_pick.front();
       queued = g_tex_pick.size();
     }
     if (!next.empty() && (g_export || g_mapping || g_scan_on)) g_tex_front_at = Clock::now();  // (its time doesn't run while the editor is busy)
@@ -12104,7 +16128,7 @@ static void updateBody(bool round_started) {
           pop(ok, ok ? std::string() : g_status);
         }
       } else if (m == 2) {  // Material colors, once the part's are found
-        if (ready && g_vecs_for == keyOf(*t)) {
+        if (ready && g_vecs_for == partKey(*t)) {
           const bool ok = importMatColorsNow(*t, next);
           pop(ok, ok ? std::string() : g_status);
         }
@@ -12143,7 +16167,7 @@ static void updateBody(bool round_started) {
       int next = -1;
       for (int i = 0; next < 0 && i < static_cast<int>(g_targets.size()); i++) {
         const Target& o = g_targets[static_cast<size_t>(i)];
-        if (i == g_target || o.pawn != t->pawn) continue;
+        if (i == g_target || o.pawn != t->pawn || o.no_part) continue;
         const std::string k = mapKey(o);
         if (g_map_tried.count(k) || g_map_failed.count(k) || g_setup_seen.count(k) || atlasCovers(o)) continue;
         std::error_code ec;
@@ -12193,16 +16217,20 @@ static void updateBody(bool round_started) {
     g_png_orphans.push_back(std::move(tex_job));
   }
   if (owed.erase(keyOf(*t))) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }
+  if (const Shown& cur = edited(*t); cur.base && !tex_job.valid() && (tex_upload::takeLost(cur.base) | tex_upload::takeLost(cur.sss))) { g_dirty = true; g_last_change = Clock::now() - std::chrono::seconds(1); }
   if (ready && world && g_dirty && !g_scan_on && !tex_job.valid() && g_encoding == 0 && Clock::now() - g_last_change > std::chrono::milliseconds(120)) {
     g_dirty = false;
     auto& ed = g_edits[keyOf(*t)];
     if (!anyEdit(ed) && !hasPaint(*t)) {
       unroot(g_hl);
+      if (t->look_p && edited(*t).base) COMBO_LOG("color editor: " + keyOf(*t) + ": no edits, its powered-up textures taken off (GIO_Skin_Base / GIO_Skin_Sss back to the game's)");
       show(*t, Shown{});  // the game's own
       unroot(edited(*t));
       partDone();
     } else {
-      tex_job = startEncode(g_worn, ed, g_follow, paintBytes(*t));
+      const Shown& cur = edited(*t);
+      const int raw = cur.base && cur.sss && tex_upload::ready(cur.base) && tex_upload::ready(cur.sss) ? tex_upload::order() : 0;
+      tex_job = startEncode(g_worn, ed, g_follow, paintBytes(*t), raw);
       tex_key = keyOf(*t);
       if (!tex_job.valid()) g_dirty = true;  // No thread, so try again next update
     }
@@ -12211,8 +16239,20 @@ static void updateBody(bool round_started) {
   if (tex_job.valid() && tex_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
     Pngs png = tex_job.get();
     Shown fresh;
-    if (world && !g_scan_on && importPngs(world, png, fresh)) {
+    const Shown cur = edited(*t);
+    if (png.raw_base) {
+      if (world && !g_scan_on && cur.base && cur.sss && tex_upload::putPair(cur.base, cur.sss, png.w, png.h, png.raw_base, png.raw_sss)) {
+        unroot(g_hl);
+        show(*t, cur);
+        g_smear_stale = true;
+      } else {
+        g_dirty = true;
+        g_last_change = Clock::now() - std::chrono::seconds(1);
+      }
+    } else if (world && !g_scan_on && importPngs(world, png, fresh, true)) {
       unroot(g_hl);  // the highlight is made again from the new colors
+      if (t->look_p && !edited(*t).base)
+        COMBO_LOG("color editor: " + keyOf(*t) + "'s powered-up textures put on (GIO_Skin_Base / GIO_Skin_Sss" + (g_open ? ", and BaseMap / SssMap while the editor shows it)" : ")"));
       show(*t, fresh);
       unroot(edited(*t));
       edited(*t) = fresh;

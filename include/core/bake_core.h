@@ -3,7 +3,9 @@
 // Baking recolors into .pak files: the parts that don't touch the game (DXT1/DXT5/BC7 coding, the texture's mips, the pak
 // file itself), so they can be tested on their own against the game's files.
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bake {
@@ -36,6 +38,8 @@ namespace bake {
   // Returns how many blocks were encoded (0: nothing changed).
   size_t writeImage(Texture& t, const std::vector<uint8_t>& image, const std::vector<uint8_t>& was, std::string& why);
 
+  void tintDecal(std::vector<uint8_t>& rgba, float smax, const float rgb[3]);
+
   std::string sha1hex(const Bytes& d);
 
   // A pak (version 9, unencrypted index, mount point ../../../), its files zlib-compressed in 64 KB blocks as the
@@ -45,4 +49,23 @@ namespace bake {
   bool checkPak(const std::wstring& path, const std::vector<PakFile>& files, std::string& why);
   // The file names in a pak this writer made (version 9, unencrypted index; compressed or, older bakes, not)
   bool pakNames(const std::wstring& path, std::vector<std::string>& names);
+  bool readPak(const std::wstring& path, std::vector<PakFile>& files, std::string& why);
+  Bytes zlibPack(const Bytes& in);
+
+  struct ShareLast {
+    std::vector<PakFile> carried, mine_before;
+    std::map<std::string, std::string> owner;
+    std::vector<std::string> baked;
+    std::vector<std::pair<std::string, std::string>> moved;
+  };
+  void shareLast(const std::vector<std::string>& manifest, std::vector<PakFile> files, const std::string& me, ShareLast& out);
+  std::string shareOwner(const std::string& chr, const std::string& color, const std::string& only);
+  std::vector<std::string> shareMine(const std::vector<std::string>& manifest, const std::string& me);
+  std::vector<std::string> shareOthers(const std::vector<std::string>& manifest, const std::string& me);
+  std::string newestPak(const std::vector<std::string>& stems, const std::string& stem);
+  bool perColorPath(const std::string& pkg);
+  std::string decalCache(const std::vector<std::string>& names, const std::string& color, const std::string& tex, bool worn_copy, bool per_color);
+  bool shareNext(const std::string& me, const std::vector<PakFile>& mine, const std::vector<PakFile>& back, const ShareLast& last,
+                 const std::vector<std::string>& done, const std::vector<std::pair<std::string, std::string>>& moved, std::vector<PakFile>& files,
+                 std::vector<std::string>& manifest);
 }

@@ -30,11 +30,13 @@ namespace imgui_overlay {
   int takeOnlinePickStep();
   bool typing();
   void noteOnlineKey();
+  void note(const std::string& text);
 
   // Game thread: the frame bar's cells and stats lines for this frame.
   struct FrameBarView {
     struct Cell {
       unsigned color = 0; unsigned char mods = 0; int trunc = 0; bool on = false;
+      unsigned under = 0;                            // a line along the cell's bottom edge, 0 = none
       unsigned char dir = 0;                         // input bar: numpad, 0 = no data
       unsigned short held = 0, pressed = 0;          // input bar: RECFLG button bits
       unsigned char keep = 0;                        // one block: last frames of the stretch kept as cells

@@ -28,6 +28,8 @@ public:
     bool getButtonState(int input);
     // By action, for binds that may have no key (pad only).
     bool takeAction(int action);
+    bool actionState(int action) const { return action >= 0 && action < BUTTON_COUNT && buttonStates[action]; }
+    void resetAction(int action) { if (action >= 0 && action < BUTTON_COUNT) buttonStates[action] = false; }
     void resetButton(int input);
     void resetButtons();
     void loadButtons();
